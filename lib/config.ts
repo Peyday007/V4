@@ -1,0 +1,149 @@
+import { prisma } from '@/lib/db';
+
+/**
+ * Operating rules an administrator can tune without a deploy. Anything the AI
+ * uses as a threshold lives here, not in code constants.
+ */
+export type OrgConfig = {
+  scoringWeights: Record<string, number>;
+  marginRules: {
+    minimumGrossMarginPct: number;
+    targetGrossMarginPct: number;
+    subcontractingManagementFeePct: number;
+    brokerageSpreadPct: number;
+    distributionMarginPct: number;
+  };
+  approvalLimits: {
+    dealValueRequiringApproval: number;
+    grossProfitRequiringApproval: number;
+    cashExposureLimit: number;
+    autoApproveBelowValue: number;
+  };
+  stalenessRules: {
+    pricingDays: number;
+    availabilityDays: number;
+    capacityDays: number;
+    companyVerificationDays: number;
+    contactVerificationDays: number;
+  };
+  riskRules: {
+    minimumGeneralLiability: number;
+    minimumAutoLiability: number;
+    minimumWorkersComp: number;
+    requireLicenseForTrades: string[];
+    maxDaysWithoutNextAction: number;
+    neglectDays: number;
+  };
+  callingRules: {
+    earliestHourLocal: number;
+    latestHourLocal: number;
+    allowedWeekdays: number[];
+    maxAttemptsPerContact: number;
+    minHoursBetweenAttempts: number;
+    recordingRequiresBothPartyConsent: string[];
+  };
+  planning: {
+    dailyCallCapacityPerCaller: number;
+    maxEscalationsPerDay: number;
+    minimumLaneSampleSize: number;
+  };
+};
+
+export const DEFAULT_CONFIG: OrgConfig = {
+  scoringWeights: {
+    needStrength: 1.4,
+    capabilityMatch: 1.2,
+    urgency: 1.1,
+    informationCompleteness: 0.7,
+    contactability: 0.6,
+    switchingWillingness: 1.2,
+    incumbentWeakness: 1.0,
+    supplyAvailability: 1.0,
+    repeatPotential: 0.9,
+    expansionValue: 0.7,
+    fulfillmentRisk: -1.1,
+    paymentRisk: -0.9,
+    complianceRisk: -1.0,
+    competitivePressure: -0.5,
+    timeToClose: -0.4,
+  },
+  marginRules: {
+    minimumGrossMarginPct: 12,
+    targetGrossMarginPct: 22,
+    subcontractingManagementFeePct: 18,
+    brokerageSpreadPct: 10,
+    distributionMarginPct: 25,
+  },
+  approvalLimits: {
+    dealValueRequiringApproval: 25000,
+    grossProfitRequiringApproval: 7500,
+    cashExposureLimit: 15000,
+    autoApproveBelowValue: 2500,
+  },
+  stalenessRules: {
+    pricingDays: 14,
+    availabilityDays: 7,
+    capacityDays: 30,
+    companyVerificationDays: 180,
+    contactVerificationDays: 120,
+  },
+  riskRules: {
+    minimumGeneralLiability: 1_000_000,
+    minimumAutoLiability: 1_000_000,
+    minimumWorkersComp: 500_000,
+    requireLicenseForTrades: ['electrical', 'plumbing', 'hvac', 'security', 'asbestos'],
+    maxDaysWithoutNextAction: 3,
+    neglectDays: 7,
+  },
+  callingRules: {
+    earliestHourLocal: 8,
+    latestHourLocal: 20,
+    allowedWeekdays: [1, 2, 3, 4, 5],
+    maxAttemptsPerContact: 4,
+    minHoursBetweenAttempts: 20,
+    // Jurisdictions where all-party consent is required before recording.
+    recordingRequiresBothPartyConsent: ['CA', 'CT', 'FL', 'IL', 'MD', 'MA', 'MI', 'MT', 'NH', 'PA', 'WA'],
+  },
+  planning: {
+    dailyCallCapacityPerCaller: 25,
+    maxEscalationsPerDay: 12,
+    minimumLaneSampleSize: 8,
+  },
+};
+
+const CONFIG_KEY = 'operating_rules';
+
+export async function getOrgConfig(orgId: string): Promise<OrgConfig> {
+  const row = await prisma.configSetting.findUnique({
+    where: { orgId_key: { orgId, key: CONFIG_KEY } },
+  });
+  if (!row) return DEFAULT_CONFIG;
+  return mergeConfig(DEFAULT_CONFIG, row.value as Partial<OrgConfig>);
+}
+
+export async function setOrgConfig(
+  orgId: string,
+  partial: Partial<OrgConfig>,
+  updatedBy?: string,
+): Promise<OrgConfig> {
+  const current = await getOrgConfig(orgId);
+  const merged = mergeConfig(current, partial);
+  await prisma.configSetting.upsert({
+    where: { orgId_key: { orgId, key: CONFIG_KEY } },
+    create: { orgId, key: CONFIG_KEY, value: merged as object, updatedBy },
+    update: { value: merged as object, updatedBy },
+  });
+  return merged;
+}
+
+function mergeConfig(base: OrgConfig, patch: Partial<OrgConfig>): OrgConfig {
+  const out = { ...base } as Record<string, unknown>;
+  for (const [key, value] of Object.entries(patch ?? {})) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      out[key] = { ...((base as Record<string, unknown>)[key] as object), ...(value as object) };
+    } else if (value !== undefined) {
+      out[key] = value;
+    }
+  }
+  return out as OrgConfig;
+}

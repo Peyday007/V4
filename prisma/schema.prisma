@@ -1,0 +1,1951 @@
+// Deal Dispatch — AI-Operated Deal Dispatch System
+// Data model for subcontracting, brokerage, and distribution deal operations.
+//
+// Conventions:
+//  - Every tenant-scoped row carries `orgId`. All queries must filter by it.
+//  - Append-only history tables: DealStatusHistory, ActivityEvent, AuditEvent,
+//    AIDecision, AIOverride, OpportunityScore. Never update or delete rows there.
+//  - Facts carry provenance: source, confidence, and confirmation status.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum OpportunityType {
+  SUBCONTRACTING
+  BROKERAGE
+  DISTRIBUTION
+  HYBRID
+  UNCLASSIFIED
+}
+
+enum CompanyRole {
+  BUYER
+  PRIME_CONTRACTOR
+  SUBCONTRACTOR
+  SUPPLIER
+  DISTRIBUTOR
+  MANUFACTURER
+  CARRIER
+  HYBRID
+  UNKNOWN
+}
+
+enum PartyRole {
+  BUYER
+  PRIME_CONTRACTOR
+  SUBCONTRACTOR
+  SUPPLIER
+  DISTRIBUTOR
+  CARRIER
+  CANDIDATE
+  REFERRER
+}
+
+enum PipelineStage {
+  SIGNAL_DISCOVERED
+  RESEARCHING
+  QUALIFICATION_REQUIRED
+  BUYER_NEED_CONFIRMED
+  SUPPLIER_REQUIRED
+  FULFILLMENT_CAPABILITY_CONFIRMED
+  MATCH_BEING_CONFIGURED
+  PRICING_REQUIRED
+  QUOTE_BEING_PREPARED
+  QUOTE_DELIVERED
+  FOLLOW_UP_REQUIRED
+  NEGOTIATION
+  AWAITING_APPROVAL
+  CONTRACTING
+  FULFILLMENT_SCHEDULED
+  ACTIVE_FULFILLMENT
+  COMPLETED
+  REPEAT_OR_EXPANSION
+  LOST
+  DORMANT
+  DISQUALIFIED
+}
+
+enum OpportunityStatus {
+  ACTIVE
+  WAITING
+  BLOCKED
+  ESCALATED
+  WON
+  LOST
+  DORMANT
+  DISQUALIFIED
+}
+
+enum Priority {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+}
+
+/// How a piece of information came to be known. Never treat inference as fact.
+enum FactStatus {
+  CONFIRMED
+  CLAIMED
+  ESTIMATED
+  INFERRED
+  CONTRADICTED
+  STALE
+  MISSING
+}
+
+enum SignalCategory {
+  SUBCONTRACTING
+  BROKERAGE
+  DISTRIBUTION
+  GENERAL
+}
+
+enum SignalStatus {
+  NEW
+  TRIAGED
+  PROMOTED
+  DISMISSED
+  DUPLICATE
+}
+
+enum SourceType {
+  COMPANY_WEBSITE
+  SEARCH_ENGINE
+  BUSINESS_DIRECTORY
+  PROCUREMENT_PORTAL
+  CONTRACT_AWARD
+  BID_RFP_PORTAL
+  BUILDING_PERMIT
+  PLANNING_RECORD
+  LICENSE_DATABASE
+  TRADE_ASSOCIATION
+  PRESS_RELEASE
+  JOB_POSTING
+  SUPPLIER_DIRECTORY
+  PUBLIC_VENDOR_LIST
+  PROPERTY_RECORD
+  TRADE_RECORD
+  CALL_TRANSCRIPT
+  CRM_IMPORT
+  USER_UPLOAD
+  EMAIL_INTEGRATION
+  DATA_PROVIDER_API
+  MANUAL_ENTRY
+}
+
+enum TaskStatus {
+  OPEN
+  IN_PROGRESS
+  BLOCKED
+  DONE
+  CANCELLED
+}
+
+enum CallAssignmentStatus {
+  PENDING
+  ASSIGNED
+  IN_PROGRESS
+  COMPLETED
+  NO_ANSWER
+  VOICEMAIL
+  RESCHEDULED
+  CANCELLED
+  BLOCKED_BY_COMPLIANCE
+}
+
+enum CallType {
+  BUYER_QUALIFICATION
+  PRIME_QUALIFICATION
+  SUBCONTRACTOR_RECRUITMENT
+  SUPPLIER_QUALIFICATION
+  AVAILABILITY_CONFIRMATION
+  PRICING_REQUEST
+  QUOTE_FOLLOW_UP
+  TRIAL_ORDER_REQUEST
+  BACKUP_PROVIDER_POSITIONING
+  NEGOTIATION_SUPPORT
+  EXPANSION_REQUEST
+  RELATIONSHIP_REACTIVATION
+  FULFILLMENT_ISSUE
+}
+
+enum CallDirection {
+  OUTBOUND
+  INBOUND
+}
+
+enum CallOutcome {
+  CONNECTED
+  NO_ANSWER
+  VOICEMAIL
+  GATEKEEPER
+  WRONG_NUMBER
+  CALLBACK_SCHEDULED
+  REFUSED
+  DO_NOT_CALL
+}
+
+enum NextActionType {
+  RESEARCH_COMPANY
+  FIND_DECISION_MAKER
+  QUALIFY_BUYER_NEED
+  QUALIFY_SCOPE
+  CONFIRM_BUDGET
+  CONFIRM_LOCATION
+  CONFIRM_TIMELINE
+  CONFIRM_SPECIFICATIONS
+  FIND_SUBCONTRACTORS
+  FIND_SUPPLIERS
+  CONFIRM_CAPACITY
+  CONFIRM_AVAILABILITY
+  VERIFY_LICENSING_INSURANCE
+  REQUEST_PRICING
+  OBTAIN_FREIGHT_PRICING
+  BUILD_COMPARISON
+  PREPARE_QUOTE
+  SEND_QUOTE
+  FOLLOW_UP_QUOTE
+  REQUEST_TRIAL
+  REQUEST_BACKUP_STATUS
+  NEGOTIATE
+  REQUEST_DOCUMENTS
+  OBTAIN_APPROVAL
+  GENERATE_AGREEMENT
+  SCHEDULE_FULFILLMENT
+  CHECK_ACTIVE_WORK
+  RESOLVE_BLOCKER
+  INVOICE
+  COLLECT_PAYMENT
+  REQUEST_REPEAT_BUSINESS
+  EXPAND_ACCOUNT
+  PAUSE
+  DISQUALIFY
+  ESCALATE
+}
+
+enum EscalationReason {
+  LOW_CONFIDENCE
+  CONFLICTING_INFORMATION
+  UNCLEAR_SPECIFICATION
+  INSUFFICIENT_INSURANCE
+  INSUFFICIENT_LICENSING
+  INCONSISTENT_PRICING
+  MARGIN_BELOW_THRESHOLD
+  CASH_EXPOSURE
+  PAYMENT_RISK
+  CONTRACT_VALUE_LIMIT
+  LEGAL_OR_REGULATORY
+  EXCLUSIVITY_REQUESTED
+  DISPUTE_DEVELOPING
+  UNAUTHORIZED_COMMITMENT
+  NO_SAFE_NEXT_ACTION
+  DEAL_READY_FOR_REVIEW
+}
+
+enum EscalationStatus {
+  OPEN
+  ACKNOWLEDGED
+  RESOLVED
+  DISMISSED
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CHANGES_REQUESTED
+  EXPIRED
+}
+
+enum ApprovalType {
+  DEAL_TERMS
+  PRICING
+  MARGIN_EXCEPTION
+  CONTRACT_EXECUTION
+  CREDIT_TERMS
+  EXCLUSIVITY
+  FULFILLMENT_RELEASE
+  DOCUMENT_SEND
+}
+
+enum MovabilityClass {
+  ACTIVELY_MOVABLE
+  CONDITIONALLY_MOVABLE
+  RELATIONSHIP_LOCKED
+  UNKNOWN
+}
+
+enum AccountStage {
+  DISCOVERED
+  CONTACTED
+  QUALIFIED
+  BACKUP_OPTION
+  TRIAL_OPPORTUNITY
+  FIRST_DEAL
+  REPEAT_DEAL
+  PARTIAL_ACCOUNT
+  PREFERRED_PROVIDER
+  EXPANDED_ACCOUNT
+  STRATEGIC_ACCOUNT
+}
+
+enum RelationshipKind {
+  SUPPLIES
+  BUYS_FROM
+  SUBCONTRACTS_TO
+  SUBCONTRACTS_FOR
+  PARTNERS_WITH
+  COMPETES_WITH
+  PARENT_OF
+  SUBSIDIARY_OF
+  INCUMBENT_VENDOR_OF
+  FORMER_VENDOR_OF
+}
+
+enum QuoteStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  SENT
+  ACCEPTED
+  DECLINED
+  EXPIRED
+  SUPERSEDED
+}
+
+enum DocumentKind {
+  INTRO_EMAIL
+  CAPABILITY_REQUEST
+  SCOPE_REQUEST
+  PRICING_REQUEST
+  SUBCONTRACTOR_INVITATION
+  BUYER_FOLLOW_UP
+  QUOTE_FOLLOW_UP
+  MEETING_SUMMARY
+  OPPORTUNITY_BRIEF
+  SUBCONTRACTOR_COMPARISON
+  SUPPLIER_COMPARISON
+  QUOTE
+  PROPOSAL
+  STATEMENT_OF_WORK
+  PURCHASE_ORDER
+  CONTRACT
+  CHANGE_ORDER
+  FULFILLMENT_INSTRUCTIONS
+  INTERNAL_APPROVAL_SUMMARY
+  CERTIFICATE_OF_INSURANCE
+  LICENSE
+  OTHER
+}
+
+enum DocumentStatus {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  SENT
+  SIGNED
+  VOID
+}
+
+enum JobStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  DEAD
+}
+
+enum MessageChannel {
+  EMAIL
+  SMS
+  VOICEMAIL_DROP
+  INTERNAL_NOTE
+}
+
+enum MessageStatus {
+  DRAFT
+  PENDING_APPROVAL
+  QUEUED
+  SENT
+  FAILED
+  RECEIVED
+}
+
+enum SuppressionScope {
+  DO_NOT_CALL
+  DO_NOT_EMAIL
+  DO_NOT_SMS
+  DO_NOT_CONTACT
+}
+
+enum LaneRecommendation {
+  SCALE
+  CONTINUE_TESTING
+  IMPROVE_FULFILLMENT_COVERAGE
+  IMPROVE_SCRIPT
+  CHANGE_TARGET_PROFILE
+  PAUSE
+  ABANDON
+  INSUFFICIENT_DATA
+}
+
+// ---------------------------------------------------------------------------
+// Identity, roles, permissions
+// ---------------------------------------------------------------------------
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  timezone  String   @default("America/New_York")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users                  User[]
+  roles                  Role[]
+  companies              Company[]
+  contacts               Contact[]
+  opportunities          Opportunity[]
+  settings               ConfigSetting[]
+  industries             Industry[]
+  services               Service[]
+  products               Product[]
+  materials              Material[]
+  capabilities           Capability[]
+  territories            Territory[]
+  dataSources            DataSource[]
+  dealLanes              DealLane[]
+  auditEvents            AuditEvent[]
+  jobs                   Job[]
+  dailyPlans             DailyPlan[]
+  scriptTemplates        ScriptTemplate[]
+  qualificationQuestions QualificationQuestion[]
+}
+
+model Permission {
+  id          String           @id @default(cuid())
+  key         String           @unique
+  description String
+  category    String
+  roles       RolePermission[]
+}
+
+model Role {
+  id          String   @id @default(cuid())
+  orgId       String?
+  key         String
+  name        String
+  description String
+  isSystem    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  org         Organization?    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  permissions RolePermission[]
+  users       User[]
+
+  @@unique([orgId, key])
+  @@index([orgId])
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+}
+
+model User {
+  id           String    @id @default(cuid())
+  orgId        String
+  email        String
+  name         String
+  passwordHash String
+  roleId       String
+  isActive     Boolean   @default(true)
+  timezone     String    @default("America/New_York")
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  org           Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  role          Role           @relation(fields: [roleId], references: [id])
+  sessions      Session[]
+  callerProfile CallerProfile?
+
+  assignedCalls      CallAssignment[]    @relation("AssignedCaller")
+  ownedOpportunities Opportunity[]       @relation("OpportunityOwner")
+  ownedTasks         Task[]              @relation("TaskOwner")
+  calls              Call[]
+  escalationsRaised  Escalation[]        @relation("EscalationRaisedBy")
+  escalationsOwned   Escalation[]        @relation("EscalationAssignee")
+  approvalsRequested Approval[]          @relation("ApprovalRequester")
+  approvalsDecided   Approval[]          @relation("ApprovalDecider")
+  overrides          AIOverride[]
+  notifications      Notification[]
+  activityEvents     ActivityEvent[]
+  metrics            PerformanceMetric[]
+  auditEvents        AuditEvent[]
+
+  @@unique([orgId, email])
+  @@index([orgId])
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  ip        String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model CallerProfile {
+  id                 String   @id @default(cuid())
+  userId             String   @unique
+  timezone           String   @default("America/New_York")
+  languages          String[] @default(["en"])
+  industryStrengths  String[] @default([])
+  callTypeStrengths  String[] @default([])
+  maxDailyCalls      Int      @default(40)
+  coldCallSkill      Float    @default(0.5)
+  warmCallSkill      Float    @default(0.5)
+  objectionSkill     Float    @default(0.5)
+  extractionAccuracy Float    @default(0.5)
+  buyerSideSkill     Float    @default(0.5)
+  supplySideSkill    Float    @default(0.5)
+  notes              String?
+  updatedAt          DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ---------------------------------------------------------------------------
+// Configurable taxonomy
+// ---------------------------------------------------------------------------
+
+model Industry {
+  id       String  @id @default(cuid())
+  orgId    String
+  key      String
+  name     String
+  isActive Boolean @default(true)
+
+  org       Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  companies CompanyIndustry[]
+  lanes     DealLane[]
+
+  @@unique([orgId, key])
+  @@index([orgId])
+}
+
+model Service {
+  id          String  @id @default(cuid())
+  orgId       String
+  key         String
+  name        String
+  description String?
+  isActive    Boolean @default(true)
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, key])
+}
+
+model Product {
+  id       String  @id @default(cuid())
+  orgId    String
+  sku      String?
+  name     String
+  category String
+  unit     String  @default("each")
+  specs    Json    @default("{}")
+  isActive Boolean @default(true)
+
+  org       Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  companies CompanyProduct[]
+  lineItems QuoteLineItem[]
+
+  @@unique([orgId, name])
+  @@index([orgId, category])
+}
+
+model Material {
+  id       String  @id @default(cuid())
+  orgId    String
+  key      String
+  name     String
+  unit     String  @default("ton")
+  isActive Boolean @default(true)
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, key])
+}
+
+model Capability {
+  id          String  @id @default(cuid())
+  orgId       String
+  key         String
+  name        String
+  category    String
+  description String?
+
+  org       Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  companies CompanyCapability[]
+
+  @@unique([orgId, key])
+}
+
+model Territory {
+  id          String   @id @default(cuid())
+  orgId       String
+  name        String
+  kind        String   @default("county")
+  region      String?
+  state       String?
+  postalCodes String[] @default([])
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, name])
+}
+
+/// Org-level configuration: scoring weights, margin rules, approval limits,
+/// staleness thresholds, calling hours, risk rules.
+model ConfigSetting {
+  id        String   @id @default(cuid())
+  orgId     String
+  key       String
+  value     Json
+  updatedAt DateTime @updatedAt
+  updatedBy String?
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, key])
+}
+
+model QualificationQuestion {
+  id              String           @id @default(cuid())
+  orgId           String
+  callType        CallType
+  opportunityType OpportunityType?
+  prompt          String
+  factKey         String
+  required        Boolean          @default(true)
+  sortOrder       Int              @default(0)
+  isActive        Boolean          @default(true)
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, callType])
+}
+
+model ScriptTemplate {
+  id            String   @id @default(cuid())
+  orgId         String
+  callType      CallType
+  name          String
+  version       Int      @default(1)
+  opener        String
+  branches      Json     @default("[]")
+  objections    Json     @default("[]")
+  mayOffer      String[] @default([])
+  mayNotPromise String[] @default([])
+  escalateIf    String[] @default([])
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+
+  org         Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  assignments CallAssignment[]
+
+  @@unique([orgId, callType, version])
+}
+
+// ---------------------------------------------------------------------------
+// Business graph: companies, contacts, relationships
+// ---------------------------------------------------------------------------
+
+model Company {
+  id                     String          @id @default(cuid())
+  orgId                  String
+  legalName              String
+  operatingName          String?
+  website                String?
+  phone                  String?
+  description            String?
+  companyRole            CompanyRole     @default(UNKNOWN)
+  employeeCount          Int?
+  estimatedRevenue       Decimal?        @db.Decimal(14, 2)
+  revenueSource          String?
+  yearFounded            Int?
+  certifications         String[]        @default([])
+  licenses               Json            @default("[]")
+  insurance              Json            @default("{}")
+  govRegistrations       Json            @default("{}")
+  serviceTerritories     String[]        @default([])
+  purchasingPatterns     Json            @default("{}")
+  fulfillmentCapacity    Json            @default("{}")
+  movability             MovabilityClass @default(UNKNOWN)
+  movabilityScore        Float           @default(0)
+  movabilityReasons      String[]        @default([])
+  accountStage           AccountStage    @default(DISCOVERED)
+  relationshipStrength   Float           @default(0)
+  estimatedLifetimeValue Decimal?        @db.Decimal(14, 2)
+  lastVerifiedAt         DateTime?
+  createdAt              DateTime        @default(now())
+  updatedAt              DateTime        @updatedAt
+
+  org          Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  locations    CompanyLocation[]
+  contacts     Contact[]
+  industries   CompanyIndustry[]
+  capabilities CompanyCapability[]
+  products     CompanyProduct[]
+
+  relationshipsFrom Relationship[] @relation("RelationshipFrom")
+  relationshipsTo   Relationship[] @relation("RelationshipTo")
+
+  projects           Project[]
+  awardsWon          ContractAward[]         @relation("AwardWinner")
+  awardsIssued       ContractAward[]         @relation("AwardIssuer")
+  buyerNeeds         BuyerNeed[]
+  supplyOffers       SupplierAvailability[]
+  subCapacity        SubcontractorCapacity[]
+  signals            DiscoverySignal[]
+  opportunityParties OpportunityParty[]
+  matchesAsCandidate Match[]                 @relation("MatchCandidate")
+  callAssignments    CallAssignment[]
+  facts              ExtractedFact[]
+  documents          Document[]
+  activityEvents     ActivityEvent[]
+  quotes             Quote[]
+  evidence           SourceEvidence[]
+
+  @@unique([orgId, legalName])
+  @@index([orgId, companyRole])
+  @@index([orgId, movability])
+}
+
+model CompanyLocation {
+  id             String  @id @default(cuid())
+  companyId      String
+  label          String  @default("Primary")
+  line1          String?
+  line2          String?
+  city           String?
+  state          String?
+  postalCode     String?
+  country        String  @default("US")
+  latitude       Float?
+  longitude      Float?
+  isHeadquarters Boolean @default(false)
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+  @@index([state, city])
+}
+
+model CompanyIndustry {
+  companyId  String
+  industryId String
+  isPrimary  Boolean @default(false)
+
+  company  Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  industry Industry @relation(fields: [industryId], references: [id], onDelete: Cascade)
+
+  @@id([companyId, industryId])
+}
+
+model CompanyCapability {
+  id           String     @id @default(cuid())
+  companyId    String
+  capabilityId String
+  status       FactStatus @default(CLAIMED)
+  confidence   Float      @default(0.5)
+  evidenceId   String?
+  notes        String?
+  verifiedAt   DateTime?
+
+  company    Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  capability Capability      @relation(fields: [capabilityId], references: [id], onDelete: Cascade)
+  evidence   SourceEvidence? @relation(fields: [evidenceId], references: [id])
+
+  @@unique([companyId, capabilityId])
+}
+
+model CompanyProduct {
+  id           String   @id @default(cuid())
+  companyId    String
+  productId    String
+  role         String   @default("supplies") // supplies | purchases
+  unitCost     Decimal? @db.Decimal(12, 4)
+  leadTimeDays Int?
+  notes        String?
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, productId, role])
+}
+
+model Contact {
+  id                String    @id @default(cuid())
+  orgId             String
+  companyId         String
+  firstName         String
+  lastName          String
+  title             String?
+  department        String?
+  buyingRole        String?
+  email             String?
+  phone             String?
+  mobile            String?
+  preferredChannel  String    @default("phone")
+  bestContactTime   String?
+  timezone          String    @default("America/New_York")
+  decisionAuthority String    @default("unknown") // decision_maker | influencer | gatekeeper | user | unknown
+  influenceLevel    Float     @default(0.5)
+  knownPriorities   String[]  @default([])
+  consentToCall     Boolean   @default(true)
+  consentToRecord   Boolean?
+  consentToEmail    Boolean   @default(true)
+  lastInteractionAt DateTime?
+  nextInteractionAt DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  org     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  company Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  callAssignments CallAssignment[]
+  calls           Call[]
+  commitments     Commitment[]
+  objections      Objection[]
+  facts           ExtractedFact[]
+  messages        Message[]
+  suppressions    SuppressionEntry[]
+  activityEvents  ActivityEvent[]
+
+  @@index([orgId, companyId])
+  @@index([orgId, lastName])
+}
+
+model Relationship {
+  id            String           @id @default(cuid())
+  orgId         String
+  fromCompanyId String
+  toCompanyId   String
+  kind          RelationshipKind
+  status        FactStatus       @default(INFERRED)
+  strength      Float            @default(0.5)
+  since         DateTime?
+  until         DateTime?
+  notes         String?
+  evidenceId    String?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  fromCompany Company         @relation("RelationshipFrom", fields: [fromCompanyId], references: [id], onDelete: Cascade)
+  toCompany   Company         @relation("RelationshipTo", fields: [toCompanyId], references: [id], onDelete: Cascade)
+  evidence    SourceEvidence? @relation(fields: [evidenceId], references: [id])
+
+  @@unique([fromCompanyId, toCompanyId, kind])
+  @@index([orgId])
+}
+
+// ---------------------------------------------------------------------------
+// Discovery: sources, evidence, signals
+// ---------------------------------------------------------------------------
+
+model DataSource {
+  id              String     @id @default(cuid())
+  orgId           String
+  key             String
+  name            String
+  sourceType      SourceType
+  connector       String
+  baseUrl         String?
+  isEnabled       Boolean    @default(true)
+  /// Documented basis for accessing this source (terms, licence, robots policy).
+  accessBasis     String
+  rateLimitPerMin Int        @default(30)
+  config          Json       @default("{}")
+  lastRunAt       DateTime?
+  lastRunStatus   String?
+  createdAt       DateTime   @default(now())
+
+  org      Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  evidence SourceEvidence[]
+  signals  DiscoverySignal[]
+
+  @@unique([orgId, key])
+}
+
+model SourceEvidence {
+  id               String     @id @default(cuid())
+  orgId            String
+  dataSourceId     String?
+  companyId        String?
+  sourceType       SourceType
+  sourceUrl        String?
+  title            String?
+  excerpt          String
+  rawPayload       Json       @default("{}")
+  confidence       Float      @default(0.5)
+  status           FactStatus @default(INFERRED)
+  discoveredAt     DateTime   @default(now())
+  lastCheckedAt    DateTime   @default(now())
+  createdByProcess String
+  contentHash      String
+
+  dataSource DataSource? @relation(fields: [dataSourceId], references: [id])
+  company    Company?    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  signals       DiscoverySignal[]
+  facts         ExtractedFact[]
+  capabilities  CompanyCapability[]
+  relationships Relationship[]
+
+  @@unique([orgId, contentHash])
+  @@index([orgId, sourceType])
+}
+
+model DiscoverySignal {
+  id           String         @id @default(cuid())
+  orgId        String
+  dataSourceId String?
+  evidenceId   String?
+  companyId    String?
+  category     SignalCategory
+  signalKey    String
+  headline     String
+  detail       String
+  location     String?
+  strength     Float          @default(0.5)
+  confidence   Float          @default(0.5)
+  status       SignalStatus   @default(NEW)
+  dedupeHash   String
+  observedAt   DateTime       @default(now())
+  expiresAt    DateTime?
+  createdAt    DateTime       @default(now())
+
+  dataSource    DataSource?     @relation(fields: [dataSourceId], references: [id])
+  evidence      SourceEvidence? @relation(fields: [evidenceId], references: [id])
+  company       Company?        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  opportunities Opportunity[]
+
+  @@unique([orgId, dedupeHash])
+  @@index([orgId, status, category])
+}
+
+model Project {
+  id          String    @id @default(cuid())
+  orgId       String
+  companyId   String?
+  name        String
+  description String?
+  location    String?
+  state       String?
+  value       Decimal?  @db.Decimal(14, 2)
+  startDate   DateTime?
+  endDate     DateTime?
+  trades      String[]  @default([])
+  status      String    @default("announced")
+  evidenceUrl String?
+  createdAt   DateTime  @default(now())
+
+  company       Company?        @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  awards        ContractAward[]
+  needs         BuyerNeed[]
+  opportunities Opportunity[]
+
+  @@index([orgId])
+}
+
+model ContractAward {
+  id                    String    @id @default(cuid())
+  orgId                 String
+  projectId             String?
+  winnerCompanyId       String?
+  issuerCompanyId       String?
+  agency                String?
+  solicitationNumber    String?
+  title                 String
+  scopeSummary          String?
+  value                 Decimal?  @db.Decimal(14, 2)
+  awardDate             DateTime?
+  performanceStart      DateTime?
+  performanceEnd        DateTime?
+  subcontractingGoalPct Float?
+  location              String?
+  sourceUrl             String?
+  createdAt             DateTime  @default(now())
+
+  project       Project?      @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  winner        Company?      @relation("AwardWinner", fields: [winnerCompanyId], references: [id], onDelete: SetNull)
+  issuer        Company?      @relation("AwardIssuer", fields: [issuerCompanyId], references: [id], onDelete: SetNull)
+  opportunities Opportunity[]
+
+  @@index([orgId])
+}
+
+// ---------------------------------------------------------------------------
+// Demand and supply records
+// ---------------------------------------------------------------------------
+
+model BuyerNeed {
+  id                     String          @id @default(cuid())
+  orgId                  String
+  companyId              String
+  projectId              String?
+  opportunityType        OpportunityType
+  title                  String
+  scope                  String
+  location               String?
+  state                  String?
+  requiredCapabilities   String[]        @default([])
+  requiredCertifications String[]        @default([])
+  insuranceRequirement   Json            @default("{}")
+  quantity               Decimal?        @db.Decimal(14, 3)
+  unit                   String?
+  frequency              String? // one_time | recurring | emergency | overflow
+  startDate              DateTime?
+  deadline               DateTime?
+  estimatedValue         Decimal?        @db.Decimal(14, 2)
+  currentProvider        String?
+  currentProviderIssues  String[]        @default([])
+  openToAlternatives     Boolean?
+  status                 FactStatus      @default(INFERRED)
+  confidence             Float           @default(0.4)
+  missingFields          String[]        @default([])
+  createdAt              DateTime        @default(now())
+  updatedAt              DateTime        @updatedAt
+
+  company       Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  project       Project?      @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  opportunities Opportunity[]
+  matches       Match[]
+
+  @@index([orgId, companyId])
+}
+
+model SupplierAvailability {
+  id            String     @id @default(cuid())
+  orgId         String
+  companyId     String
+  productId     String?
+  description   String
+  quantity      Decimal?   @db.Decimal(14, 3)
+  unit          String?
+  unitCost      Decimal?   @db.Decimal(12, 4)
+  freightBasis  String?
+  leadTimeDays  Int?
+  location      String?
+  availableFrom DateTime?
+  availableTo   DateTime?
+  minimumOrder  Decimal?   @db.Decimal(14, 3)
+  status        FactStatus @default(CLAIMED)
+  confidence    Float      @default(0.5)
+  verifiedAt    DateTime?
+  staleAfter    DateTime?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  matches Match[]
+
+  @@index([orgId, companyId])
+}
+
+model SubcontractorCapacity {
+  id                  String     @id @default(cuid())
+  orgId               String
+  companyId           String
+  capabilities        String[]   @default([])
+  territories         String[]   @default([])
+  crewCount           Int?
+  shiftAvailability   String[]   @default([])
+  minimumContract     Decimal?   @db.Decimal(14, 2)
+  earliestStart       DateTime?
+  insuranceLimits     Json       @default("{}")
+  licenses            String[]   @default([])
+  hourlyRate          Decimal?   @db.Decimal(12, 2)
+  monthlyRate         Decimal?   @db.Decimal(12, 2)
+  suppliesConsumables Boolean?
+  status              FactStatus @default(CLAIMED)
+  confidence          Float      @default(0.5)
+  verifiedAt          DateTime?
+  staleAfter          DateTime?
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  matches Match[]
+
+  @@index([orgId, companyId])
+}
+
+// ---------------------------------------------------------------------------
+// Opportunities and deals
+// ---------------------------------------------------------------------------
+
+model Opportunity {
+  id                        String            @id @default(cuid())
+  orgId                     String
+  name                      String
+  type                      OpportunityType   @default(UNCLASSIFIED)
+  stage                     PipelineStage     @default(SIGNAL_DISCOVERED)
+  status                    OpportunityStatus @default(ACTIVE)
+  priority                  Priority          @default(MEDIUM)
+  ownerId                   String?
+  laneId                    String?
+  signalId                  String?
+  buyerNeedId               String?
+  projectId                 String?
+  awardId                   String?
+  location                  String?
+  state                     String?
+  summary                   String
+  estimatedValue            Decimal?          @db.Decimal(14, 2)
+  estimatedGrossProfit      Decimal?          @db.Decimal(14, 2)
+  closingProbability        Float             @default(0.1)
+  fulfillmentConfidence     Float             @default(0.3)
+  expectedValue             Decimal?          @db.Decimal(14, 2)
+  urgency                   Float             @default(0.3)
+  informationCompleteness   Float             @default(0)
+  relationshipVulnerability Float             @default(0)
+  primaryBlocker            String?
+  missingInformation        String[]          @default([])
+  wedgeStrategy             String?
+  aiExplanation             String?
+  dueDate                   DateTime?
+  lastActivityAt            DateTime          @default(now())
+  stageEnteredAt            DateTime          @default(now())
+  closedAt                  DateTime?
+  lostReason                String?
+  createdAt                 DateTime          @default(now())
+  updatedAt                 DateTime          @updatedAt
+
+  org       Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  owner     User?            @relation("OpportunityOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  lane      DealLane?        @relation(fields: [laneId], references: [id], onDelete: SetNull)
+  signal    DiscoverySignal? @relation(fields: [signalId], references: [id], onDelete: SetNull)
+  buyerNeed BuyerNeed?       @relation(fields: [buyerNeedId], references: [id], onDelete: SetNull)
+  project   Project?         @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  award     ContractAward?   @relation(fields: [awardId], references: [id], onDelete: SetNull)
+
+  parties         OpportunityParty[]
+  scores          OpportunityScore[]
+  statusHistory   DealStatusHistory[]
+  matches         Match[]
+  deal            Deal?
+  quotes          Quote[]
+  callAssignments CallAssignment[]
+  tasks           Task[]
+  nextActions     NextAction[]
+  escalations     Escalation[]
+  approvals       Approval[]
+  documents       Document[]
+  messages        Message[]
+  facts           ExtractedFact[]
+  commitments     Commitment[]
+  activityEvents  ActivityEvent[]
+  recommendations AIRecommendation[]
+  decisions       AIDecision[]
+
+  @@index([orgId, stage])
+  @@index([orgId, status, priority])
+  @@index([orgId, type])
+}
+
+model OpportunityParty {
+  id            String    @id @default(cuid())
+  opportunityId String
+  companyId     String
+  role          PartyRole
+  isPrimary     Boolean   @default(false)
+  notes         String?
+  createdAt     DateTime  @default(now())
+
+  opportunity Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  company     Company     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([opportunityId, companyId, role])
+}
+
+/// Append-only. Each scoring run writes a new row; latest by createdAt wins.
+model OpportunityScore {
+  id                      String   @id @default(cuid())
+  opportunityId           String
+  needStrength            Float
+  capabilityMatch         Float
+  urgency                 Float
+  informationCompleteness Float
+  contactability          Float
+  switchingWillingness    Float
+  incumbentWeakness       Float
+  supplyAvailability      Float
+  expectedGrossProfit     Decimal  @db.Decimal(14, 2)
+  closingProbability      Float
+  repeatPotential         Float
+  expansionValue          Float
+  fulfillmentRisk         Float
+  paymentRisk             Float
+  complianceRisk          Float
+  competitivePressure     Float
+  timeToClose             Float
+  compositeScore          Float
+  expectedValue           Decimal  @db.Decimal(14, 2)
+  reasons                 Json     @default("[]")
+  modelVersion            String
+  createdAt               DateTime @default(now())
+
+  opportunity Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+
+  @@index([opportunityId, createdAt])
+}
+
+/// Append-only stage/status ledger.
+model DealStatusHistory {
+  id            String             @id @default(cuid())
+  opportunityId String
+  fromStage     PipelineStage?
+  toStage       PipelineStage
+  fromStatus    OpportunityStatus?
+  toStatus      OpportunityStatus
+  reason        String
+  actorType     String // ai | user | system
+  actorId       String?
+  decisionId    String?
+  createdAt     DateTime           @default(now())
+
+  opportunity Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+
+  @@index([opportunityId, createdAt])
+}
+
+model Deal {
+  id                String          @id @default(cuid())
+  orgId             String
+  opportunityId     String          @unique
+  type              OpportunityType
+  configuration     Json            @default("{}")
+  buyerPrice        Decimal?        @db.Decimal(14, 2)
+  supplierCost      Decimal?        @db.Decimal(14, 2)
+  freightCost       Decimal?        @db.Decimal(14, 2)
+  otherCost         Decimal?        @db.Decimal(14, 2)
+  grossProfit       Decimal?        @db.Decimal(14, 2)
+  grossMarginPct    Float?
+  paymentTerms      String?
+  deliveryTerms     String?
+  startDate         DateTime?
+  endDate           DateTime?
+  risks             String[]        @default([])
+  missingTerms      String[]        @default([])
+  requiredApprovals String[]        @default([])
+  isConfigurable    Boolean         @default(false)
+  configuredAt      DateTime?
+  configuredBy      String          @default("ai")
+  version           Int             @default(1)
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  opportunity Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  costs       Cost[]
+  margins     Margin[]
+  approvals   Approval[]
+  documents   Document[]
+
+  @@index([orgId])
+}
+
+model Cost {
+  id        String     @id @default(cuid())
+  dealId    String
+  label     String
+  category  String
+  amount    Decimal    @db.Decimal(14, 2)
+  status    FactStatus @default(ESTIMATED)
+  sourceRef String?
+  createdAt DateTime   @default(now())
+
+  deal Deal @relation(fields: [dealId], references: [id], onDelete: Cascade)
+
+  @@index([dealId])
+}
+
+model Margin {
+  id             String   @id @default(cuid())
+  dealId         String
+  revenue        Decimal  @db.Decimal(14, 2)
+  cost           Decimal  @db.Decimal(14, 2)
+  grossProfit    Decimal  @db.Decimal(14, 2)
+  grossMarginPct Float
+  belowThreshold Boolean  @default(false)
+  thresholdPct   Float?
+  computedAt     DateTime @default(now())
+
+  deal Deal @relation(fields: [dealId], references: [id], onDelete: Cascade)
+
+  @@index([dealId])
+}
+
+model Match {
+  id                   String   @id @default(cuid())
+  orgId                String
+  opportunityId        String
+  candidateCompanyId   String
+  buyerNeedId          String?
+  supplyId             String?
+  capacityId           String?
+  score                Float
+  rank                 Int      @default(0)
+  explanation          String
+  confirmedFactors     Json     @default("[]")
+  potentialMismatches  Json     @default("[]")
+  missingInformation   String[] @default([])
+  estimatedCost        Decimal? @db.Decimal(14, 2)
+  estimatedRevenue     Decimal? @db.Decimal(14, 2)
+  estimatedGrossProfit Decimal? @db.Decimal(14, 2)
+  closingProbability   Float    @default(0.2)
+  fulfillmentRisk      Float    @default(0.5)
+  callsNeeded          String[] @default([])
+  isSelected           Boolean  @default(false)
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  opportunity Opportunity            @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  candidate   Company                @relation("MatchCandidate", fields: [candidateCompanyId], references: [id], onDelete: Cascade)
+  buyerNeed   BuyerNeed?             @relation(fields: [buyerNeedId], references: [id], onDelete: SetNull)
+  supply      SupplierAvailability?  @relation(fields: [supplyId], references: [id], onDelete: SetNull)
+  capacity    SubcontractorCapacity? @relation(fields: [capacityId], references: [id], onDelete: SetNull)
+
+  @@unique([opportunityId, candidateCompanyId])
+  @@index([orgId])
+}
+
+model Quote {
+  id            String      @id @default(cuid())
+  orgId         String
+  opportunityId String
+  companyId     String?
+  direction     String      @default("outbound") // outbound = we quote buyer; inbound = supplier quotes us
+  quoteNumber   String
+  status        QuoteStatus @default(DRAFT)
+  subtotal      Decimal     @default(0) @db.Decimal(14, 2)
+  freight       Decimal     @default(0) @db.Decimal(14, 2)
+  total         Decimal     @default(0) @db.Decimal(14, 2)
+  costTotal     Decimal     @default(0) @db.Decimal(14, 2)
+  grossProfit   Decimal     @default(0) @db.Decimal(14, 2)
+  currency      String      @default("USD")
+  validUntil    DateTime?
+  sentAt        DateTime?
+  respondedAt   DateTime?
+  notes         String?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  opportunity Opportunity     @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  company     Company?        @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  lineItems   QuoteLineItem[]
+
+  @@unique([orgId, quoteNumber])
+  @@index([orgId, status])
+}
+
+model QuoteLineItem {
+  id          String  @id @default(cuid())
+  quoteId     String
+  productId   String?
+  description String
+  quantity    Decimal @db.Decimal(14, 3)
+  unit        String  @default("each")
+  unitCost    Decimal @default(0) @db.Decimal(12, 4)
+  unitPrice   Decimal @default(0) @db.Decimal(12, 4)
+  lineCost    Decimal @default(0) @db.Decimal(14, 2)
+  lineTotal   Decimal @default(0) @db.Decimal(14, 2)
+  sortOrder   Int     @default(0)
+  notes       String?
+
+  quote   Quote    @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  product Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+
+  @@index([quoteId])
+}
+
+// ---------------------------------------------------------------------------
+// Calling
+// ---------------------------------------------------------------------------
+
+model CallAssignment {
+  id                 String               @id @default(cuid())
+  orgId              String
+  opportunityId      String?
+  companyId          String
+  contactId          String?
+  assignedToId       String?
+  scriptId           String?
+  callType           CallType
+  status             CallAssignmentStatus @default(PENDING)
+  priority           Priority             @default(MEDIUM)
+  reason             String
+  objective          String
+  knownInformation   Json                 @default("[]")
+  missingInformation Json                 @default("[]")
+  requiredQuestions  Json                 @default("[]")
+  optionalQuestions  Json                 @default("[]")
+  desiredCommitment  String
+  mayOffer           String[]             @default([])
+  mayNotPromise      String[]             @default([])
+  escalateIf         String[]             @default([])
+  previousSummary    String?
+  attemptCount       Int                  @default(0)
+  maxAttempts        Int                  @default(4)
+  scheduledFor       DateTime?
+  dueDate            DateTime?
+  completedAt        DateTime?
+  assignmentReason   String?
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+
+  opportunity Opportunity?    @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  company     Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  contact     Contact?        @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  assignedTo  User?           @relation("AssignedCaller", fields: [assignedToId], references: [id], onDelete: SetNull)
+  script      ScriptTemplate? @relation(fields: [scriptId], references: [id], onDelete: SetNull)
+  calls       Call[]
+
+  @@index([orgId, assignedToId, status])
+  @@index([orgId, status, priority])
+}
+
+model Call {
+  id               String        @id @default(cuid())
+  orgId            String
+  assignmentId     String?
+  contactId        String?
+  callerId         String?
+  direction        CallDirection @default(OUTBOUND)
+  providerCallId   String?
+  fromNumber       String?
+  toNumber         String?
+  outcome          CallOutcome?
+  startedAt        DateTime      @default(now())
+  endedAt          DateTime?
+  durationSec      Int?
+  talkRatio        Float?
+  recordingConsent Boolean       @default(false)
+  consentBasis     String?
+  notes            String?
+  createdAt        DateTime      @default(now())
+
+  assignment  CallAssignment? @relation(fields: [assignmentId], references: [id], onDelete: SetNull)
+  contact     Contact?        @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  caller      User?           @relation(fields: [callerId], references: [id], onDelete: SetNull)
+  recording   CallRecording?
+  transcript  Transcript?
+  facts       ExtractedFact[]
+  commitments Commitment[]
+  objections  Objection[]
+
+  @@index([orgId, callerId, startedAt])
+}
+
+model CallRecording {
+  id                 String    @id @default(cuid())
+  callId             String    @unique
+  storageKey         String
+  mimeType           String    @default("audio/mpeg")
+  durationSec        Int?
+  sizeBytes          Int?
+  provider           String
+  announcementPlayed Boolean   @default(false)
+  retentionUntil     DateTime?
+  createdAt          DateTime  @default(now())
+
+  call Call @relation(fields: [callId], references: [id], onDelete: Cascade)
+}
+
+model Transcript {
+  id          String    @id @default(cuid())
+  callId      String    @unique
+  provider    String
+  language    String    @default("en")
+  text        String
+  segments    Json      @default("[]")
+  summary     String?
+  redactions  Json      @default("[]")
+  processedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  call  Call            @relation(fields: [callId], references: [id], onDelete: Cascade)
+  facts ExtractedFact[]
+}
+
+model ExtractedFact {
+  id               String     @id @default(cuid())
+  orgId            String
+  transcriptId     String?
+  callId           String?
+  evidenceId       String?
+  companyId        String?
+  contactId        String?
+  opportunityId    String?
+  factKey          String
+  factValue        String
+  valueJson        Json       @default("{}")
+  status           FactStatus @default(CLAIMED)
+  confidence       Float      @default(0.5)
+  sourceQuote      String?
+  timestampSec     Int?
+  capturedAt       DateTime   @default(now())
+  reverifyAfter    DateTime?
+  supersededById   String?
+  appliedTo        String[]   @default([])
+  extractorVersion String     @default("v1")
+
+  transcript  Transcript?     @relation(fields: [transcriptId], references: [id], onDelete: Cascade)
+  call        Call?           @relation(fields: [callId], references: [id], onDelete: Cascade)
+  evidence    SourceEvidence? @relation(fields: [evidenceId], references: [id], onDelete: SetNull)
+  company     Company?        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  contact     Contact?        @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  opportunity Opportunity?    @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, factKey])
+  @@index([opportunityId])
+}
+
+model Commitment {
+  id            String    @id @default(cuid())
+  orgId         String
+  callId        String?
+  contactId     String?
+  opportunityId String?
+  madeBy        String // us | them
+  text          String
+  dueDate       DateTime?
+  isAuthorized  Boolean   @default(true)
+  fulfilled     Boolean   @default(false)
+  fulfilledAt   DateTime?
+  createdAt     DateTime  @default(now())
+
+  call        Call?        @relation(fields: [callId], references: [id], onDelete: SetNull)
+  contact     Contact?     @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  opportunity Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, fulfilled])
+}
+
+model Objection {
+  id           String   @id @default(cuid())
+  orgId        String
+  callId       String?
+  contactId    String?
+  category     String
+  text         String
+  handled      Boolean  @default(false)
+  responseUsed String?
+  createdAt    DateTime @default(now())
+
+  call    Call?    @relation(fields: [callId], references: [id], onDelete: SetNull)
+  contact Contact? @relation(fields: [contactId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, category])
+}
+
+// ---------------------------------------------------------------------------
+// Work management
+// ---------------------------------------------------------------------------
+
+model Task {
+  id               String     @id @default(cuid())
+  orgId            String
+  opportunityId    String?
+  ownerId          String?
+  title            String
+  description      String?
+  kind             String     @default("general")
+  status           TaskStatus @default(OPEN)
+  priority         Priority   @default(MEDIUM)
+  dueDate          DateTime?
+  completedAt      DateTime?
+  createdByProcess String     @default("ai")
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
+
+  opportunity Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  owner       User?        @relation("TaskOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, status, dueDate])
+}
+
+model NextAction {
+  id                  String          @id @default(cuid())
+  orgId               String
+  opportunityId       String
+  type                NextActionType
+  reason              String
+  ownerId             String?
+  ownerRole           String?
+  dueDate             DateTime
+  inputsRequired      String[]        @default([])
+  expectedResult      String
+  completionCriteria  String
+  fallbackAction      NextActionType?
+  escalationCondition String?
+  isCurrent           Boolean         @default(true)
+  completedAt         DateTime?
+  createdByProcess    String          @default("ai")
+  createdAt           DateTime        @default(now())
+
+  opportunity Opportunity @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, isCurrent, dueDate])
+  @@index([opportunityId, isCurrent])
+}
+
+model Escalation {
+  id              String           @id @default(cuid())
+  orgId           String
+  opportunityId   String?
+  reason          EscalationReason
+  severity        Priority         @default(HIGH)
+  status          EscalationStatus @default(OPEN)
+  title           String
+  detail          String
+  evidence        Json             @default("[]")
+  raisedById      String?
+  raisedByProcess String           @default("ai")
+  assigneeId      String?
+  resolutionNote  String?
+  resolvedAt      DateTime?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  opportunity Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  raisedBy    User?        @relation("EscalationRaisedBy", fields: [raisedById], references: [id], onDelete: SetNull)
+  assignee    User?        @relation("EscalationAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, status, severity])
+}
+
+model Approval {
+  id            String         @id @default(cuid())
+  orgId         String
+  opportunityId String?
+  dealId        String?
+  documentId    String?
+  type          ApprovalType
+  status        ApprovalStatus @default(PENDING)
+  title         String
+  summary       String
+  amount        Decimal?       @db.Decimal(14, 2)
+  requiredRole  String         @default("DEAL_MANAGER")
+  requestedById String?
+  decidedById   String?
+  decisionNote  String?
+  decidedAt     DateTime?
+  expiresAt     DateTime?
+  createdAt     DateTime       @default(now())
+
+  opportunity Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  deal        Deal?        @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  document    Document?    @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  requestedBy User?        @relation("ApprovalRequester", fields: [requestedById], references: [id], onDelete: SetNull)
+  decidedBy   User?        @relation("ApprovalDecider", fields: [decidedById], references: [id], onDelete: SetNull)
+
+  @@index([orgId, status])
+}
+
+model Document {
+  id               String         @id @default(cuid())
+  orgId            String
+  opportunityId    String?
+  dealId           String?
+  companyId        String?
+  kind             DocumentKind
+  status           DocumentStatus @default(DRAFT)
+  title            String
+  body             String?
+  storageKey       String?
+  mimeType         String?
+  isConfidential   Boolean        @default(true)
+  requiresApproval Boolean        @default(false)
+  generatedBy      String         @default("ai")
+  modelVersion     String?
+  sentAt           DateTime?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  opportunity Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  deal        Deal?        @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  company     Company?     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  approvals   Approval[]
+
+  @@index([orgId, kind, status])
+}
+
+model Message {
+  id                String         @id @default(cuid())
+  orgId             String
+  opportunityId     String?
+  contactId         String?
+  channel           MessageChannel
+  direction         String         @default("outbound")
+  status            MessageStatus  @default(DRAFT)
+  subject           String?
+  body              String
+  provider          String?
+  providerMessageId String?
+  sentAt            DateTime?
+  createdAt         DateTime       @default(now())
+
+  opportunity Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  contact     Contact?     @relation(fields: [contactId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, status])
+}
+
+model Notification {
+  id        String    @id @default(cuid())
+  orgId     String
+  userId    String
+  kind      String
+  title     String
+  body      String
+  link      String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt])
+}
+
+/// Append-only activity feed.
+model ActivityEvent {
+  id            String   @id @default(cuid())
+  orgId         String
+  opportunityId String?
+  companyId     String?
+  contactId     String?
+  userId        String?
+  actorType     String   @default("ai")
+  verb          String
+  summary       String
+  payload       Json     @default("{}")
+  createdAt     DateTime @default(now())
+
+  opportunity Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  company     Company?     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  contact     Contact?     @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  user        User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, createdAt])
+  @@index([opportunityId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// AI governance
+// ---------------------------------------------------------------------------
+
+model AIRecommendation {
+  id            String   @id @default(cuid())
+  orgId         String
+  opportunityId String?
+  kind          String
+  title         String
+  rationale     String
+  payload       Json     @default("{}")
+  confidence    Float    @default(0.5)
+  status        String   @default("open") // open | accepted | rejected | expired
+  createdAt     DateTime @default(now())
+
+  opportunity Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, status])
+}
+
+/// Append-only decision ledger. Every autonomous action writes one row.
+model AIDecision {
+  id            String    @id @default(cuid())
+  orgId         String
+  opportunityId String?
+  process       String
+  decision      String
+  reason        String
+  inputs        Json      @default("{}")
+  outputs       Json      @default("{}")
+  confidence    Float     @default(0.5)
+  rulesApplied  String[]  @default([])
+  modelName     String
+  promptVersion String
+  outcome       String?
+  outcomeAt     DateTime?
+  createdAt     DateTime  @default(now())
+
+  opportunity Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  overrides   AIOverride[]
+
+  @@index([orgId, process, createdAt])
+}
+
+/// Append-only record of humans overriding AI decisions.
+model AIOverride {
+  id          String   @id @default(cuid())
+  orgId       String
+  decisionId  String
+  userId      String
+  previous    Json     @default("{}")
+  replacement Json     @default("{}")
+  reason      String
+  createdAt   DateTime @default(now())
+
+  decision AIDecision @relation(fields: [decisionId], references: [id], onDelete: Cascade)
+  user     User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, createdAt])
+}
+
+model PerformanceMetric {
+  id          String   @id @default(cuid())
+  orgId       String
+  userId      String?
+  periodStart DateTime
+  periodEnd   DateTime
+  scope       String   @default("caller")
+  metrics     Json     @default("{}")
+  computedAt  DateTime @default(now())
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, userId, periodStart])
+}
+
+model DealLane {
+  id                   String             @id @default(cuid())
+  orgId                String
+  key                  String
+  name                 String
+  description          String
+  opportunityType      OpportunityType
+  industryId           String?
+  targetProfile        Json               @default("{}")
+  metrics              Json               @default("{}")
+  laneScore            Float              @default(0)
+  recommendation       LaneRecommendation @default(INSUFFICIENT_DATA)
+  recommendationReason String?
+  sampleSize           Int                @default(0)
+  isActive             Boolean            @default(true)
+  evaluatedAt          DateTime?
+  createdAt            DateTime           @default(now())
+
+  org           Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  industry      Industry?     @relation(fields: [industryId], references: [id], onDelete: SetNull)
+  opportunities Opportunity[]
+
+  @@unique([orgId, key])
+}
+
+model SuppressionEntry {
+  id        String           @id @default(cuid())
+  orgId     String
+  contactId String?
+  phone     String?
+  email     String?
+  scope     SuppressionScope
+  reason    String
+  source    String           @default("manual")
+  createdAt DateTime         @default(now())
+  expiresAt DateTime?
+
+  contact Contact? @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, phone])
+  @@index([orgId, email])
+}
+
+/// Append-only security/compliance audit log.
+model AuditEvent {
+  id         String   @id @default(cuid())
+  orgId      String
+  userId     String?
+  actorType  String   @default("user")
+  action     String
+  entityType String
+  entityId   String?
+  ip         String?
+  userAgent  String?
+  metadata   Json     @default("{}")
+  createdAt  DateTime @default(now())
+
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user User?        @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, createdAt])
+  @@index([entityType, entityId])
+}
+
+// ---------------------------------------------------------------------------
+// Durable background jobs
+// ---------------------------------------------------------------------------
+
+model Job {
+  id             String    @id @default(cuid())
+  orgId          String
+  kind           String
+  payload        Json      @default("{}")
+  status         JobStatus @default(QUEUED)
+  priority       Int       @default(100)
+  runAfter       DateTime  @default(now())
+  attempts       Int       @default(0)
+  maxAttempts    Int       @default(3)
+  lockedAt       DateTime?
+  lockedBy       String?
+  lastError      String?
+  result         Json?
+  startedAt      DateTime?
+  finishedAt     DateTime?
+  idempotencyKey String?
+  createdAt      DateTime  @default(now())
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, idempotencyKey])
+  @@index([status, runAfter, priority])
+}
+
+model DailyPlan {
+  id          String   @id @default(cuid())
+  orgId       String
+  planDate    DateTime
+  priorities  Json     @default("[]")
+  narrative   String
+  metrics     Json     @default("{}")
+  generatedBy String   @default("ai")
+  createdAt   DateTime @default(now())
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, planDate])
+}
