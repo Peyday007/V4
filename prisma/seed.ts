@@ -31,8 +31,8 @@ import { getTranscription } from '../lib/providers/transcription';
 const prisma = new PrismaClient();
 const DEMO_PASSWORD = 'demo-password-123';
 
-async function main() {
-  await guardDestructiveReset('meridian-ops');
+export async function seedDemoData(options: { confirmReset?: boolean } = {}) {
+  await guardDestructiveReset('meridian-ops', options.confirmReset === true);
 
   console.info('▸ Resetting demo data…');
   await resetOrg('meridian-ops');
@@ -388,6 +388,8 @@ async function main() {
   console.info('    admin@dealdispatch.test      Administrator');
   console.info('─────────────────────────────────────────────');
   console.info(`\n${plan.narrative}\n`);
+
+  return { counts, narrative: plan.narrative };
 }
 
 // ---------------------------------------------------------------------------
@@ -397,7 +399,7 @@ async function main() {
  * database and catastrophic on one holding real deals, so against a production
  * environment it refuses unless the operator explicitly opts in.
  */
-async function guardDestructiveReset(slug: string) {
+async function guardDestructiveReset(slug: string, confirmedByCaller = false) {
   const existing = await prisma.organization.findUnique({ where: { slug } });
   if (!existing) return;
 
@@ -407,16 +409,16 @@ async function guardDestructiveReset(slug: string) {
   ]);
 
   const isProduction = process.env.NODE_ENV === 'production';
-  const confirmed = process.env.SEED_CONFIRM_RESET === 'yes';
+  const confirmed = confirmedByCaller || process.env.SEED_CONFIRM_RESET === 'yes';
 
   if (isProduction && !confirmed) {
-    console.error(
-      `\nRefusing to seed: organisation "${slug}" already exists in a production environment ` +
-        `and holds ${opportunities} opportunity(ies) and ${calls} call(s).\n\n` +
-        'Seeding DELETES that organisation and everything under it.\n' +
-        'If that is genuinely what you want, re-run with SEED_CONFIRM_RESET=yes.\n',
+    // Thrown rather than exited so an API caller can report it as a 409
+    // instead of killing the process.
+    throw new Error(
+      `Refusing to seed: organisation "${slug}" already exists and holds ${opportunities} ` +
+        `opportunity(ies) and ${calls} call(s). Seeding DELETES that organisation and everything ` +
+        'under it. To do it anyway, re-run with confirmReset (API) or SEED_CONFIRM_RESET=yes (CLI).',
     );
-    process.exit(1);
   }
 
   if (opportunities > 0 || calls > 0) {
@@ -1369,11 +1371,16 @@ async function summarize(orgId: string) {
   };
 }
 
-main()
-  .catch((error) => {
-    console.error('Seed failed:', error);
-    process.exit(1);
-  })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });
+/** CLI entry point. Skipped when this module is imported by the application. */
+const invokedDirectly = /prisma[\\/]seed\.ts$/.test(process.argv[1] ?? '');
+
+if (invokedDirectly) {
+  seedDemoData()
+    .catch((error) => {
+      console.error('\nSeed failed:', error instanceof Error ? error.message : error);
+      process.exit(1);
+    })
+    .finally(async () => {
+      await prisma.$disconnect();
+    });
+}

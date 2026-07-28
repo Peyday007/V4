@@ -62,7 +62,21 @@ Expect a working site with an empty database — a login page you cannot get pas
 
 ## 5. Seed it
 
-Run the seed once from your machine, pointed at the production database:
+**Easiest — from your browser.** Visit this once, with your `CRON_SECRET`:
+
+```
+https://your-project.vercel.app/api/admin/seed?secret=YOUR_CRON_SECRET
+```
+
+You'll get back JSON listing what was created. Then sign in.
+
+This route uses `CRON_SECRET` rather than a login, because a fresh deployment
+has no account to authorise with yet. It refuses to run against an organisation
+already holding real work unless you add `&confirm=reset`. Re-running is safe:
+the seed rebuilds its organisation from scratch, so an attempt cut short by a
+function timeout self-heals on the next try.
+
+**Alternative — from your machine**, pointed at the production database:
 
 ```bash
 git clone <your repo> && cd V4
@@ -78,7 +92,13 @@ This creates the organisation, roles, users, taxonomy, data sources and deal lan
 
 Then sign in at `https://your-project.vercel.app/login` as `owner@dealdispatch.test` / `demo-password-123`.
 
-> **The seed is destructive.** It deletes and rebuilds its organisation, so never run it against a database holding real work. With `NODE_ENV=production` it refuses outright unless you pass `SEED_CONFIRM_RESET=yes`, which exists so you have to mean it.
+> **The seed is destructive.** It deletes and rebuilds its organisation, so never run it against a database holding real work. In production it refuses outright unless you pass `SEED_CONFIRM_RESET=yes` (CLI) or `&confirm=reset` (browser), which exists so you have to mean it.
+
+**Windows note:** the `VAR="value" npm run ...` prefix is bash syntax and does
+nothing in PowerShell. Use the browser method above, or set the variables first:
+> ```powershell
+> $env:DATABASE_URL="<pooled url>"; $env:DIRECT_URL="<direct url>"; npm run db:seed
+> ```
 
 ## 6. Change the demo passwords
 
@@ -169,6 +189,8 @@ Same environment variables. When you have your own Postgres rather than a pooler
 **`Invalid environment configuration — SESSION_SECRET: String must contain at least 32 character(s)`.** Exactly what it says; regenerate with `openssl rand -base64 48`.
 
 **Login page loads but no account works.** The seed hasn't run. See step 5.
+
+**`/api/admin/seed` returns 409.** The database already holds data and the guard is refusing to wipe it. Add `&confirm=reset` if replacing it is what you want.
 
 **`/api/cron` returns 503.** `CRON_SECRET` isn't set in Vercel. Scheduled runs are disabled rather than left open.
 
