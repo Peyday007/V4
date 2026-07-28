@@ -107,6 +107,8 @@ To watch a full cycle yourself:
 
 **Below the sample size, the system says nothing.** Deal-lane recommendations refuse to make a strategic call below the configured minimum sample. Three wins in a row is noise, and telling an operator to scale on noise is worse than staying silent.
 
+**Never buy demand you cannot fulfil.** The advertising plan gates every recommendation on confirmed fulfillment capacity in that specific territory, and works the affordable cost-per-lead backwards from your actual margin and close rate rather than from an industry benchmark. Budget is capped by how many deals your providers can absorb — buying past that buys refusals.
+
 **Callers are measured on outcomes.** Confirmed needs, pricing obtained, matches enabled, gross profit influenced — not dials. Coaching recommendations are advisory only; the system flags evidence for a manager and never takes action against a worker.
 
 ---
