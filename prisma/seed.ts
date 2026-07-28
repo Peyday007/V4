@@ -408,6 +408,13 @@ async function guardDestructiveReset(slug: string, confirmedByCaller = false) {
     prisma.call.count({ where: { orgId: existing.id } }),
   ]);
 
+  // An organisation with no opportunities and no calls holds nothing worth
+  // protecting — it is the residue of a seed that failed partway. Blocking on
+  // its mere existence strands the operator with an empty database and a
+  // refusal, which is exactly the case this guard was meant to help with.
+  const holdsRealWork = opportunities > 0 || calls > 0;
+  if (!holdsRealWork) return;
+
   const isProduction = process.env.NODE_ENV === 'production';
   const confirmed = confirmedByCaller || process.env.SEED_CONFIRM_RESET === 'yes';
 
