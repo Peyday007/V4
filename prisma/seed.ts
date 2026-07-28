@@ -31,7 +31,13 @@ import { getTranscription } from '../lib/providers/transcription';
 const prisma = new PrismaClient();
 const DEMO_PASSWORD = 'demo-password-123';
 
-export async function seedDemoData(options: { confirmReset?: boolean } = {}) {
+/**
+ * Phase one: everything needed to sign in and use the application —
+ * organisation, permissions, roles, users, taxonomy, scripts, data sources,
+ * deal lanes and the supply-side graph. Deliberately light on database round
+ * trips so it completes well inside a serverless function's time limit.
+ */
+export async function seedCore(options: { confirmReset?: boolean } = {}) {
   await guardDestructiveReset('meridian-ops', options.confirmReset === true);
 
   console.info('▸ Resetting demo data…');
@@ -301,6 +307,21 @@ export async function seedDemoData(options: { confirmReset?: boolean } = {}) {
   console.info('▸ Seeding supply-side companies…');
   await seedSupplySide(org.id, capabilities, industries);
 
+  return { orgId: org.id, slug: org.slug };
+}
+
+/**
+ * Phase two: the demonstration content.
+ *
+ * Runs the real engines — discovery, promotion, scoring, matching, seven
+ * conversations through the transcript pipeline — so the resulting data is
+ * produced the same way live data would be. It is much heavier than phase one
+ * and is kept separate so a serverless function can finish phase one, let
+ * someone sign in, and come back for this.
+ */
+export async function seedDemoContent() {
+  const org = await prisma.organization.findUniqueOrThrow({ where: { slug: 'meridian-ops' } });
+
   // --- Run the real discovery pipeline --------------------------------------
   console.info('▸ Running discovery across all sources…');
   const discovery = await runAllDiscovery(org.id);
@@ -323,6 +344,22 @@ export async function seedDemoData(options: { confirmReset?: boolean } = {}) {
     await scoreOpportunity(opportunity.id);
     await determineNextAction(opportunity.id);
   }
+
+  return { orgId: org.id };
+}
+
+/**
+ * Phase three: the recorded conversations and everything derived from them.
+ *
+ * The heaviest phase by far — each call runs the full transcript pipeline and
+ * then re-derives scoring, matching, deal configuration and next actions — so
+ * it is separated from discovery to keep both inside a function time limit.
+ */
+export async function seedConversations() {
+  const org = await prisma.organization.findUniqueOrThrow({ where: { slug: 'meridian-ops' } });
+  const dana = await prisma.user.findFirstOrThrow({ where: { orgId: org.id, email: 'dana@dealdispatch.test' } });
+  const marcus = await prisma.user.findFirstOrThrow({ where: { orgId: org.id, email: 'marcus@dealdispatch.test' } });
+  const manager = await prisma.user.findFirstOrThrow({ where: { orgId: org.id, email: 'manager@dealdispatch.test' } });
 
   // --- Demonstration calls --------------------------------------------------
   console.info('▸ Running demonstration calls through the real transcript pipeline…');
@@ -1376,6 +1413,13 @@ async function summarize(orgId: string) {
     'Deal lanes': lanes,
     'Current next actions': nextActions,
   };
+}
+
+/** Runs both phases. Used by the CLI, where there is no function timeout. */
+export async function seedDemoData(options: { confirmReset?: boolean } = {}) {
+  await seedCore(options);
+  await seedDemoContent();
+  return seedConversations();
 }
 
 /** CLI entry point. Skipped when this module is imported by the application. */

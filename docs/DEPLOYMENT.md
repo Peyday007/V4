@@ -68,13 +68,24 @@ Expect a working site with an empty database — a login page you cannot get pas
 https://your-project.vercel.app/api/admin/seed?secret=YOUR_CRON_SECRET
 ```
 
-You'll get back JSON listing what was created. Then sign in.
+**You can sign in as soon as that returns.** The response contains a link to
+the next step; each one is optional and each returns the link to the one after
+it.
+
+| Step | Creates | Local timing |
+|---|---|---|
+| `core` (default) | Organisation, roles, users, taxonomy, sources, lanes, supply-side companies | ~0.6s |
+| `&step=demo` | Discovery, signals, opportunities, matching, scoring | ~1.9s |
+| `&step=calls` | Recorded conversations, extracted facts, deals, escalations, approvals | ~3.1s |
+
+It is split because the whole seed runs past a serverless function's 60-second
+limit against a remote database — a round trip that costs microseconds locally
+costs milliseconds to Neon, and the seed makes thousands of them. Each phase
+now has well over ten times the headroom it needs.
 
 This route uses `CRON_SECRET` rather than a login, because a fresh deployment
-has no account to authorise with yet. It refuses to run against an organisation
-already holding real work unless you add `&confirm=reset`. Re-running is safe:
-the seed rebuilds its organisation from scratch, so an attempt cut short by a
-function timeout self-heals on the next try.
+has no account to authorise with yet. Phase one refuses to run against an
+organisation already holding real work unless you add `&confirm=reset`.
 
 **Alternative — from your machine**, pointed at the production database:
 
@@ -190,7 +201,9 @@ Same environment variables. When you have your own Postgres rather than a pooler
 
 **Login page loads but no account works.** The seed hasn't run. See step 5.
 
-**`/api/admin/seed` returns 409.** The database already holds data and the guard is refusing to wipe it. Add `&confirm=reset` if replacing it is what you want.
+**`/api/admin/seed` returns 409.** The database already holds real work and the guard is refusing to wipe it. Add `&confirm=reset` if replacing it is what you want. An organisation with no opportunities and no calls is treated as leftovers from a failed run and replaced without asking.
+
+**`/api/admin/seed` returns 504 GATEWAY_TIMEOUT.** A phase exceeded the function limit. Re-run that phase; it is safe to repeat. If it keeps timing out, your database is far from your Vercel region — moving them to the same region removes most of the latency.
 
 **`/api/cron` returns 503.** `CRON_SECRET` isn't set in Vercel. Scheduled runs are disabled rather than left open.
 

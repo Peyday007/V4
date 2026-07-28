@@ -1,7 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import { prisma } from '@/lib/db';
 import { env } from '@/lib/env';
-import { seedDemoData } from '@/prisma/seed';
+import { seedConversations, seedCore, seedDemoContent } from '@/prisma/seed';
 import { handleRouteError, json } from '@/lib/api';
 
 export const dynamic = 'force-dynamic';
@@ -40,21 +40,57 @@ async function run(request: Request) {
 
     const url = new URL(request.url);
     const confirmReset = url.searchParams.get('confirm') === 'reset';
+    const step = url.searchParams.get('step') ?? 'core';
     const startedAt = Date.now();
 
+    // Split into two calls because the whole seed runs well past a serverless
+    // function's time limit against a remote database. Phase one is all that
+    // is needed to sign in.
+    const base = new URL(request.url).origin;
+    const secretParam = url.searchParams.get('secret');
+    const nextUrl = (nextStep: string) =>
+      `${base}/api/admin/seed?secret=${secretParam ? encodeURIComponent(secretParam) : 'YOUR_CRON_SECRET'}&step=${nextStep}`;
+
+    if (step === 'demo') {
+      await seedDemoContent();
+      return json({
+        ok: true,
+        step: 'demo',
+        durationMs: Date.now() - startedAt,
+        message: 'Deals discovered. One optional step left: the recorded conversations.',
+        nextStep: nextUrl('calls'),
+      });
+    }
+
+    if (step === 'calls') {
+      const result = await seedConversations();
+      return json({
+        ok: true,
+        step: 'calls',
+        durationMs: Date.now() - startedAt,
+        counts: result.counts,
+        message: 'Everything is in. Reload the dashboard.',
+      });
+    }
+
     const existingUsers = await prisma.user.count();
-    const result = await seedDemoData({ confirmReset });
+    await seedCore({ confirmReset });
 
     return json({
       ok: true,
+      step: 'core',
       replacedExistingData: existingUsers > 0,
       durationMs: Date.now() - startedAt,
-      counts: result.counts,
+      message: 'You can sign in now.',
       signIn: {
-        url: `${config.APP_URL}/login`,
+        url: `${base}/login`,
         email: 'owner@dealdispatch.test',
         password: 'demo-password-123',
         note: 'Change this password before sharing the URL with anyone.',
+      },
+      optionalNextStep: {
+        description: 'Adds the demonstration deals. Not required — you can also use "Run discovery" inside the app.',
+        url: nextUrl('demo'),
       },
     });
   } catch (error) {
