@@ -16,8 +16,9 @@ createdb dealdispatch
 
 # 2. Configure
 cp .env.example .env
-#    Set DATABASE_URL and SESSION_SECRET. Nothing else is required —
-#    every external provider ships with a working mock.
+#    Fill in the Required block: DATABASE_URL, DIRECT_URL, SESSION_SECRET.
+#    (Running your own Postgres? DIRECT_URL is just the same value.)
+#    Nothing else is needed — every external provider ships with a working mock.
 
 # 3. Install and set up
 npm install
@@ -42,6 +43,8 @@ Sign in at `/login`. Every seeded account uses the password `demo-password-123`:
 | `admin@dealdispatch.test` | Administrator | Configuration, integrations, audit |
 
 Sign in as the Caller to see the difference: no dashboard, no margins, no other callers' work — just the next conversation and everything needed to have it.
+
+**Deploying it?** See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — Vercel + Neon, about fifteen minutes.
 
 ---
 
@@ -112,6 +115,7 @@ To watch a full cycle yourself:
 
 | Document | Contents |
 |---|---|
+| [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) | Deploying to Vercel + Neon, the scheduler, and serverless caveats |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System layers, data model, engines, job queue, request lifecycle |
 | [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md) | Provider interfaces, wiring Twilio / Deepgram / SMTP / S3 / Anthropic, webhooks |
 | [`docs/ASSUMPTIONS.md`](docs/ASSUMPTIONS.md) | Assumptions made, deliberate limits, what is not built |

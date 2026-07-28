@@ -32,6 +32,8 @@ const prisma = new PrismaClient();
 const DEMO_PASSWORD = 'demo-password-123';
 
 async function main() {
+  await guardDestructiveReset('meridian-ops');
+
   console.info('▸ Resetting demo data…');
   await resetOrg('meridian-ops');
 
@@ -389,6 +391,41 @@ async function main() {
 }
 
 // ---------------------------------------------------------------------------
+
+/**
+ * The seed drops and rebuilds its organisation. That is fine on a development
+ * database and catastrophic on one holding real deals, so against a production
+ * environment it refuses unless the operator explicitly opts in.
+ */
+async function guardDestructiveReset(slug: string) {
+  const existing = await prisma.organization.findUnique({ where: { slug } });
+  if (!existing) return;
+
+  const [opportunities, calls] = await Promise.all([
+    prisma.opportunity.count({ where: { orgId: existing.id } }),
+    prisma.call.count({ where: { orgId: existing.id } }),
+  ]);
+
+  const isProduction = process.env.NODE_ENV === 'production';
+  const confirmed = process.env.SEED_CONFIRM_RESET === 'yes';
+
+  if (isProduction && !confirmed) {
+    console.error(
+      `\nRefusing to seed: organisation "${slug}" already exists in a production environment ` +
+        `and holds ${opportunities} opportunity(ies) and ${calls} call(s).\n\n` +
+        'Seeding DELETES that organisation and everything under it.\n' +
+        'If that is genuinely what you want, re-run with SEED_CONFIRM_RESET=yes.\n',
+    );
+    process.exit(1);
+  }
+
+  if (opportunities > 0 || calls > 0) {
+    console.warn(
+      `⚠ Organisation "${slug}" already holds ${opportunities} opportunity(ies) and ${calls} call(s). ` +
+        'These will be deleted and rebuilt.',
+    );
+  }
+}
 
 async function resetOrg(slug: string) {
   const existing = await prisma.organization.findUnique({ where: { slug } });

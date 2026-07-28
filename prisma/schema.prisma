@@ -13,7 +13,11 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
+  // Serverless runtimes open a connection per invocation, so DATABASE_URL
+  // should point at a pooler (PgBouncer / Neon pooled endpoint). Migrations
+  // cannot run through a pooler, so they use DIRECT_URL when it is set.
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 // ---------------------------------------------------------------------------

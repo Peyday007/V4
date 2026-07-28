@@ -41,6 +41,14 @@ export type EnqueueOptions = {
   maxAttempts?: number;
   /** Guarantees at-most-one queued job for a logical unit of work. */
   idempotencyKey?: string;
+  /**
+   * Treat a finished job under the same key as "already done" and skip.
+   *
+   * The default is to re-enqueue once a previous run completed, which is what
+   * you want for per-record work. A date-stamped scheduler key wants the
+   * opposite: the daily sweep must not run twice because the cron retried.
+   */
+  skipIfCompleted?: boolean;
 };
 
 export async function enqueue(options: EnqueueOptions): Promise<Job | null> {
@@ -62,6 +70,7 @@ export async function enqueue(options: EnqueueOptions): Promise<Job | null> {
   // Re-enqueue only if the previous run finished; otherwise the key is held.
   if (existing) {
     if (existing.status === 'QUEUED' || existing.status === 'RUNNING') return null;
+    if (options.skipIfCompleted && (existing.status === 'SUCCEEDED' || existing.status === 'DEAD')) return null;
     return prisma.job.update({
       where: { id: existing.id },
       data: { ...data, status: 'QUEUED', attempts: 0, lockedAt: null, lockedBy: null, lastError: null, result: undefined },

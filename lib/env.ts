@@ -7,8 +7,12 @@ import { z } from 'zod';
 const schema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   DATABASE_URL: z.string().min(1),
+  /** Non-pooled connection used for migrations. Optional outside serverless. */
+  DIRECT_URL: z.string().optional(),
   SESSION_SECRET: z.string().min(32),
   APP_URL: z.string().default('http://localhost:3000'),
+  /** Shared secret a scheduler presents to drive the loop without a session. */
+  CRON_SECRET: z.string().optional(),
 
   LLM_PROVIDER: z.enum(['mock', 'anthropic']).default('mock'),
   ANTHROPIC_API_KEY: z.string().optional(),
