@@ -27,6 +27,7 @@ import { snapshotCallerMetrics } from '../lib/ai/analytics';
 import { processTranscript } from '../lib/ai/transcript';
 import { buildCallAssignment } from '../lib/ai/callAssignment';
 import { getTranscription } from '../lib/providers/transcription';
+import { countSegments } from '../lib/providers/sms';
 
 const prisma = new PrismaClient();
 const DEMO_PASSWORD = 'demo-password-123';
@@ -375,6 +376,10 @@ export async function seedConversations() {
     await scoreOpportunity(opportunity.id);
     await determineNextAction(opportunity.id);
   }
+
+  // --- Multi-channel outreach history --------------------------------------
+  console.info('▸ Seeding SMS and email outreach history…');
+  await seedOutreachHistory(org.id, dana.id, marcus.id);
 
   // --- Terminal-state examples ---------------------------------------------
   console.info('▸ Seeding won, lost and repeat history…');
@@ -1258,6 +1263,135 @@ async function runDemoCalls(orgId: string, danaId: string, marcusId: string) {
       console.info(`  Bluegrass Building Services: ${result.unauthorizedCommitments} unauthorised commitment(s) flagged for management review`);
     }
   }
+}
+
+
+/**
+ * Recorded outreach across channels, so the channel comparison has something
+ * real to weigh rather than an empty table.
+ *
+ * The numbers are shaped the way this actually behaves in practice: texts get
+ * answered far more often than follow-up calls and cost almost nothing, but
+ * they capture no structured facts — which is exactly the trade the comparison
+ * page exists to surface.
+ */
+async function seedOutreachHistory(orgId: string, danaId: string, marcusId: string) {
+  const contacts = await prisma.contact.findMany({ where: { orgId }, include: { company: true } });
+  if (contacts.length === 0) return;
+
+  const config = DEFAULT_CONFIG;
+  const now = Date.now();
+  let created = 0;
+
+  // Give most contacts a textable profile so the gate is demonstrable, but
+  // leave some without consent so the blocked path is visible too.
+  for (const [index, contact] of contacts.entries()) {
+    await prisma.contact.update({
+      where: { id: contact.id },
+      data: { hasMobile: index % 4 !== 3, consentToSms: index % 4 !== 3 && index % 5 !== 4, mobile: contact.phone },
+    });
+  }
+  const textable = await prisma.contact.findMany({ where: { orgId, consentToSms: true, hasMobile: true } });
+
+  const plan: Array<{
+    purpose: CallType;
+    channel: 'SMS' | 'EMAIL';
+    body: string;
+    subject?: string;
+    outcomes: Array<{ outcome: string; replyMinutes?: number; reply?: string }>;
+  }> = [
+    {
+      purpose: 'QUOTE_FOLLOW_UP',
+      channel: 'SMS',
+      body: 'Hi, following up on the quote we sent Tuesday — did it come through OK? Happy to walk through it. Reply STOP to opt out.',
+      outcomes: [
+        { outcome: 'REPLIED_POSITIVE', replyMinutes: 14, reply: 'Got it, reviewing this week' },
+        { outcome: 'REPLIED_POSITIVE', replyMinutes: 41, reply: 'Yes send over the revised scope' },
+        { outcome: 'REPLIED_NEUTRAL', replyMinutes: 190, reply: 'Checking with procurement' },
+        { outcome: 'NO_RESPONSE' },
+        { outcome: 'REPLIED_NEGATIVE', replyMinutes: 88, reply: 'We went another direction' },
+        { outcome: 'NO_RESPONSE' },
+        { outcome: 'REPLIED_POSITIVE', replyMinutes: 9, reply: 'Can you do a call Thursday?' },
+        { outcome: 'NO_RESPONSE' },
+      ],
+    },
+    {
+      purpose: 'AVAILABILITY_CONFIRMATION',
+      channel: 'SMS',
+      body: 'Quick one — do you still have crews open for a recurring night job in Fairview starting September? Reply STOP to opt out.',
+      outcomes: [
+        { outcome: 'REPLIED_POSITIVE', replyMinutes: 6, reply: 'Yes we do' },
+        { outcome: 'REPLIED_POSITIVE', replyMinutes: 22, reply: 'Yep, two crews free' },
+        { outcome: 'REPLIED_NEGATIVE', replyMinutes: 55, reply: 'Booked until October' },
+        { outcome: 'REPLIED_POSITIVE', replyMinutes: 11, reply: 'Available, send details' },
+        { outcome: 'NO_RESPONSE' },
+        { outcome: 'REPLIED_POSITIVE', replyMinutes: 31, reply: 'Can cover it' },
+      ],
+    },
+    {
+      purpose: 'RELATIONSHIP_REACTIVATION',
+      channel: 'SMS',
+      body: 'Hi — we worked together last year on the Westbrook site. Anything coming up we could quote? Reply STOP to opt out.',
+      outcomes: [
+        { outcome: 'NO_RESPONSE' },
+        { outcome: 'REPLIED_NEUTRAL', replyMinutes: 240, reply: 'Not right now, maybe Q2' },
+        { outcome: 'OPTED_OUT', replyMinutes: 3, reply: 'STOP' },
+        { outcome: 'NO_RESPONSE' },
+        { outcome: 'REPLIED_POSITIVE', replyMinutes: 120, reply: 'Actually yes, call me' },
+      ],
+    },
+    {
+      purpose: 'PRICING_REQUEST',
+      channel: 'EMAIL',
+      subject: 'Pricing request — crushed base, delivered Rockdale County',
+      body: 'Please quote 18,000 tons #304 delivered to two staging yards, first deliveries 2026-10-01. Include freight and how long the price holds.',
+      outcomes: [
+        { outcome: 'REPLIED_POSITIVE', replyMinutes: 620, reply: 'Quote attached' },
+        { outcome: 'REPLIED_POSITIVE', replyMinutes: 1440, reply: 'Sending pricing today' },
+        { outcome: 'NO_RESPONSE' },
+        { outcome: 'REPLIED_NEUTRAL', replyMinutes: 2880, reply: 'Need the yard addresses' },
+      ],
+    },
+  ];
+
+  for (const entry of plan) {
+    for (const [index, result] of entry.outcomes.entries()) {
+      const contact = textable[index % Math.max(1, textable.length)];
+      if (!contact) continue;
+      const sentAt = new Date(now - (index + 2) * 36_00_000 * 8);
+      const segments = countSegments(entry.body);
+      const costCents =
+        entry.channel === 'SMS'
+          ? segments * config.outreachCosts.smsPerSegment * 100
+          : config.outreachCosts.emailPerMessage * 100;
+
+      await prisma.message.create({
+        data: {
+          orgId,
+          contactId: contact.id,
+          companyId: contact.companyId,
+          senderId: index % 2 === 0 ? danaId : marcusId,
+          channel: entry.channel,
+          direction: 'outbound',
+          status: 'SENT',
+          purpose: entry.purpose,
+          subject: entry.subject ?? null,
+          body: entry.body,
+          provider: 'mock',
+          sentAt,
+          outcome: result.outcome as never,
+          repliedAt: result.replyMinutes ? new Date(sentAt.getTime() + result.replyMinutes * 60_000) : null,
+          responseTimeSec: result.replyMinutes ? result.replyMinutes * 60 : null,
+          inboundBody: result.reply ?? null,
+          segments,
+          costCents,
+        },
+      });
+      created += 1;
+    }
+  }
+
+  console.info(`  ${created} message(s) across SMS and email recorded for channel comparison`);
 }
 
 /** Won, lost and repeat history so analytics and lane scoring have real inputs. */

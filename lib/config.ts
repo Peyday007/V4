@@ -47,6 +47,24 @@ export type OrgConfig = {
     maxEscalationsPerDay: number;
     minimumLaneSampleSize: number;
   };
+  /** What a single outreach touch actually costs, by channel. */
+  outreachCosts: {
+    callerHourlyRate: number;
+    /** Notes, logging and queue time either side of a call. */
+    callWrapUpSeconds: number;
+    telephonyPerMinute: number;
+    smsPerSegment: number;
+    emailPerMessage: number;
+  };
+  outreachRules: {
+    /** Texting requires prior express consent in a way calling does not. */
+    smsRequiresOptIn: boolean;
+    smsEarliestHourLocal: number;
+    smsLatestHourLocal: number;
+    maxSmsPerContactPerWeek: number;
+    /** Below this many attempts, channel comparisons stay advisory. */
+    minimumSampleForChannelRecommendation: number;
+  };
 };
 
 export const DEFAULT_CONFIG: OrgConfig = {
@@ -108,6 +126,22 @@ export const DEFAULT_CONFIG: OrgConfig = {
     dailyCallCapacityPerCaller: 25,
     maxEscalationsPerDay: 12,
     minimumLaneSampleSize: 8,
+  },
+  outreachCosts: {
+    callerHourlyRate: 22,
+    callWrapUpSeconds: 120,
+    telephonyPerMinute: 0.013,
+    smsPerSegment: 0.0079,
+    emailPerMessage: 0.0004,
+  },
+  outreachRules: {
+    smsRequiresOptIn: true,
+    // Tighter than calling hours: a text arrives with a noise at whatever hour
+    // it lands, and there is no way to hang up on it.
+    smsEarliestHourLocal: 9,
+    smsLatestHourLocal: 20,
+    maxSmsPerContactPerWeek: 3,
+    minimumSampleForChannelRecommendation: 20,
   },
 };
 

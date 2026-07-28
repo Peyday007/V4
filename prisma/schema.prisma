@@ -12,7 +12,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider  = "postgresql"
   // Serverless runtimes open a connection per invocation, so DATABASE_URL
   // should point at a pooler (PgBouncer / Neon pooled endpoint). Migrations
   // cannot run through a pooler, so they use DIRECT_URL when it is set.
@@ -377,6 +377,18 @@ enum MessageChannel {
   INTERNAL_NOTE
 }
 
+/// What an outbound message actually achieved. Separate from delivery status:
+/// a message can be DELIVERED and still be a business failure.
+enum MessageOutcome {
+  AWAITING_RESPONSE
+  REPLIED_POSITIVE
+  REPLIED_NEGATIVE
+  REPLIED_NEUTRAL
+  NO_RESPONSE
+  OPTED_OUT
+  UNDELIVERABLE
+}
+
 enum MessageStatus {
   DRAFT
   PENDING_APPROVAL
@@ -502,6 +514,7 @@ model User {
   activityEvents     ActivityEvent[]
   metrics            PerformanceMetric[]
   auditEvents        AuditEvent[]
+  messagesSent       Message[]
 
   @@unique([orgId, email])
   @@index([orgId])
@@ -743,6 +756,7 @@ model Company {
   activityEvents     ActivityEvent[]
   quotes             Quote[]
   evidence           SourceEvidence[]
+  messages           Message[]
 
   @@unique([orgId, legalName])
   @@index([orgId, companyRole])
@@ -833,6 +847,12 @@ model Contact {
   consentToCall     Boolean   @default(true)
   consentToRecord   Boolean?
   consentToEmail    Boolean   @default(true)
+  /// Texting a business contact requires prior express consent in a way that
+  /// calling does not, so this defaults to false and has to be earned.
+  consentToSms      Boolean   @default(false)
+  /// SMS to a landline is silently discarded and still billed, so the number
+  /// has to be known-mobile before anything is sent.
+  hasMobile         Boolean   @default(false)
   lastInteractionAt DateTime?
   nextInteractionAt DateTime?
   createdAt         DateTime  @default(now())
@@ -1710,24 +1730,41 @@ model Document {
 }
 
 model Message {
-  id                String         @id @default(cuid())
+  id                String          @id @default(cuid())
   orgId             String
   opportunityId     String?
   contactId         String?
+  companyId         String?
+  senderId          String?
   channel           MessageChannel
-  direction         String         @default("outbound")
-  status            MessageStatus  @default(DRAFT)
+  direction         String          @default("outbound")
+  status            MessageStatus   @default(DRAFT)
+  /// Why this was sent, mirroring CallType so channels can be compared on
+  /// like-for-like work rather than in aggregate.
+  purpose           CallType?
   subject           String?
   body              String
   provider          String?
   providerMessageId String?
   sentAt            DateTime?
-  createdAt         DateTime       @default(now())
+  deliveredAt       DateTime?
+  repliedAt         DateTime?
+  responseTimeSec   Int?
+  outcome           MessageOutcome?
+  inboundBody       String?
+  /// SMS bills per 160-character segment, so a naturally-written message is
+  /// often several messages priced as one send.
+  segments          Int             @default(1)
+  costCents         Float           @default(0)
+  createdAt         DateTime        @default(now())
 
   opportunity Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
   contact     Contact?     @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  company     Company?     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  sender      User?        @relation(fields: [senderId], references: [id], onDelete: SetNull)
 
   @@index([orgId, status])
+  @@index([orgId, channel, purpose])
 }
 
 model Notification {

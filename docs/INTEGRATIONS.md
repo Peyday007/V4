@@ -64,6 +64,45 @@ Point these Twilio webhooks at your deployment:
 
 ---
 
+## SMS (`lib/providers/sms.ts`)
+
+```ts
+interface SmsProvider {
+  send(input: SendSmsInput): Promise<SendSmsResult>;
+  verifyWebhook(headers: Record<string, string>, rawBody: string): boolean;
+}
+```
+
+**Mock (default).** Captures to an in-memory outbox. Nothing is delivered, but
+segments, cost, consent gating and reply outcomes are all recorded — so the
+channel comparison in `/outreach` works fully before a provider exists.
+
+**Twilio.** `SMS_PROVIDER=twilio` plus `TWILIO_SMS_FROM_NUMBER` (it reuses the
+account SID and auth token from the voice configuration).
+
+Segment counting is not cosmetic: a plain-ASCII message fits 160 characters,
+but a single curly quote or emoji switches the whole message to UCS-2 and drops
+that to 70. `countSegments` implements this, because getting it wrong
+understates cost by more than double on a naturally-written message.
+
+### Before enabling real SMS
+
+- **Opt-in is required.** `Contact.consentToSms` defaults to false and the send
+  path refuses without it. This is deliberately stricter than the call gate.
+- **Landlines silently fail** and are still billed, so `Contact.hasMobile` must
+  be true before anything sends.
+- **Every message carries an opt-out**, added automatically if the body omits
+  it. STOP replies suppress the contact and revoke consent with no human step.
+- **Quiet hours are tighter than calling hours**, and a per-contact weekly cap
+  applies. Both are in `outreachRules` and editable in Administration.
+- **US A2P 10DLC registration** is required by the carriers before business
+  texting delivers reliably. Unregistered traffic gets filtered rather than
+  rejected, which shows up as poor response rates rather than an error.
+
+Inbound replies arrive via webhook in a live deployment. Until one is wired,
+`PUT /api/messages/sms` accepts an authenticated manual entry so reply data —
+which is what makes the channel comparison meaningful — is still captured.
+
 ## Transcription (`lib/providers/transcription.ts`)
 
 ```ts

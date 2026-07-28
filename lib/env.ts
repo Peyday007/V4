@@ -24,6 +24,9 @@ const schema = z.object({
   TWILIO_FROM_NUMBER: z.string().optional(),
   TWILIO_WEBHOOK_SECRET: z.string().optional(),
 
+  SMS_PROVIDER: z.enum(['mock', 'twilio']).default('mock'),
+  TWILIO_SMS_FROM_NUMBER: z.string().optional(),
+
   TRANSCRIPTION_PROVIDER: z.enum(['mock', 'deepgram']).default('mock'),
   DEEPGRAM_API_KEY: z.string().optional(),
 
