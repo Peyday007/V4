@@ -54,6 +54,14 @@ That is everything required. Every external provider defaults to its mock, so th
 
 Set all five for **Production**, and for **Preview** too if you want preview deployments to work.
 
+> **Schema changes must ship as migration files.** The build runs
+> `prisma migrate deploy`, which applies migration *files* only — `prisma db
+> push` alters a local database without writing one, so a change made that way
+> never reaches production and breaks it in ways that look unrelated. Use
+> `npm run db:migrate:new -- --name your_change`, commit the generated SQL, and
+> verify with `npm run db:check-drift` (exit code 2 means schema and migrations
+> disagree).
+
 ## 4. Deploy
 
 Push, or hit **Deploy**. The build runs `prisma generate && prisma migrate deploy && next build`, so the schema is created on first deploy.
@@ -198,6 +206,14 @@ Same environment variables. When you have your own Postgres rather than a pooler
 **Build fails on `prisma migrate deploy`.** `DIRECT_URL` is missing or points at the pooled endpoint. Migrations need the direct connection.
 
 **`Invalid environment configuration — SESSION_SECRET: String must contain at least 32 character(s)`.** Exactly what it says; regenerate with `openssl rand -base64 48`.
+
+**Any page shows "Application error: a server-side exception has occurred".** Visit `/api/health` — it needs no login and reports which layer is broken:
+
+```
+https://your-project.vercel.app/api/health
+```
+
+The usual cause is a database missing columns the deployed code expects, which shows up as an error on pages unrelated to the change. Redeploy; the build applies migrations.
 
 **Login page loads but no account works.** The seed hasn't run. See step 5.
 
