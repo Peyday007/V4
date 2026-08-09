@@ -12,7 +12,15 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   const isCaller = user.roleKey === 'CALLER';
 
-  const [myCalls, escalations, approvals, signals] = await Promise.all([
+  const [org, startedForReal, myCalls, escalations, approvals, signals] = await Promise.all([
+    prisma.organization.findUnique({ where: { id: user.orgId }, select: { name: true, slug: true } }),
+    // Audit events outlive the data they describe — clearBusinessData does not
+    // remove them — so this stays true once the operator has begun, rather
+    // than flickering back on as soon as real companies exist again.
+    prisma.auditEvent.count({
+      where: { orgId: user.orgId, action: { in: ['data.cleared', 'import.csv'] } },
+      take: 1,
+    }),
     prisma.callAssignment.count({
       where: {
         orgId: user.orgId,
@@ -31,12 +39,18 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       : Promise.resolve(0),
   ]);
 
+  // The seed's organisation is still in place and nobody has cleared it or
+  // imported anything, so every figure on screen is invented. Worth flagging
+  // in the nav rather than only on the page itself.
+  const onDemoData = org?.slug === 'meridian-ops' && startedForReal === 0;
+
   return (
     <div className="shell">
       <nav className="sidebar">
         <div className="brand">
           Deal<span>Dispatch</span>
         </div>
+        {org && <div className="tiny dim" style={{ padding: '0 0.6rem 0.5rem', marginTop: '-0.5rem' }}>{org.name}</div>}
 
         {!isCaller && (
           <>
@@ -84,7 +98,16 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           </>
         )}
 
-        {can(user, 'admin.config') && (
+        {can(user, 'company.write') && (
+          <>
+            <div className="nav-section">Configure</div>
+            <NavLink href="/import" alert={onDemoData} note={onDemoData ? 'demo' : undefined}>
+              Your data
+            </NavLink>
+            {can(user, 'admin.config') && <NavLink href="/admin">Administration</NavLink>}
+          </>
+        )}
+        {!can(user, 'company.write') && can(user, 'admin.config') && (
           <>
             <div className="nav-section">Configure</div>
             <NavLink href="/admin">Administration</NavLink>

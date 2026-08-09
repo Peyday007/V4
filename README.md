@@ -46,6 +46,11 @@ Sign in as the Caller to see the difference: no dashboard, no margins, no other 
 
 **Deploying it?** See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — Vercel + Neon, about fifteen minutes.
 
+**Using it on your own data?** Everything the seed creates is fabricated — the
+companies, the conversations, the margins. Go to **Your data** in the sidebar
+(`/import`) to clear it and load your own providers and buyers from a CSV. See
+[Starting on real data](#starting-on-real-data).
+
 ---
 
 ## The operating loop
@@ -110,6 +115,50 @@ To watch a full cycle yourself:
 **Never buy demand you cannot fulfil.** The advertising plan gates every recommendation on confirmed fulfillment capacity in that specific territory, and works the affordable cost-per-lead backwards from your actual margin and close rate rather than from an industry benchmark. Budget is capped by how many deals your providers can absorb — buying past that buys refusals.
 
 **Callers are measured on outcomes.** Confirmed needs, pricing obtained, matches enabled, gross profit influenced — not dials. Coaching recommendations are advisory only; the system flags evidence for a manager and never takes action against a worker.
+
+---
+
+## Starting on real data
+
+The seed exists to show the loop working end to end. Everything in it is
+invented — the companies do not exist, the calls never happened, the margins
+are made up. Nothing about it should be worked or reported on.
+
+**Your data** in the sidebar (`/import`) turns a demonstration into an
+operation:
+
+1. **Clear the demonstration data.** Removes companies, contacts,
+   opportunities, calls, signals, documents, approvals and plans. Keeps users,
+   roles, industries, capabilities, territories, scripts, data sources, deal
+   lanes and every configured threshold — that is setup, not fiction. Requires
+   `admin.config` and typing the confirmation phrase.
+2. **Name the organisation and set its timezone.** The timezone is not
+   cosmetic: calling hours, SMS quiet hours and the daily plan are evaluated
+   against it.
+3. **Import providers, then buyers.** Column names are matched loosely
+   (`company`, `business_name`, `account_name` all work). Preview parses and
+   reports without writing anything.
+
+Two things the importer is strict about, because both fail silently:
+
+- **Which side of a deal the list is on** is asked, never guessed. A provider
+  filed as a buyer is never offered as a candidate, and nothing reports an
+  error — matching just finds nobody.
+- **Whether a number is a mobile** comes from the column name (`mobile` or
+  `cell`, not `phone`). Texting a landline is billed and never arrives.
+
+Imported contacts are created with `consentToSms: false`. Having someone's
+number is not permission to text it, and the send path refuses without consent.
+
+After importing, `/ads` reads your real provider coverage and says whether you
+have enough of it to spend money on demand generation yet.
+
+Minimum useful file:
+
+```csv
+company_name,city,state,services,contact_name,title,email,mobile
+Bright & Clean LLC,Dallas,TX,"janitorial, floor care",Dana Reyes,Owner,dana@example.com,214-555-0142
+```
 
 ---
 

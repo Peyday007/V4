@@ -136,6 +136,39 @@ await prisma.\$disconnect();
 "
 ```
 
+## 7. Replace the demonstration data with yours
+
+Signing in shows a working board built entirely from invented companies,
+conversations and margins. It proves the loop runs; it is not something to
+operate on. The sidebar flags this with a **demo** badge next to **Your data**
+until you either clear the seed or import something.
+
+At `/import`:
+
+1. **Clear the demonstration data** — typing `DELETE DEMO DATA` confirms it.
+   Companies, contacts, opportunities, calls, signals, documents, approvals,
+   messages and plans go. Users, roles, industries, capabilities, territories,
+   scripts, data sources, deal lanes and every configured threshold stay.
+2. **Set the organisation name and timezone.** Calling hours, SMS quiet hours
+   and the daily plan are all evaluated against that timezone, so a wrong one
+   means calls scheduled outside legal hours.
+3. **Import your providers first, then your buyers.** Preview before importing
+   — it writes nothing and reports which columns were recognised, which were
+   ignored, and which rows have problems.
+
+Providers before buyers matters: a buyer need with no provider who can serve it
+produces an opportunity that cannot be fulfilled, and the system will correctly
+decline to promote it. Importing in that order means the first opportunity that
+appears is one you could actually deliver.
+
+Requires `company.write` to import and `admin.config` to clear. The route is
+`POST /api/import/csv` (`{ csv, side, dryRun }`) and `DELETE /api/import/csv`.
+
+> **The clear is irreversible and there is no undo.** It is scoped to the
+> signed-in user's organisation and audited, but it does not take a backup. If
+> the database holds anything you would miss, snapshot it first — Neon's branch
+> feature does this in one click.
+
 ---
 
 ## The scheduler

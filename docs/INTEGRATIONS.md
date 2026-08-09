@@ -152,6 +152,14 @@ interface DiscoveryConnector {
 
 Seven connectors ship: contract awards, building permits, job postings, bid/RFQ portals, supplier directories, press releases (all fixture-backed) and CSV import (real, for first-party data).
 
+First-party CSV has a second, more direct path that does not go through
+discovery at all: `lib/import.ts`, exposed at `/import` and `POST
+/api/import/csv`. The connector treats a row as a *signal* to be classified,
+promoted and scored; the importer treats it as an *assertion* by the operator
+and writes the company, contacts and capabilities directly. Use the importer to
+load a book of business, and the connector when a CSV is a recurring feed of
+opportunities to triage.
+
 ### Writing a live connector
 
 1. Implement `fetch`, returning `RawRecord[]`.
