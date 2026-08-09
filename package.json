@@ -18,6 +18,8 @@
     "db:seed": "tsx prisma/seed.ts",
     "db:reset": "prisma db push --force-reset && npm run db:seed",
     "worker": "tsx scripts/worker.ts",
+    "discovery:probe": "tsx scripts/probe.ts",
+    "discovery:setup": "tsx scripts/setupDiscovery.ts",
     "ops:tick": "tsx scripts/tick.ts",
     "vercel-build": "prisma generate && prisma migrate deploy && next build",
     "db:seed:prod": "tsx prisma/seed.ts",

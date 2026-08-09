@@ -12,7 +12,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   const isCaller = user.roleKey === 'CALLER';
 
-  const [org, startedForReal, myCalls, escalations, approvals, signals] = await Promise.all([
+  const [org, startedForReal, myCalls, escalations, approvals, signals, liveLeads] = await Promise.all([
     prisma.organization.findUnique({ where: { id: user.orgId }, select: { name: true, slug: true } }),
     // Audit events outlive the data they describe — clearBusinessData does not
     // remove them — so this stays true once the operator has begun, rather
@@ -36,6 +36,13 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       : Promise.resolve(0),
     can(user, 'discovery.read')
       ? prisma.discoverySignal.count({ where: { orgId: user.orgId, status: { in: ['NEW', 'TRIAGED'] } } })
+      : Promise.resolve(0),
+    // Counted separately from all signals: the nav badge should reflect real
+    // discovery, not seeded volume.
+    can(user, 'discovery.read')
+      ? prisma.discoverySignal.count({
+          where: { orgId: user.orgId, status: { in: ['NEW', 'TRIAGED'] }, origin: 'LIVE_DISCOVERY' },
+        })
       : Promise.resolve(0),
   ]);
 
@@ -81,9 +88,14 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             <div className="nav-section">Graph</div>
             {can(user, 'company.read') && <NavLink href="/companies">Companies</NavLink>}
             {can(user, 'discovery.read') && (
-              <NavLink href="/signals" count={signals}>
-                Signals
-              </NavLink>
+              <>
+                <NavLink href="/leads" count={liveLeads}>
+                  Discovered leads
+                </NavLink>
+                <NavLink href="/signals" count={signals}>
+                  Signals
+                </NavLink>
+              </>
             )}
           </>
         )}

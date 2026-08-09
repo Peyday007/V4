@@ -305,6 +305,9 @@ export async function importCsv(params: {
       companyRole: role,
       serviceTerritories: row.territories.length ? row.territories : row.city ? [row.city] : [],
       accountStage: 'DISCOVERED',
+      // First-party, not discovered and certainly not fabricated. The interface
+      // separates the three.
+      origin: 'IMPORTED',
       // Imported data is first-party and asserted by the operator, so it counts
       // as verified in a way a scraped record does not.
       lastVerifiedAt: new Date(),
@@ -421,6 +424,7 @@ export async function importCsv(params: {
           },
         });
         result.contactsCreated += 1;
+
       }
     }
 
@@ -531,8 +535,13 @@ export async function clearBusinessData(orgId: string, userId: string): Promise<
   counts.dailyPlans = (await prisma.dailyPlan.deleteMany({ where: { orgId } })).count;
   counts.jobs = (await prisma.job.deleteMany({ where: { orgId } })).count;
 
-  // Data sources survive but their run history is meaningless now.
-  await prisma.dataSource.updateMany({ where: { orgId }, data: { lastRunAt: null, lastRunStatus: null } });
+  // Data sources, markets and business paths survive — they are configuration,
+  // not content. Only the run history goes, because it described data that no
+  // longer exists.
+  await prisma.dataSource.updateMany({
+    where: { orgId },
+    data: { lastRunAt: null, lastRunStatus: null, lastRecordCount: null, lastErrorAt: null, consecutiveFailures: 0 },
+  });
 
   await audit({
     orgId,

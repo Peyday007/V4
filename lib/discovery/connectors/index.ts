@@ -1,13 +1,22 @@
 import type { SignalCategory, SourceType } from '@prisma/client';
 import { registerConnector, type ConnectorContext, type DiscoveryConnector, type RawRecord } from '../connector';
 import { ALL_FIXTURES } from './fixtures';
+import { SocrataConnector } from './socrata';
+import { GooglePlacesConnector } from './googlePlaces';
+import { SamGovConnector } from './samGov';
 
 /**
  * Fixture-backed connector. Each instance stands in for one real source class.
- * Swapping in a live implementation means replacing `fetch` — nothing else in
- * the pipeline changes.
+ *
+ * `isLive` is false on every one of these, and that flag is carried through to
+ * the DataSource row and shown in the interface. It exists because a run that
+ * re-reads a sample file reports exactly the same "37 signals discovered" as a
+ * run that queried a municipal permit portal, and the difference is the whole
+ * value of the system.
  */
 class FixtureConnector implements DiscoveryConnector {
+  readonly isLive = false;
+
   constructor(
     readonly key: string,
     readonly sourceType: SourceType,
@@ -34,6 +43,7 @@ export class CsvImportConnector implements DiscoveryConnector {
   readonly key = 'csv_import';
   readonly sourceType: SourceType = 'USER_UPLOAD';
   readonly defaultCategory: SignalCategory = 'GENERAL';
+  readonly isLive = false;
   readonly accessBasis = 'First-party data supplied by the operator.';
 
   async fetch(context: ConnectorContext): Promise<RawRecord[]> {
@@ -161,7 +171,15 @@ export const BUILT_IN_CONNECTORS: DiscoveryConnector[] = [
     'press_releases',
   ),
   new CsvImportConnector(),
+
+  // Live sources. These reach real external APIs and are the only connectors
+  // that produce leads a person can act on.
+  new SocrataConnector(),
+  new GooglePlacesConnector(),
+  new SamGovConnector(),
 ];
+
+export { SocrataConnector, GooglePlacesConnector, SamGovConnector };
 
 let registered = false;
 

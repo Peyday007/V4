@@ -14,6 +14,8 @@ import { hashPassword } from '../lib/auth/password';
 import { PERMISSIONS, ROLES } from '../lib/auth/rbac';
 import { DEFAULT_CONFIG } from '../lib/config';
 import { runAllDiscovery } from '../lib/discovery/run';
+import { ensureDefaultPaths } from '../lib/paths';
+import { ensureStarterMarket, installLiveSources } from '../lib/discovery/setup';
 import { promoteSignals } from '../lib/discovery/promote';
 import { scoreOpportunity } from '../lib/ai/scoring';
 import { findMatches } from '../lib/ai/matching';
@@ -302,6 +304,22 @@ export async function seedCore(options: { confirmReset?: boolean } = {}) {
         targetProfile: { keywords: lane.keywords } as object,
       },
     });
+  }
+
+  // --- Business paths, market and live sources ------------------------------
+  //
+  // Installed in phase one rather than with the demonstration content, because
+  // these are real configuration. Clearing the demo data must not take them
+  // with it — an operation that wipes the fixtures still needs its paths, its
+  // market and its connectors.
+  console.info('▸ Installing business paths, starter market and live sources…');
+  await ensureDefaultPaths(org.id);
+  await ensureStarterMarket(org.id);
+  const installed = await installLiveSources(org.id);
+  if (installed.disabledMissingCredential.length > 0) {
+    console.info(
+      `  live sources installed but disabled (no credential): ${installed.disabledMissingCredential.join(', ')}`,
+    );
   }
 
   // --- Supply-side graph ----------------------------------------------------

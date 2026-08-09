@@ -123,6 +123,45 @@ enum SignalStatus {
   DUPLICATE
 }
 
+/// Where a record came from. The distinction is load-bearing: a seeded
+/// demonstration company and a company found this morning in a public permit
+/// record look identical once they are rows in the same table, and acting on
+/// the first is wasted work.
+enum DataOrigin {
+  /// Retrieved from a live external source by a connector.
+  LIVE_DISCOVERY
+  /// Supplied by the operator via CSV import.
+  IMPORTED
+  /// Entered by hand in the interface.
+  MANUAL
+  /// Created by the demonstration seed. Fabricated.
+  SEED_DEMO
+}
+
+/// What a lead is to us, which is not the same as what the company is. The
+/// same facilities-management firm is a buyer for janitorial supply and a
+/// contractor looking for subcontractors, depending on the signal.
+enum LeadRole {
+  BUYER
+  PROVIDER
+  SUPPLIER
+  PARTNER
+  CONTRACTOR
+  SUBCONTRACTOR
+  UNKNOWN
+}
+
+/// Buying context. Drives qualification, pricing expectations and cycle
+/// length — public-sector work in particular carries award and payment
+/// timelines that make it unsuitable as a primary path.
+enum MarketSegment {
+  COMMERCIAL
+  RESIDENTIAL
+  PUBLIC_SECTOR
+  INDUSTRIAL
+  MIXED
+}
+
 enum SourceType {
   COMPANY_WEBSITE
   SEARCH_ENGINE
@@ -440,6 +479,8 @@ model Organization {
   materials              Material[]
   capabilities           Capability[]
   territories            Territory[]
+  markets                Market[]
+  businessPaths          BusinessPath[]
   dataSources            DataSource[]
   dealLanes              DealLane[]
   auditEvents            AuditEvent[]
@@ -645,6 +686,119 @@ model Territory {
   @@unique([orgId, name])
 }
 
+/// A way the business makes money.
+///
+/// Distribution, brokerage and subcontracting are the first three, not the
+/// permanent set. They are rows rather than code branches so a fourth — staffing,
+/// equipment rental, maintenance contracts, whatever the operation grows into —
+/// is configuration.
+///
+/// The `key` maps onto the OpportunityType/SignalCategory enums for the paths
+/// that predate this table, which is what lets the existing classifier, scorer
+/// and matcher keep working unchanged. A path added later carries a null
+/// `legacyCategory` and is driven entirely by the JSON rules below. That is the
+/// seam: enums stay for the three the engines already understand, and nothing
+/// new is ever added to them.
+model BusinessPath {
+  id             String          @id @default(cuid())
+  orgId          String
+  key            String
+  name           String
+  description    String
+  /// Maps to SignalCategory for the three original paths; null for new ones.
+  legacyCategory SignalCategory?
+
+  isActive Boolean @default(true)
+  /// Ordering on the board. Lower runs and displays first.
+  priority Int     @default(100)
+
+  /// Which participant roles this path deals in, e.g. ["BUYER","PROVIDER"].
+  leadRoles LeadRole[]      @default([])
+  /// Segments this path sells into.
+  segments  MarketSegment[] @default([])
+
+  /// Connector keys this path draws from. Empty means every enabled source.
+  sourceKeys String[] @default([])
+
+  /// Free-form configuration the engines read. Kept as JSON rather than columns
+  /// because the whole point is that a new path can describe itself without a
+  /// migration: qualification rules, scoring weights, required fields, matching
+  /// behaviour, recommended actions, workflow stages, compliance requirements.
+  qualificationRules Json @default("{}")
+  scoringWeights     Json @default("{}")
+  requiredFields     Json @default("[]")
+  matchingRules      Json @default("{}")
+  recommendedActions Json @default("{}")
+  workflowStages     Json @default("[]")
+  complianceRules    Json @default("{}")
+
+  /// How this path earns, and how long it takes. Drives prioritisation between
+  /// paths — public-sector subcontracting and consumables replenishment have
+  /// very different cash timelines and should not be ranked as though they did not.
+  revenueModel      String?
+  expectedCycleDays Int?
+  typicalMarginPct  Float?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org     Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  signals DiscoverySignal[]
+
+  @@unique([orgId, key])
+  @@index([orgId, isActive, priority])
+}
+
+/// A geography the operation actively works.
+///
+/// Territory describes where a *company* can serve. Market describes where
+/// *we* are looking, which is a different question and the one discovery needs
+/// answered. Without it there is nothing to point a connector at: "find
+/// commercial cleaning buyers" is not a query, "find them within 40km of
+/// 32.7767,-96.7970" is.
+///
+/// Adding a second market is a row, not a deployment. Nothing downstream is
+/// allowed to assume there is only one.
+model Market {
+  id      String  @id @default(cuid())
+  orgId   String
+  name    String
+  slug    String
+  /// metro | city | county | state | region
+  kind    String  @default("metro")
+  country String  @default("US")
+  state   String?
+
+  /// Centre point and radius drive geographic queries against place APIs.
+  centerLat    Float?
+  centerLng    Float?
+  radiusMeters Int    @default(40000)
+
+  /// Alternative geographic filters, for sources that key on names or codes
+  /// rather than coordinates.
+  postalCodes String[] @default([])
+  cities      String[] @default([])
+  counties    String[] @default([])
+
+  isDefault Boolean @default(false)
+  isEnabled Boolean @default(true)
+
+  /// Per-source settings for this market — the Socrata domain and dataset
+  /// identifiers, the place-search bias, the procurement state code. Kept here
+  /// rather than on DataSource so one source definition can serve many markets.
+  sourceConfig Json @default("{}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org         Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  signals     DiscoverySignal[]
+  dataSources DataSource[]
+
+  @@unique([orgId, slug])
+  @@index([orgId, isEnabled])
+}
+
 /// Org-level configuration: scoring weights, margin rules, approval limits,
 /// staleness thresholds, calling hours, risk rules.
 model ConfigSetting {
@@ -721,6 +875,14 @@ model Company {
   serviceTerritories     String[]        @default([])
   purchasingPatterns     Json            @default("{}")
   fulfillmentCapacity    Json            @default("{}")
+  /// Provenance. A seeded company and a company found this morning must never
+  /// be indistinguishable in the interface.
+  origin                 DataOrigin      @default(SEED_DEMO)
+  /// Stable identifier from a place-data provider. Storable indefinitely under
+  /// Google's terms where the surrounding place content is not, so it is the
+  /// join key for re-fetching rather than caching.
+  externalPlaceId        String?
+  lastEnrichedAt         DateTime?
   movability             MovabilityClass @default(UNKNOWN)
   movabilityScore        Float           @default(0)
   movabilityReasons      String[]        @default([])
@@ -918,7 +1080,24 @@ model DataSource {
   lastRunStatus   String?
   createdAt       DateTime   @default(now())
 
+  /// False for the fixture connectors that back the demonstration. Surfaced in
+  /// the interface so "discovery found 37 signals" can never again mean "it
+  /// re-read the same sample file".
+  isLive              Boolean   @default(false)
+  /// Environment variable holding this source's credential, if it needs one.
+  /// Named rather than stored: the key itself never enters the database.
+  credentialEnvVar    String?
+  /// Link to the terms the accessBasis refers to, so the claim is checkable.
+  termsUrl            String?
+  /// Restrict this source to one market. Null means every enabled market.
+  marketId            String?
+  /// Outcome of the most recent run, for the health view.
+  lastRecordCount     Int?
+  lastErrorAt         DateTime?
+  consecutiveFailures Int       @default(0)
+
   org      Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  market   Market?           @relation(fields: [marketId], references: [id], onDelete: SetNull)
   evidence SourceEvidence[]
   signals  DiscoverySignal[]
 
@@ -937,6 +1116,7 @@ model SourceEvidence {
   rawPayload       Json       @default("{}")
   confidence       Float      @default(0.5)
   status           FactStatus @default(INFERRED)
+  origin           DataOrigin @default(SEED_DEMO)
   discoveredAt     DateTime   @default(now())
   lastCheckedAt    DateTime   @default(now())
   createdByProcess String
@@ -960,6 +1140,10 @@ model DiscoverySignal {
   dataSourceId String?
   evidenceId   String?
   companyId    String?
+  marketId     String?
+  /// The configured path this lead belongs to. `category` remains for the
+  /// engines that predate BusinessPath; this is the extensible pointer.
+  pathId       String?
   category     SignalCategory
   signalKey    String
   headline     String
@@ -973,13 +1157,49 @@ model DiscoverySignal {
   expiresAt    DateTime?
   createdAt    DateTime       @default(now())
 
+  /// A lead is only actionable if a person can see, in one screen, what it is,
+  /// where it came from, why it is here and what to do about it. These columns
+  /// exist so none of that requires a join or an inference.
+
+  /// Live, imported, hand-entered or fabricated. Never inferred at read time.
+  origin                 DataOrigin    @default(SEED_DEMO)
+  /// What this company is to us in this particular signal.
+  leadRole               LeadRole      @default(UNKNOWN)
+  /// Commercial, residential, public sector, industrial or mixed.
+  segment                MarketSegment @default(MIXED)
+  /// The service or product the signal is about, in the source's own words.
+  requiredService        String?
+  /// Direct link back to the originating record, for verification by a human.
+  sourceUrl              String?
+  /// Plain-language reason this was surfaced, written when the signal is
+  /// created and while the matching context is still available.
+  whyRelevant            String?
+  /// The single next step. Populated by the rules, overridable by a person.
+  recommendedAction      String?
+  /// Whatever contact detail the source itself carried. Frequently nothing —
+  /// an empty object is honest, a fabricated address is not.
+  contactHint            Json          @default("{}")
+  /// Last time the source was re-checked and this record still stood up.
+  lastSeenAt             DateTime      @default(now())
+  /// The specific text or attributes that produced this classification. A score
+  /// with no evidence behind it is an assertion, and a user cannot audit an
+  /// assertion.
+  classificationEvidence String[]      @default([])
+  /// Set when this record restates one already held, so the duplicate stays
+  /// inspectable rather than silently dropped.
+  duplicateOfId          String?
+
   dataSource    DataSource?     @relation(fields: [dataSourceId], references: [id])
   evidence      SourceEvidence? @relation(fields: [evidenceId], references: [id])
   company       Company?        @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  market        Market?         @relation(fields: [marketId], references: [id], onDelete: SetNull)
+  path          BusinessPath?   @relation(fields: [pathId], references: [id], onDelete: SetNull)
   opportunities Opportunity[]
 
   @@unique([orgId, dedupeHash])
   @@index([orgId, status, category])
+  @@index([orgId, origin, observedAt])
+  @@index([orgId, marketId, status])
 }
 
 model Project {

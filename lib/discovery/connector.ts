@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { CompanyRole, SignalCategory, SourceType } from '@prisma/client';
+import type { CompanyRole, LeadRole, MarketSegment, SignalCategory, SourceType } from '@prisma/client';
 
 /**
  * A connector fetches records from one class of source and normalises them
@@ -38,6 +38,50 @@ export type RawRecord = {
   /** True when the excerpt is the company describing itself. */
   describesSubject?: boolean;
   payload?: Record<string, unknown>;
+
+  /**
+   * Lead attributes the source itself establishes.
+   *
+   * A connector knows things the downstream rules can only guess at. A permit
+   * record knows it is commercial construction in a named city; a place search
+   * knows it returned cleaning contractors, not buyers. Passing that through
+   * beats re-deriving it from prose, which is where confident mistakes come
+   * from. Everything here is optional — a connector that does not know should
+   * say nothing rather than guess.
+   */
+  leadRole?: LeadRole;
+  segment?: MarketSegment;
+  /** The service or product at issue, in the source's own words. */
+  requiredService?: string;
+  /** Overrides the connector's default path when one record differs. */
+  category?: SignalCategory;
+  /** Plain-language reason this record is worth someone's attention. */
+  whyRelevant?: string;
+  /** Only what the source actually published. Never inferred, never guessed. */
+  contact?: {
+    name?: string;
+    phone?: string;
+    email?: string;
+    website?: string;
+  };
+  /** Provider-stable place identifier, where the source has one. */
+  externalPlaceId?: string;
+};
+
+/** The geography a run is pointed at. Null only for sources with no geography. */
+export type MarketContext = {
+  id: string;
+  name: string;
+  slug: string;
+  state: string | null;
+  centerLat: number | null;
+  centerLng: number | null;
+  radiusMeters: number;
+  postalCodes: string[];
+  cities: string[];
+  counties: string[];
+  /** Per-source settings for this market, merged over the source's own config. */
+  sourceConfig: Record<string, unknown>;
 };
 
 export type ConnectorContext = {
@@ -47,6 +91,11 @@ export type ConnectorContext = {
   /** Bounded so a run can never fan out without limit. */
   maxRecords: number;
   since?: Date;
+  /** Where to look. Connectors that need it and do not get it must return []. */
+  market: MarketContext | null;
+  /** Name of the environment variable holding this source's credential. */
+  credentialEnvVar?: string | null;
+  rateLimitPerMin?: number;
 };
 
 export interface DiscoveryConnector {
@@ -55,6 +104,18 @@ export interface DiscoveryConnector {
   readonly defaultCategory: SignalCategory;
   /** Human-readable justification for accessing this source. */
   readonly accessBasis: string;
+  /**
+   * True when this connector reaches a real external source. False for the
+   * fixture connectors backing the demonstration. Surfaced in the interface so
+   * fabricated volume can never be mistaken for real discovery.
+   */
+  readonly isLive: boolean;
+  /** Link to the terms the accessBasis claim rests on. */
+  readonly termsUrl?: string;
+  /** Environment variable this connector needs, if any. */
+  readonly credentialEnvVar?: string;
+  /** True when this connector cannot run without a market. */
+  readonly requiresMarket?: boolean;
   fetch(context: ConnectorContext): Promise<RawRecord[]>;
 }
 
