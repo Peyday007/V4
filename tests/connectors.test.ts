@@ -177,14 +177,17 @@ describe('Socrata connector', () => {
     expect(records[0].whyRelevant).toMatch(/post-construction clean/i);
   });
 
-  it('returns nothing when the market has no dataset configuration', async () => {
+  it('reports "not configured" rather than an empty run when the market has no dataset', async () => {
+    // Distinct from a failure: the source works fine wherever it has a portal.
+    // Reporting eight empty runs buried the sources that actually did something.
     let called = false;
     setTransport(async () => {
       called = true;
       return jsonResponse([]);
     });
-    const records = await new SocrataConnector().fetch(context());
-    expect(records).toEqual([]);
+    await expect(new SocrataConnector().fetch(context())).rejects.toMatchObject({
+      name: 'NoConfigurationError',
+    });
     expect(called).toBe(false);
   });
 

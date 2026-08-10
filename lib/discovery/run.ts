@@ -106,8 +106,15 @@ export async function runDiscoveryForSource(params: {
       rateLimitPerMin: dataSource.rateLimitPerMin,
     });
   } catch (error) {
-    result.errors.push(`fetch failed: ${String(error)}`);
-    await recordSourceOutcome(dataSource.id, { status: `error: ${String(error).slice(0, 200)}`, failed: true, records: 0 });
+    // "Not configured for this market" is not a fault. Counting it as one
+    // turns a source that works in two cities into one showing six failures.
+    const unconfigured = error instanceof Error && error.name === 'NoConfigurationError';
+    result.errors.push(unconfigured ? `not configured: ${error.message}` : `fetch failed: ${String(error)}`);
+    await recordSourceOutcome(dataSource.id, {
+      status: `${unconfigured ? 'not configured' : 'error'}: ${String(error instanceof Error ? error.message : error).slice(0, 200)}`,
+      failed: !unconfigured,
+      records: 0,
+    });
     return result;
   }
 

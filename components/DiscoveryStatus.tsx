@@ -38,6 +38,7 @@ export function DiscoveryStatus({ sources, liveLeads }: { sources: SourceStatus[
   const enabled = sources.filter((s) => s.isEnabled);
   const working = enabled.filter((s) => s.lastRunAt && s.consecutiveFailures === 0 && (s.lastRecordCount ?? 0) > 0);
   const failing = enabled.filter((s) => s.consecutiveFailures > 0);
+  const unconfigured = enabled.filter((s) => s.lastRunStatus?.startsWith('not configured'));
   const untested = enabled.filter((s) => !s.lastRunAt);
   const emptyButOk = enabled.filter((s) => s.lastRunAt && s.consecutiveFailures === 0 && (s.lastRecordCount ?? 0) === 0);
 
@@ -124,6 +125,8 @@ export function DiscoveryStatus({ sources, liveLeads }: { sources: SourceStatus[
                     <span className="badge warning">no key</span>
                   ) : source.consecutiveFailures > 0 ? (
                     <span className="badge danger">failing</span>
+                  ) : source.lastRunStatus?.startsWith('not configured') ? (
+                    <span className="badge">not set up</span>
                   ) : !source.lastRunAt ? (
                     <span className="badge">not run</span>
                   ) : (source.lastRecordCount ?? 0) > 0 ? (
@@ -146,6 +149,13 @@ export function DiscoveryStatus({ sources, liveLeads }: { sources: SourceStatus[
           </tbody>
         </table>
       </div>
+
+      {unconfigured.length > 0 && (
+        <div className="tiny dim mt">
+          {unconfigured.length} source(s) have nothing configured for the markets they were pointed at. That is setup
+          left undone, not a fault — the source works wherever it has been given a portal or dataset.
+        </div>
+      )}
 
       {(untested.length > 0 || emptyButOk.length > 0) && (
         <div className="tiny dim mt">

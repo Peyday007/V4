@@ -38,7 +38,9 @@ export async function POST() {
         created: result.signalsCreated,
         // A skip is a configuration mismatch, not a fault — a jurisdiction
         // source pointed at a nationwide market. Shown differently.
-        skipped: Boolean(error && error.includes('cannot serve a nationwide market')),
+        skipped: Boolean(
+          error && (error.includes('cannot serve a nationwide market') || error.startsWith('not configured')),
+        ),
         error: error ? error.slice(0, 300) : null,
       };
     });

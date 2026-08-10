@@ -69,6 +69,14 @@ const RELEVANT_WORK = /tenant|finish.?out|remodel|renovat|interior|new construct
 
 const RESIDENTIAL_HINT = /single.?family|duplex|residential|dwelling|\bsfr\b|townhome|apartment unit\b/i;
 
+/** Signals "nothing to do here", as distinct from "this failed". */
+export class NoConfigurationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NoConfigurationError';
+  }
+}
+
 export class SocrataConnector implements DiscoveryConnector {
   readonly key = 'socrata_open_data';
   readonly sourceType: SourceType = 'BUILDING_PERMIT';
@@ -84,7 +92,14 @@ export class SocrataConnector implements DiscoveryConnector {
     if (!market) return [];
 
     const datasets = readDatasets(market.sourceConfig, context.config);
-    if (datasets.length === 0) return [];
+    // Most markets have no portal configured — only a few cities publish one,
+    // and reporting an empty run for each of them buries the sources that did
+    // something under a wall of "0 records".
+    if (datasets.length === 0) {
+      throw new NoConfigurationError(
+        `${market.name} has no open-data portal configured. Only some cities publish one; add a dataset under Markets, or leave this source to the metros that have one.`,
+      );
+    }
 
     const since = context.since ?? new Date(Date.now() - DEFAULT_LOOKBACK_DAYS * 86_400_000);
     const perDataset = Math.max(1, Math.floor(context.maxRecords / datasets.length));

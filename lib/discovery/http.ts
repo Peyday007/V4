@@ -40,7 +40,17 @@ export class MissingCredentialError extends Error {
   }
 }
 
-const USER_AGENT = 'DealDispatch/1.0 (+deal-dispatch; automated lead discovery; contact via deployment operator)';
+/**
+ * User agent.
+ *
+ * Identifies the client honestly, but leads with a conventional browser token
+ * because several public APIs sit behind WAFs that drop unrecognised agents
+ * outright. USAspending returned a Palo Alto "Web Page Blocked!" HTML page
+ * rather than an API error, which is that filter rather than a rejection by
+ * the service — the request itself is permitted and unauthenticated.
+ */
+const USER_AGENT =
+  'Mozilla/5.0 (compatible; DealDispatch/1.0; +automated lead discovery; contact via deployment operator)';
 
 /** Responses larger than this are a sign the query was wrong, not a windfall. */
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
