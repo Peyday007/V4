@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SocrataConnector, buildSocrataUrl, readDatasets, toRawRecord, type SocrataDatasetConfig } from '@/lib/discovery/connectors/socrata';
-import { GooglePlacesConnector, DEFAULT_PLACE_QUERIES, readQueries, toPlaceRecord } from '@/lib/discovery/connectors/googlePlaces';
+import { GooglePlacesConnector, DEFAULT_PLACE_QUERIES, readQueries, toPlaceRecord, searchAnchors, NATIONAL_ANCHORS, ANCHORS_PER_RUN } from '@/lib/discovery/connectors/googlePlaces';
 import { SamGovConnector, readNaics, toSamRecord } from '@/lib/discovery/connectors/samGov';
 import { setTransport, resetTransport, resetRateLimits, httpJson, HttpError, MissingCredentialError, readCredential } from '@/lib/discovery/http';
 import { NppesConnector, geographicPartitions, toNppesRecord, toNppesRecords, readEmitDistribution, maxPartitionsFor, rotatePartitions, US_STATES } from '@/lib/discovery/connectors/nppes';
@@ -628,5 +628,103 @@ describe('national run budgeting', () => {
     expect(formatAwardLocation(undefined, 'KS')).toBe('KS');
     expect(formatAwardLocation('', 'KS')).toBe('KS');
     expect(formatAwardLocation(undefined, undefined)).toBeNull();
+  });
+});
+
+describe('Google Places nationwide coverage', () => {
+  const national: MarketContext = { ...MARKET, name: 'United States', scope: 'NATIONAL', state: null, states: [], cities: [], centerLat: null, centerLng: null };
+
+  it('uses the market centre when it has one', () => {
+    const anchors = searchAnchors(MARKET);
+    expect(anchors).toHaveLength(1);
+    expect(anchors[0]).toMatchObject({ lat: 32.7767, lng: -96.797 });
+  });
+
+  it('rotates through metro anchors for a nationwide market', () => {
+    const day0 = searchAnchors(national, 0);
+    const day1 = searchAnchors(national, 1);
+    expect(day0).toHaveLength(ANCHORS_PER_RUN);
+    expect(day0[0].name).not.toBe(day1[0].name);
+  });
+
+  it('reaches every anchor within a full rotation', () => {
+    // Otherwise the tail of the list is billed for and never searched.
+    const seen = new Set<string>();
+    for (let day = 0; day < NATIONAL_ANCHORS.length; day++) {
+      for (const a of searchAnchors(national, day)) seen.add(a.name);
+    }
+    expect(seen.size).toBe(NATIONAL_ANCHORS.length);
+  });
+
+  it('restricts anchors to the configured states when a national market names them', () => {
+    const anchors = searchAnchors({ ...national, states: ['MT', 'TX'] }, 0);
+    expect(anchors.every((a) => a.name.endsWith('MT') || a.name.endsWith('TX'))).toBe(true);
+  });
+
+  it('spans many states and includes low-density ones', () => {
+    const states = new Set(NATIONAL_ANCHORS.map((a) => a.name.slice(-2)));
+    expect(states.size).toBeGreaterThanOrEqual(35);
+    for (const sparse of ['MT', 'ND', 'SD', 'WY', 'AK', 'VT']) {
+      expect(states.has(sparse), `no anchor in ${sparse}`).toBe(true);
+    }
+  });
+
+  it('refuses a non-national market with no coordinates instead of searching nowhere', async () => {
+    vi.stubEnv('GOOGLE_PLACES_API_KEY', 'test-key');
+    await expect(
+      new GooglePlacesConnector().fetch(context({ market: { ...MARKET, scope: 'METRO', centerLat: null, centerLng: null } })),
+    ).rejects.toThrow(/centre coordinates/);
+  });
+
+  it('searches multiple anchors in one nationwide run', async () => {
+    vi.stubEnv('GOOGLE_PLACES_API_KEY', 'test-key');
+    const centres: string[] = [];
+    setTransport(async (_url, init) => {
+      const body = JSON.parse(String(init.body));
+      centres.push(`${body.locationBias.circle.center.latitude}`);
+      return jsonResponse({ places: [] });
+    });
+    await new GooglePlacesConnector().fetch(
+      context({ maxRecords: 40, market: { ...national, sourceConfig: { placeQueries: [DEFAULT_PLACE_QUERIES[0]] } } }),
+    );
+    expect(new Set(centres).size).toBe(ANCHORS_PER_RUN);
+  });
+});
+
+describe('partitioned connectors report total failure honestly', () => {
+  const national: MarketContext = { ...MARKET, scope: 'NATIONAL', state: null, states: ['TX'], cities: [], centerLat: null, centerLng: null };
+
+  it('Places fails the run when every request fails', async () => {
+    vi.stubEnv('GOOGLE_PLACES_API_KEY', 'bad-key');
+    setTransport(async () => jsonResponse({ error: { message: 'API key not valid' } }, 400));
+    await expect(new GooglePlacesConnector().fetch(context({ market: national }))).rejects.toThrow(
+      /All \d+ Places request\(s\) failed.*Places API \(New\)/s,
+    );
+  });
+
+  it(
+    'NPPES fails the run when every request fails',
+    async () => {
+      // A 500 is retryable, so this walks the full backoff for every taxonomy —
+      // slow by design, and the timeout has to allow for it.
+      setTransport(async () => jsonResponse({}, 500));
+      await expect(new NppesConnector().fetch(context({ market: national }))).rejects.toThrow(/All \d+ NPPES request/);
+    },
+    30_000,
+  );
+
+  it('Places still returns results when only some anchors fail', async () => {
+    vi.stubEnv('GOOGLE_PLACES_API_KEY', 'test-key');
+    let call = 0;
+    setTransport(async () => {
+      call += 1;
+      return call === 1
+        ? jsonResponse({}, 500)
+        : jsonResponse({ places: [{ id: 'p1', displayName: { text: 'Acme Clean' }, businessStatus: 'OPERATIONAL' }] });
+    });
+    const records = await new GooglePlacesConnector().fetch(
+      context({ market: { ...national, sourceConfig: { placeQueries: [DEFAULT_PLACE_QUERIES[0]] } } }),
+    );
+    expect(records.length).toBeGreaterThan(0);
   });
 });

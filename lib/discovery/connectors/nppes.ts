@@ -85,6 +85,8 @@ export class NppesConnector implements DiscoveryConnector {
     if (partitions.length === 0) return [];
 
     const records: RawRecord[] = [];
+    let attempted = 0;
+    const failures: string[] = [];
     // Budget is split across partitions and taxonomies so a nationwide run
     // spreads across states rather than exhausting itself in the first one.
     const perQuery = Math.max(1, Math.floor(context.maxRecords / (partitions.length * taxonomies.length)));
@@ -92,6 +94,7 @@ export class NppesConnector implements DiscoveryConnector {
     for (const partition of partitions) {
       for (const taxonomy of taxonomies) {
         if (records.length >= context.maxRecords) break;
+        attempted += 1;
         try {
           const response = await httpJson<NppesResponse>({
             url: buildNppesUrl(partition, taxonomy, Math.min(perQuery, 200)),
@@ -106,9 +109,13 @@ export class NppesConnector implements DiscoveryConnector {
             }
           }
         } catch (error) {
-          console.error(`[nppes] ${JSON.stringify(partition)} / ${taxonomy}: ${String(error).slice(0, 160)}`);
+          failures.push(`${JSON.stringify(partition)}/${taxonomy}: ${String(error).slice(0, 120)}`);
         }
       }
+    }
+
+    if (attempted > 0 && failures.length === attempted) {
+      throw new Error(`All ${attempted} NPPES request(s) failed. ${failures.slice(0, 2).join(' | ')}`);
     }
 
     return records.slice(0, context.maxRecords);

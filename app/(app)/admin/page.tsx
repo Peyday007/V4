@@ -4,6 +4,8 @@ import { getOrgConfig } from '@/lib/config';
 import { ActionButton } from '@/components/ActionButton';
 import { ConfigEditor } from '@/components/ConfigEditor';
 import { Badge, Empty, humanize, relativeDays } from '@/components/ui';
+import { SourceControls, ReinstallSources } from '@/components/SourceControls';
+import { hasCredential } from '@/lib/discovery/http';
 
 export const dynamic = 'force-dynamic';
 
@@ -98,15 +100,22 @@ export default async function AdminPage() {
         </div>
 
         <div className="card">
-          <h2>Data sources</h2>
+          <div className="card-title">
+            <h2>Data sources</h2>
+            <ReinstallSources />
+          </div>
+          <p className="tiny dim">
+            Live sources reach real external APIs. Fixture sources replay sample records and exist only for the
+            demonstration — anything they produce is labelled as demo and cannot be worked.
+          </p>
           <div className="table-wrap">
             <table>
               <thead>
                 <tr>
                   <th>Source</th>
-                  <th>Connector</th>
-                  <th>Rate limit</th>
+                  <th>Kind</th>
                   <th>Last run</th>
+                  <th>Controls</th>
                 </tr>
               </thead>
               <tbody>
@@ -115,10 +124,46 @@ export default async function AdminPage() {
                     <td>
                       <strong className="small">{source.name}</strong>
                       <div className="tiny muted">{source.accessBasis}</div>
+                      {source.termsUrl && (
+                        <a className="tiny mono" href={source.termsUrl} target="_blank" rel="noreferrer noopener">
+                          terms ↗
+                        </a>
+                      )}
                     </td>
-                    <td className="mono tiny">{source.connector}</td>
-                    <td className="tiny">{source.rateLimitPerMin}/min</td>
-                    <td className="tiny dim">{source.lastRunAt ? relativeDays(source.lastRunAt) : 'never'}</td>
+                    <td>
+                      <Badge tone={source.isLive ? 'success' : ''}>{source.isLive ? 'Live' : 'Fixture'}</Badge>
+                      <div className="tiny dim">{source.rateLimitPerMin}/min</div>
+                    </td>
+                    <td className="tiny dim">
+                      {source.lastRunAt ? relativeDays(source.lastRunAt) : 'never'}
+                      {source.lastRecordCount !== null && <div>{source.lastRecordCount} record(s)</div>}
+                      {source.consecutiveFailures > 0 && (
+                        <div style={{ color: 'var(--danger)' }}>{source.consecutiveFailures} failure(s) in a row</div>
+                      )}
+                      {source.lastRunStatus && source.lastRunStatus !== 'ok' && (
+                        <div className="mono" style={{ color: 'var(--warning)' }}>
+                          {source.lastRunStatus.slice(0, 80)}
+                        </div>
+                      )}
+                    </td>
+                    <td>
+                      <SourceControls
+                        source={{
+                          id: source.id,
+                          name: source.name,
+                          connector: source.connector,
+                          isLive: source.isLive,
+                          isEnabled: source.isEnabled,
+                          credentialEnvVar: source.credentialEnvVar,
+                          // Whether the key is set, never the key itself.
+                          credentialPresent: hasCredential(source.credentialEnvVar),
+                          rateLimitPerMin: source.rateLimitPerMin,
+                          lastRunStatus: source.lastRunStatus,
+                          lastRecordCount: source.lastRecordCount,
+                          consecutiveFailures: source.consecutiveFailures,
+                        }}
+                      />
+                    </td>
                   </tr>
                 ))}
               </tbody>

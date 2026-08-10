@@ -59,7 +59,7 @@ sources, not a roadmap item:
 |---|---|---|---|
 | **NPPES** (CMS provider registry) | Every state | none | One query per state per taxonomy. 51 states x 5 taxonomies is 255 requests, so a run takes a bounded slice and rotates it by day — every state is reached within a cycle, and a same-day re-run is idempotent. |
 | **USAspending** (federal awards) | Every state | none | One request carrying a fifty-entry place-of-performance filter. Partitioning belongs to each connector because the right shape differs this much. |
-| **Google Places** | Anywhere with coordinates | key | Per-market radius search. |
+| **Google Places** | Every state | key | A radius search needs a centre, so nationwide becomes a rotating slice of 52 metro anchors spanning 35+ states including MT, ND, SD, WY, AK and VT. Every anchor is reached within a full rotation. |
 | **SAM.gov** | Every state | key | State filter, optional. |
 | **Socrata** | One jurisdiction per dataset | none | Supplements the above. It is **skipped** against a national market rather than returning one city's data and calling it national coverage. |
 
@@ -169,6 +169,25 @@ interface. No connector parses HTML, drives a browser, or touches anything
 behind authentication.
 
 ---
+
+## Turning a source on
+
+Live sources install **disabled** when their credential is missing. After
+adding the key and redeploying, enable it in **Administration → Data sources**:
+
+- **Enable** refuses while the credential is still absent, and names the
+  variable that is missing rather than queueing a guaranteed failure.
+- **Test run** performs a real, small run against the live API and reports a
+  record count. "The key is set" and "leads are arriving" are different claims;
+  only the second one matters.
+- **Refresh sources** re-reads the connector definitions after a deploy and
+  reports which credentials are still missing. It never overrides an
+  enable/disable choice already made.
+
+A partitioned connector whose requests **all** fail throws rather than
+returning zero records — a source reporting `ok` while returning nothing is
+indistinguishable from a quiet week, and that is the one outcome that leaves
+nobody anything to act on.
 
 ## Running it
 
