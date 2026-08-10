@@ -7,6 +7,8 @@ import { ensureConnectorsRegistered } from '@/lib/discovery/connectors';
 import { getConnector } from '@/lib/discovery/connector';
 import { hasCredential } from '@/lib/discovery/http';
 import { installLiveSources } from '@/lib/discovery/setup';
+import { ensureMarkets } from '@/lib/discovery/markets';
+import { ensureDefaultPaths } from '@/lib/paths';
 import { runDiscoveryForSource } from '@/lib/discovery/run';
 
 export const dynamic = 'force-dynamic';
@@ -100,17 +102,38 @@ export async function POST(request: Request) {
 }
 
 /**
- * Re-runs source installation.
+ * Installs everything discovery needs, and reports what was missing.
  *
- * Needed after adding a credential: it refreshes names, terms links and rate
- * limits from code, and reports which sources are still missing keys. It never
- * flips an enable/disable choice already made.
+ * Deliberately not just sources. A deployment seeded before markets and
+ * business paths existed has neither, and installing sources alone produces
+ * connectors that fail on every run with "needs a market to search" — which
+ * looks like a broken integration rather than an unfinished setup. All three
+ * are idempotent, so this is safe to press repeatedly.
+ *
+ * It never flips an enable/disable choice already made.
  */
 export async function PUT() {
   try {
     const user = await requirePermission('admin.integrations');
+
+    const paths = await ensureDefaultPaths(user.orgId);
+    const markets = await ensureMarkets(user.orgId);
     const result = await installLiveSources(user.orgId);
-    return json(result);
+
+    await audit({
+      orgId: user.orgId,
+      userId: user.id,
+      action: 'discovery.setup',
+      entityType: 'Organization',
+      entityId: user.orgId,
+      metadata: { paths, markets: markets.created.length, sources: result.created.length },
+    });
+
+    return json({
+      ...result,
+      pathsCreated: paths,
+      marketsCreated: markets.created,
+    });
   } catch (error) {
     return handleRouteError(error);
   }

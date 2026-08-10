@@ -134,12 +134,23 @@ export function ReinstallSources() {
       const response = await fetch('/api/admin/sources', { method: 'PUT' });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error ?? 'Failed');
+
+      const created: string[] = payload.created ?? [];
+      const markets: string[] = payload.marketsCreated ?? [];
+      const paths: number = payload.pathsCreated ?? 0;
       const missing: string[] = payload.disabledMissingCredential ?? [];
-      setMessage(
-        missing.length > 0
-          ? `Refreshed. Still missing credentials: ${missing.join(', ')}.`
-          : 'Refreshed. Every live source has its credential.',
-      );
+
+      // Reporting what was installed matters as much as what is missing: on a
+      // deployment that predates markets and paths, "nothing to do" and "just
+      // installed everything discovery needs" look identical otherwise.
+      const parts: string[] = [];
+      if (created.length > 0) parts.push(`${created.length} live source(s) added: ${created.join(', ')}`);
+      if (markets.length > 0) parts.push(`${markets.length} market(s) added`);
+      if (paths > 0) parts.push(`${paths} business path(s) added`);
+      if (parts.length === 0) parts.push('Already up to date');
+      if (missing.length > 0) parts.push(`Still missing credentials: ${missing.join(', ')}`);
+
+      setMessage(`${parts.join('. ')}.`);
       router.refresh();
     } catch (caught) {
       setMessage(caught instanceof Error ? caught.message : 'Failed');
