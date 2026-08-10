@@ -151,6 +151,73 @@ enum LeadRole {
   UNKNOWN
 }
 
+/// Where a record sits between "this company exists" and "someone is buying".
+///
+/// The distinction this enum exists to enforce: a directory listing proves an
+/// organisation exists and may fit the target profile. It does not prove any
+/// intent to buy anything. Those were previously the same state, which is how a
+/// gym that has never heard of us reached 88 points.
+enum LeadStage {
+  /// The organisation exists and a source vouches for it. Nothing more.
+  DISCOVERED_ACCOUNT
+  /// We think a named path might apply. Our idea, not their statement.
+  OPPORTUNITY_HYPOTHESIS
+  /// A dated external event suggests they may be buying.
+  INTENT_DETECTED
+  /// Need, decision-maker, timing, fit and next step are all established.
+  QUALIFIED_LEAD
+  /// Being actively worked as a deal.
+  ACTIVE_OPPORTUNITY
+  DISQUALIFIED
+  NURTURE
+}
+
+/// Who is asserting a thing. Kept apart everywhere, because a source saying a
+/// clinic exists, us guessing it needs cleaning, and a caller confirming it
+/// does are three different degrees of truth that were being displayed
+/// identically.
+enum AssertionTier {
+  /// Stated by the external source itself.
+  SOURCE_FACT
+  /// Derived by this system. A guess, however reasonable.
+  SYSTEM_INFERENCE
+  /// Confirmed by a person, usually on a call.
+  USER_CONFIRMED
+}
+
+/// Why we believe someone may be buying. Only dated external events qualify —
+/// none of these can be produced by the act of discovering a company.
+enum IntentKind {
+  PERMIT_FILED
+  FACILITY_OPENING
+  EXPANSION
+  JOB_POSTING
+  VENDOR_REGISTRATION
+  PURCHASING_NOTICE
+  CONTRACT_AWARD
+  CONTRACT_EXPIRY
+  INCUMBENT_CHANGE
+  RFQ_ISSUED
+  /// Established in conversation. The strongest kind.
+  CONVERSATION_CONFIRMED
+}
+
+/// What a phone number actually reaches.
+enum ContactKind {
+  /// A main line. Reaches a receptionist, not a decision-maker.
+  ROUTING
+  /// A named person's direct line or mobile.
+  DIRECT
+  UNKNOWN
+}
+
+enum VerificationStatus {
+  UNVERIFIED
+  VERIFIED_BY_CALL
+  VERIFIED_BY_SOURCE
+  INVALID
+}
+
 /// How wide a market reaches.
 ///
 /// Discovery is national by default and narrowed deliberately, not the other
@@ -502,6 +569,8 @@ model Organization {
   territories            Territory[]
   markets                Market[]
   businessPaths          BusinessPath[]
+  hypotheses             PathHypothesis[]
+  intentEvents           IntentEvent[]
   dataSources            DataSource[]
   dealLanes              DealLane[]
   auditEvents            AuditEvent[]
@@ -707,6 +776,102 @@ model Territory {
   @@unique([orgId, name])
 }
 
+/// One company's candidacy for one business path.
+///
+/// This is what stops a clinic becoming two company cards because it might buy
+/// both cleaning and consumables. The company is one row; each path it might
+/// belong to is a hypothesis hanging off it, with its own stage and scores.
+///
+/// "Hypothesis" is the honest word. Until an intent event or a conversation
+/// says otherwise, a path assignment is our guess about a company that has
+/// never spoken to us.
+model PathHypothesis {
+  id        String @id @default(cuid())
+  orgId     String
+  companyId String
+  pathId    String
+
+  stage LeadStage @default(DISCOVERED_ACCOUNT)
+
+  /// Does the organisation look like the kind we serve? Derivable from a
+  /// directory listing, and legitimately so.
+  accountFitScore           Float @default(0)
+  /// Is there dated evidence they may be buying? Cannot be earned by being
+  /// discovered, listed, phoned or categorised.
+  intentScore               Float @default(0)
+  /// Can a person be reached, and is it a decision-maker or a switchboard?
+  contactabilityScore       Float @default(0)
+  /// Could we actually deliver if they said yes today?
+  fulfillmentReadinessScore Float @default(0)
+  /// Ranking only. Never a claim about the lead's quality on its own.
+  priorityScore             Float @default(0)
+
+  /// Plain-language reason per dimension, so a number is never unexplained.
+  scoreExplanation Json @default("{}")
+
+  /// The five things required before QUALIFIED_LEAD. Each carries its own
+  /// assertion tier, so an inference can never satisfy a gate.
+  needEvidence    Json?
+  decisionMakerId String?
+  timingEvidence  Json?
+  fitEvidence     Json?
+  nextStep        String?
+
+  /// Distinct from discovery time, and never conflated with it.
+  firstDiscoveredAt  DateTime  @default(now())
+  lastSeenAt         DateTime  @default(now())
+  lastIntentSignalAt DateTime?
+  stageEnteredAt     DateTime  @default(now())
+
+  disqualifiedReason String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  org           Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  company       Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  path          BusinessPath      @relation(fields: [pathId], references: [id], onDelete: Cascade)
+  decisionMaker Contact?          @relation("HypothesisDecisionMaker", fields: [decisionMakerId], references: [id], onDelete: SetNull)
+  signals       DiscoverySignal[]
+  intentEvents  IntentEvent[]
+
+  /// One hypothesis per company per path. This is the constraint that makes
+  /// duplicate cards impossible rather than merely unlikely.
+  @@unique([companyId, pathId])
+  @@index([orgId, stage, priorityScore])
+}
+
+/// A dated external event suggesting someone may be buying.
+///
+/// Separate from DiscoverySignal because a signal is "we found this record"
+/// and an intent event is "something happened at this company on this date".
+/// Only the second kind may move intentScore.
+model IntentEvent {
+  id           String        @id @default(cuid())
+  orgId        String
+  companyId    String
+  hypothesisId String?
+  kind         IntentKind
+  /// When the event happened according to the source. Not when we saw it.
+  occurredAt   DateTime
+  /// When we ingested it. Kept apart so neither is ever printed as the other.
+  observedAt   DateTime      @default(now())
+  headline     String
+  detail       String
+  sourceUrl    String?
+  /// How much this kind of event, at this age, should count.
+  weight       Float         @default(0.5)
+  tier         AssertionTier @default(SOURCE_FACT)
+  dedupeHash   String
+  createdAt    DateTime      @default(now())
+
+  org        Organization    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  company    Company         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  hypothesis PathHypothesis? @relation(fields: [hypothesisId], references: [id], onDelete: SetNull)
+
+  @@unique([orgId, dedupeHash])
+  @@index([orgId, companyId, occurredAt])
+}
+
 /// A way the business makes money.
 ///
 /// Distribution, brokerage and subcontracting are the first three, not the
@@ -763,8 +928,9 @@ model BusinessPath {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  org     Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  signals DiscoverySignal[]
+  org        Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  signals    DiscoverySignal[]
+  hypotheses PathHypothesis[]
 
   @@unique([orgId, key])
   @@index([orgId, isActive, priority])
@@ -909,6 +1075,15 @@ model Company {
   /// Google's terms where the surrounding place content is not, so it is the
   /// join key for re-fetching rather than caching.
   externalPlaceId        String?
+  /// Identity keys for deduplication. Digits-only phone and a normalised
+  /// street address, so the same Planet Fitness reached through Places, a
+  /// permit and an import collapses into one company rather than three.
+  normalizedPhone        String?
+  normalizedAddress      String?
+  /// The company's own city and state. Distinct from the market that surfaced
+  /// it — a nationwide sweep must never be printed as a lead's location.
+  cityName               String?
+  stateCode              String?
   lastEnrichedAt         DateTime?
   movability             MovabilityClass @default(UNKNOWN)
   movabilityScore        Float           @default(0)
@@ -933,6 +1108,8 @@ model Company {
   projects           Project[]
   awardsWon          ContractAward[]         @relation("AwardWinner")
   awardsIssued       ContractAward[]         @relation("AwardIssuer")
+  hypotheses         PathHypothesis[]
+  intentEvents       IntentEvent[]
   buyerNeeds         BuyerNeed[]
   supplyOffers       SupplierAvailability[]
   subCapacity        SubcontractorCapacity[]
@@ -1016,48 +1193,60 @@ model CompanyProduct {
 }
 
 model Contact {
-  id                String    @id @default(cuid())
-  orgId             String
-  companyId         String
-  firstName         String
-  lastName          String
-  title             String?
-  department        String?
-  buyingRole        String?
-  email             String?
-  phone             String?
-  mobile            String?
-  preferredChannel  String    @default("phone")
-  bestContactTime   String?
-  timezone          String    @default("America/New_York")
-  decisionAuthority String    @default("unknown") // decision_maker | influencer | gatekeeper | user | unknown
-  influenceLevel    Float     @default(0.5)
-  knownPriorities   String[]  @default([])
-  consentToCall     Boolean   @default(true)
-  consentToRecord   Boolean?
-  consentToEmail    Boolean   @default(true)
+  id                  String             @id @default(cuid())
+  orgId               String
+  companyId           String
+  firstName           String
+  lastName            String
+  title               String?
+  department          String?
+  buyingRole          String?
+  email               String?
+  phone               String?
+  mobile              String?
+  preferredChannel    String             @default("phone")
+  bestContactTime     String?
+  timezone            String             @default("America/New_York")
+  /// What this number actually reaches. A main line found in a directory is a
+  /// switchboard, and treating it as a decision-maker is how a lead looks
+  /// contactable when nobody with authority has been identified.
+  contactKind         ContactKind        @default(UNKNOWN)
+  /// True only when someone has established this person decides or signs.
+  isDecisionMaker     Boolean            @default(false)
+  purchasingAuthority String?
+  verificationStatus  VerificationStatus @default(UNVERIFIED)
+  verifiedAt          DateTime?
+  /// Who asserts this person's role — the source, us, or a caller.
+  roleTier            AssertionTier      @default(SYSTEM_INFERENCE)
+  decisionAuthority   String             @default("unknown") // decision_maker | influencer | gatekeeper | user | unknown
+  influenceLevel      Float              @default(0.5)
+  knownPriorities     String[]           @default([])
+  consentToCall       Boolean            @default(true)
+  consentToRecord     Boolean?
+  consentToEmail      Boolean            @default(true)
   /// Texting a business contact requires prior express consent in a way that
   /// calling does not, so this defaults to false and has to be earned.
-  consentToSms      Boolean   @default(false)
+  consentToSms        Boolean            @default(false)
   /// SMS to a landline is silently discarded and still billed, so the number
   /// has to be known-mobile before anything is sent.
-  hasMobile         Boolean   @default(false)
-  lastInteractionAt DateTime?
-  nextInteractionAt DateTime?
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  hasMobile           Boolean            @default(false)
+  lastInteractionAt   DateTime?
+  nextInteractionAt   DateTime?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime           @updatedAt
 
   org     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   company Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
-  callAssignments CallAssignment[]
-  calls           Call[]
-  commitments     Commitment[]
-  objections      Objection[]
-  facts           ExtractedFact[]
-  messages        Message[]
-  suppressions    SuppressionEntry[]
-  activityEvents  ActivityEvent[]
+  callAssignments  CallAssignment[]
+  calls            Call[]
+  commitments      Commitment[]
+  objections       Objection[]
+  facts            ExtractedFact[]
+  messages         Message[]
+  suppressions     SuppressionEntry[]
+  activityEvents   ActivityEvent[]
+  decisionMakerFor PathHypothesis[]   @relation("HypothesisDecisionMaker")
 
   @@index([orgId, companyId])
   @@index([orgId, lastName])
@@ -1208,6 +1397,17 @@ model DiscoverySignal {
   contactHint            Json          @default("{}")
   /// Last time the source was re-checked and this record still stood up.
   lastSeenAt             DateTime      @default(now())
+  /// When the SOURCE says the record was published. Null when the source does
+  /// not date its records — which is not the same as "today" and must never be
+  /// rendered as one.
+  sourcePublishedAt      DateTime?
+  firstDiscoveredAt      DateTime      @default(now())
+  /// Who asserts this signal's content.
+  tier                   AssertionTier @default(SOURCE_FACT)
+  /// The lead's own city and state, separate from the market that surfaced it.
+  cityName               String?
+  stateCode              String?
+  hypothesisId           String?
   /// The specific text or attributes that produced this classification. A score
   /// with no evidence behind it is an assertion, and a user cannot audit an
   /// assertion.
@@ -1221,6 +1421,7 @@ model DiscoverySignal {
   company       Company?        @relation(fields: [companyId], references: [id], onDelete: Cascade)
   market        Market?         @relation(fields: [marketId], references: [id], onDelete: SetNull)
   path          BusinessPath?   @relation(fields: [pathId], references: [id], onDelete: SetNull)
+  hypothesis    PathHypothesis? @relation(fields: [hypothesisId], references: [id], onDelete: SetNull)
   opportunities Opportunity[]
 
   @@unique([orgId, dedupeHash])

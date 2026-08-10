@@ -23,17 +23,38 @@ export type SourceStatus = {
   consecutiveFailures: number;
 };
 
+type AuditResult = {
+  signalsExamined: number;
+  companiesBefore: number;
+  companiesAfter: number;
+  companiesMerged: number;
+  hypothesesCreated: number;
+  intentEventsFound: number;
+  stageCounts: Record<string, number>;
+  rows: Array<{
+    company: string;
+    cityState: string;
+    before: { duplicateCards: number; score: number };
+    after: { stage: string; accountFit: number; intent: number; contactability: number; priority: number; paths: string[]; missing: string[] };
+  }>;
+};
+
 type RunResult = {
   ranAt: string;
   totals: { fetched: number; created: number; duplicate: number };
   sources: Array<{ name: string; fetched: number; created: number; error: string | null; skipped: boolean }>;
 };
 
+function humanStage(value: string): string {
+  return value.toLowerCase().replace(/_/g, ' ');
+}
+
 export function DiscoveryStatus({ sources, liveLeads }: { sources: SourceStatus[]; liveLeads: number }) {
   const router = useRouter();
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<string | null>(null);
   const [result, setResult] = useState<RunResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [audit, setAudit] = useState<AuditResult | null>(null);
 
   const enabled = sources.filter((s) => s.isEnabled);
   const working = enabled.filter((s) => s.lastRunAt && s.consecutiveFailures === 0 && (s.lastRecordCount ?? 0) > 0);
@@ -52,7 +73,7 @@ export function DiscoveryStatus({ sources, liveLeads }: { sources: SourceStatus[
           : { tone: 'info', text: 'No live leads yet. Run the sources to find out where it stands.' };
 
   async function runAll() {
-    setBusy(true);
+    setBusy('run');
     setError(null);
     setResult(null);
     try {
@@ -64,7 +85,33 @@ export function DiscoveryStatus({ sources, liveLeads }: { sources: SourceStatus[
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : 'Run failed');
     } finally {
-      setBusy(false);
+      setBusy(null);
+    }
+  }
+
+  /**
+   * Re-derives accounts, hypotheses and scores from records already ingested.
+   * Separate from a run because it fetches nothing — it corrects how what we
+   * already hold is classified.
+   */
+  async function reclassifyAll() {
+    setBusy('reclassify');
+    setError(null);
+    setAudit(null);
+    try {
+      const response = await fetch('/api/discovery/reclassify', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ dryRun: false }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error ?? 'Reclassify failed');
+      setAudit(payload as AuditResult);
+      router.refresh();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : 'Reclassify failed');
+    } finally {
+      setBusy(null);
     }
   }
 
@@ -72,9 +119,14 @@ export function DiscoveryStatus({ sources, liveLeads }: { sources: SourceStatus[
     <div className="card">
       <div className="card-title">
         <h2>Discovery status</h2>
-        <button className="primary" onClick={runAll} disabled={busy}>
-          {busy ? 'Running…' : 'Run all live sources'}
-        </button>
+        <div className="row">
+          <button onClick={reclassifyAll} disabled={busy !== null}>
+            {busy === 'reclassify' ? 'Reclassifying…' : 'Re-audit existing records'}
+          </button>
+          <button className="primary" onClick={runAll} disabled={busy !== null}>
+            {busy === 'run' ? 'Running…' : 'Run all live sources'}
+          </button>
+        </div>
       </div>
 
       <div className={`alert ${verdict.tone} small`}>{verdict.text}</div>
@@ -102,6 +154,51 @@ export function DiscoveryStatus({ sources, liveLeads }: { sources: SourceStatus[
               </li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {audit && (
+        <div className="alert info small">
+          <strong>Re-audit:</strong> {audit.signalsExamined} record(s) examined · {audit.companiesBefore} company rows →{' '}
+          {audit.companiesAfter} accounts ({audit.companiesMerged} merged) · {audit.hypothesesCreated} path hypothesis(es) ·{' '}
+          {audit.intentEventsFound} intent event(s) found.
+          <div className="tiny mt">
+            Stages: {Object.entries(audit.stageCounts).map(([k, v]) => `${humanStage(k)} ${v}`).join(' · ')}
+          </div>
+          <div className="table-wrap mt">
+            <table>
+              <thead>
+                <tr>
+                  <th>Account</th>
+                  <th>City, state</th>
+                  <th>Was</th>
+                  <th>Stage</th>
+                  <th>Fit</th>
+                  <th>Intent</th>
+                  <th>Contact</th>
+                  <th>Priority</th>
+                  <th>Missing to qualify</th>
+                </tr>
+              </thead>
+              <tbody>
+                {audit.rows.map((row) => (
+                  <tr key={row.company + row.cityState}>
+                    <td className="small">{row.company}</td>
+                    <td className="tiny">{row.cityState}</td>
+                    <td className="tiny dim">{row.before.score}</td>
+                    <td className="tiny">{humanStage(row.after.stage)}</td>
+                    <td className="tiny">{row.after.accountFit}</td>
+                    <td className="tiny" style={{ color: row.after.intent === 0 ? 'var(--text-dim)' : 'var(--success)' }}>
+                      {row.after.intent}
+                    </td>
+                    <td className="tiny">{row.after.contactability}</td>
+                    <td className="tiny">{row.after.priority}</td>
+                    <td className="tiny dim">{row.after.missing.join('; ') || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 

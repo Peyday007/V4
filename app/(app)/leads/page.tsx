@@ -26,6 +26,25 @@ const ORIGIN_LABEL: Record<DataOrigin, { label: string; tone: string }> = {
   SEED_DEMO: { label: 'Demo — not real', tone: 'danger' },
 };
 
+const STAGE_TONE: Record<string, string> = {
+  DISCOVERED_ACCOUNT: '',
+  OPPORTUNITY_HYPOTHESIS: '',
+  INTENT_DETECTED: 'warning',
+  QUALIFIED_LEAD: 'success',
+  ACTIVE_OPPORTUNITY: 'success',
+  DISQUALIFIED: 'danger',
+  NURTURE: 'accent',
+};
+
+function ScoreCell({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="stat">
+      <div className="stat-label">{label}</div>
+      <div className="stat-value" style={{ fontSize: '1.1rem' }}>{Math.round(value * 100)}</div>
+    </div>
+  );
+}
+
 const FRESHNESS_TONE: Record<Freshness, string> = {
   FRESH: 'success',
   RECENT: 'accent',
@@ -60,6 +79,7 @@ export default async function LeadsPage({
         path: true,
         market: true,
         dataSource: true,
+        hypothesis: { include: { path: true } },
       },
       orderBy: { observedAt: 'desc' },
       take: 200,
@@ -201,12 +221,24 @@ export default async function LeadsPage({
                     <Badge>{humanize(signal.leadRole)}</Badge>
                     <Badge>{humanize(signal.segment)}</Badge>
                     <Badge tone={FRESHNESS_TONE[freshness]}>{freshness.toLowerCase()}</Badge>
-                    {signal.market && <span className="tiny dim">{signal.market.name}</span>}
+                    {signal.hypothesis && (
+                      <Badge tone={STAGE_TONE[signal.hypothesis.stage] ?? ''}>{humanize(signal.hypothesis.stage)}</Badge>
+                    )}
+                    <Badge tone={signal.tier === 'USER_CONFIRMED' ? 'success' : signal.tier === 'SOURCE_FACT' ? 'accent' : ''}>
+                      {signal.tier === 'SOURCE_FACT' ? 'source fact' : signal.tier === 'USER_CONFIRMED' ? 'confirmed' : 'our inference'}
+                    </Badge>
+                  </div>
+                  <div className="tiny dim mt">
+                    {/* The lead's own location, never the market that surfaced it. */}
+                    {[signal.cityName ?? signal.company?.cityName, signal.stateCode ?? signal.company?.stateCode]
+                      .filter(Boolean)
+                      .join(', ') || 'location unknown'}
+                    {signal.market && <> · searched under {signal.market.name}</>}
                   </div>
                 </div>
                 <div style={{ textAlign: 'right' }}>
-                  <div className="stat-value">{score.score}</div>
-                  <div className="tiny dim">lead score</div>
+                  <div className="stat-value">{signal.hypothesis?.priorityScore ?? score.score}</div>
+                  <div className="tiny dim">priority</div>
                 </div>
               </div>
 
@@ -220,17 +252,43 @@ export default async function LeadsPage({
 
               <div className="grid grid-2">
                 <div>
-                  <div className="tiny dim">Why it ranked here</div>
-                  <ul className="list-reset tiny muted" style={{ lineHeight: 1.6 }}>
-                    {score.components
-                      .slice()
-                      .sort((a, b) => b.contribution - a.contribution)
-                      .map((component) => (
-                        <li key={component.label}>
-                          <strong>{component.label}:</strong> {component.reason}
-                        </li>
-                      ))}
-                  </ul>
+                  <div className="tiny dim">Scores, kept separate</div>
+                  {signal.hypothesis ? (
+                    <>
+                      <div className="grid grid-4">
+                        <ScoreCell label="Account fit" value={signal.hypothesis.accountFitScore} />
+                        <ScoreCell label="Intent" value={signal.hypothesis.intentScore} />
+                        <ScoreCell label="Contactability" value={signal.hypothesis.contactabilityScore} />
+                        <ScoreCell label="Fulfilment" value={signal.hypothesis.fulfillmentReadinessScore} />
+                      </div>
+                      <ul className="list-reset tiny muted mt" style={{ lineHeight: 1.6 }}>
+                        {Object.entries((signal.hypothesis.scoreExplanation ?? {}) as Record<string, string>).map(
+                          ([key, reason]) => (
+                            <li key={key}>
+                              <strong>{humanize(key)}:</strong> {reason}
+                            </li>
+                          ),
+                        )}
+                      </ul>
+                      {signal.hypothesis.stage !== 'QUALIFIED_LEAD' && (
+                        <div className="alert warning tiny mt">
+                          Not a qualified lead. Still needed: need, decision-maker, timing, fit and an agreed next step —
+                          whichever of those are unticked below.
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <ul className="list-reset tiny muted" style={{ lineHeight: 1.6 }}>
+                      {score.components
+                        .slice()
+                        .sort((a, b) => b.contribution - a.contribution)
+                        .map((component) => (
+                          <li key={component.label}>
+                            <strong>{component.label}:</strong> {component.reason}
+                          </li>
+                        ))}
+                    </ul>
+                  )}
                 </div>
                 <div>
                   <div className="tiny dim">Provenance</div>
@@ -238,7 +296,14 @@ export default async function LeadsPage({
                     Source: {signal.dataSource?.name ?? 'unknown'}
                     {signal.dataSource && !signal.dataSource.isLive && ' (fixture — not a real source)'}
                     <br />
-                    Published {relativeDays(signal.observedAt)} · last seen {relativeDays(signal.lastSeenAt)}
+                    {signal.sourcePublishedAt
+                      ? `Source published ${relativeDays(signal.sourcePublishedAt)}`
+                      : 'Source gave no publication date'}
+                    <br />
+                    First discovered {relativeDays(signal.firstDiscoveredAt)} · last seen {relativeDays(signal.lastSeenAt)}
+                    {signal.hypothesis?.lastIntentSignalAt && (
+                      <> · last intent signal {relativeDays(signal.hypothesis.lastIntentSignalAt)}</>
+                    )}
                     <br />
                     {signal.sourceUrl ? (
                       <a href={signal.sourceUrl} target="_blank" rel="noreferrer noopener">
