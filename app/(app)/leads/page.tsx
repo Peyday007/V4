@@ -5,6 +5,8 @@ import { requirePagePermission } from '@/lib/auth/page';
 import { getActivePaths } from '@/lib/paths';
 import { freshnessOf, scoreLead, type Freshness } from '@/lib/discovery/leadScore';
 import { Badge, Empty, humanize, relativeDays } from '@/components/ui';
+import { DiscoveryStatus } from '@/components/DiscoveryStatus';
+import { hasCredential } from '@/lib/discovery/http';
 
 export const dynamic = 'force-dynamic';
 
@@ -41,9 +43,10 @@ export default async function LeadsPage({
   const originFilter = (searchParams.origin ?? 'LIVE_DISCOVERY').toUpperCase();
   const showAllOrigins = originFilter === 'ALL';
 
-  const [paths, markets, signals, counts] = await Promise.all([
+  const [paths, markets, liveSources, signals, counts] = await Promise.all([
     getActivePaths(user.orgId),
     prisma.market.findMany({ where: { orgId: user.orgId }, orderBy: { isDefault: 'desc' } }),
+    prisma.dataSource.findMany({ where: { orgId: user.orgId, isLive: true }, orderBy: { name: 'asc' } }),
     prisma.discoverySignal.findMany({
       where: {
         orgId: user.orgId,
@@ -115,13 +118,20 @@ export default async function LeadsPage({
         <Badge tone={liveCount > 0 ? 'success' : 'warning'}>{liveCount} live</Badge>
       </div>
 
-      {liveCount === 0 && (
-        <div className="alert warning">
-          No live leads yet. Discovery is only as real as its sources — check that a market is configured and that at
-          least one live source is enabled under <Link href="/admin">Administration</Link>, then run{' '}
-          <span className="mono">npm run discovery:probe</span> to confirm each one actually responds.
-        </div>
-      )}
+      <DiscoveryStatus
+        liveLeads={liveCount}
+        sources={liveSources.map((source) => ({
+          id: source.id,
+          name: source.name,
+          isEnabled: source.isEnabled,
+          // Whether the key is present, never its value.
+          credentialMissing: !hasCredential(source.credentialEnvVar),
+          lastRunAt: source.lastRunAt?.toISOString() ?? null,
+          lastRecordCount: source.lastRecordCount,
+          lastRunStatus: source.lastRunStatus,
+          consecutiveFailures: source.consecutiveFailures,
+        }))}
+      />
 
       <div className="filter-bar">
         <FilterChip href="/leads?origin=LIVE_DISCOVERY" active={originFilter === 'LIVE_DISCOVERY'}>
