@@ -50,6 +50,47 @@ subcontracting last (30) because vendor onboarding takes weeks.
 
 ---
 
+## Nationwide by default
+
+The platform operates across the United States. That is a property of the
+sources, not a roadmap item:
+
+| Source | National reach | Credential | How it covers the country |
+|---|---|---|---|
+| **NPPES** (CMS provider registry) | Every state | none | One query per state per taxonomy. 51 states x 5 taxonomies is 255 requests, so a run takes a bounded slice and rotates it by day — every state is reached within a cycle, and a same-day re-run is idempotent. |
+| **USAspending** (federal awards) | Every state | none | One request carrying a fifty-entry place-of-performance filter. Partitioning belongs to each connector because the right shape differs this much. |
+| **Google Places** | Anywhere with coordinates | key | Per-market radius search. |
+| **SAM.gov** | Every state | key | State filter, optional. |
+| **Socrata** | One jurisdiction per dataset | none | Supplements the above. It is **skipped** against a national market rather than returning one city's data and calling it national coverage. |
+
+Two of those are free, keyless and nationwide, so national coverage does not
+depend on the operator signing up for anything.
+
+### Choosing coverage
+
+Markets are rows, so the combinations the requirement calls for are just sets
+of them — `applyCoverage()` in `lib/discovery/markets.ts` switches between:
+
+- **Nationwide** — the national market only.
+- **Nationwide plus metros** — national sweep for reach, named metros so leads
+  route to whoever works that area. The default.
+- **Selected markets only** — national sweep off; specific states, metros,
+  counties or postcode sets on.
+
+A national market with `states` populated is a multi-state search rather than
+all fifty, which is the "selected states" case without a separate mode.
+
+### Which market a lead lands in
+
+A national sweep tags everything with the national market, which is true and
+useless for routing. `assignMarket()` re-homes each record onto the **narrowest**
+market that actually contains it.
+
+A sub-state market never claims a record on a state match alone. Without that
+rule a metro with a city list swallows every record in its state — Lubbock
+lands in the Dallas metro and a caller is dispatched 350 miles. Only state-wide
+and national markets match on state.
+
 ## Markets are configuration
 
 `Market` answers the question discovery actually needs: *where are we looking*.
@@ -61,7 +102,7 @@ and postcode lists for sources that key on names. `sourceConfig` holds the
 per-source settings: which Socrata portal and datasets, which NAICS codes,
 which place queries.
 
-**Dallas–Fort Worth is a seeded starter row, not a constant.** Adding Houston
+**Dallas is one preset row among several, with no privileged status in code.** Adding Houston
 or Chicago is a `Market` row with its own portal configuration. Sources bound
 to one market run only there; unbound sources run once per enabled market.
 
@@ -159,7 +200,8 @@ Being precise about this, because "the tests pass" is not the same claim as
 | SAM.gov parsing, state filtering, NAICS fallback | **Working and verified** against recorded responses |
 | Full pipeline: fetch → evidence → company → contact → signal → path → score → dedupe | **Working and verified** against Postgres with a stubbed transport. All three paths produced leads; re-running produced 0 new and 20 duplicate signals; residential permits filtered out |
 | `/leads` page, live/imported/demo separation, filters | **Working and verified** — renders 200, live view shows only live records |
-| **Live HTTP against the real Socrata, Places and SAM.gov endpoints** | **Implemented but unverified.** The build sandbox blocks outbound connections to these hosts, so no request has ever reached them. Contract tests prove the connectors handle the documented response shape; they cannot prove the endpoints still return it. |
+| Nationwide coverage: state partitioning, day-rotation, national/local run planning, market re-homing | **Working and verified** against Postgres — 8 states, 6 markets plus the national sweep, all three paths, 0 new / 64 duplicate signals on re-run |
+| **Live HTTP against the real NPPES, USAspending, Socrata, Places and SAM.gov endpoints** | **Implemented but unverified.** The build sandbox blocks outbound connections to these hosts, so no request has ever reached them. Contract tests prove the connectors handle the documented response shape; they cannot prove the endpoints still return it. |
 | Dallas Socrata dataset ID `e7gq-4sah` and its column names | **Unverified.** Taken from the portal's published catalogue, not confirmed against a live response. A retired dataset returns 404, not wrong data — the probe will say so immediately. |
 | Buyer↔provider matching on live data | **Partially implemented.** The matching engine is unchanged and works; it has only been exercised against seeded and stub data, not live discovered records. |
 | Notifications for strong new leads | **Not implemented.** |

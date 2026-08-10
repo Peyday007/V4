@@ -13,7 +13,7 @@ import { PrismaClient, type CallType, type Prisma } from '@prisma/client';
 import { hashPassword } from '../lib/auth/password';
 import { PERMISSIONS, ROLES } from '../lib/auth/rbac';
 import { DEFAULT_CONFIG } from '../lib/config';
-import { runAllDiscovery } from '../lib/discovery/run';
+import { runDemoDiscovery } from '../lib/discovery/run';
 import { ensureDefaultPaths } from '../lib/paths';
 import { ensureStarterMarket, installLiveSources } from '../lib/discovery/setup';
 import { promoteSignals } from '../lib/discovery/promote';
@@ -343,7 +343,7 @@ export async function seedDemoContent() {
 
   // --- Run the real discovery pipeline --------------------------------------
   console.info('▸ Running discovery across all sources…');
-  const discovery = await runAllDiscovery(org.id);
+  const discovery = await runDemoDiscovery(org.id);
   const signalsFound = discovery.reduce((sum, r) => sum + r.signalsCreated, 0);
   console.info(`  ${signalsFound} signal(s) detected from ${discovery.length} source(s)`);
 

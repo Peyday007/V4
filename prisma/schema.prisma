@@ -151,6 +151,27 @@ enum LeadRole {
   UNKNOWN
 }
 
+/// How wide a market reaches.
+///
+/// Discovery is national by default and narrowed deliberately, not the other
+/// way round. A source that can only answer "within 40km of this point" is a
+/// local source; one that can answer "every state" is a national one, and the
+/// scope tells the connector which question it is being asked.
+enum MarketScope {
+  /// The whole country. Connectors iterate their own national partitions.
+  NATIONAL
+  /// One or more states.
+  STATE
+  /// A metropolitan statistical area, expressed as a centre and radius.
+  METRO
+  COUNTY
+  CITY
+  /// An explicit list of postal codes.
+  POSTAL
+  /// A point and a radius, independent of administrative boundaries.
+  RADIUS
+}
+
 /// Buying context. Drives qualification, pricing expectations and cycle
 /// length — public-sector work in particular carries award and payment
 /// timelines that make it unsuitable as a primary path.
@@ -760,14 +781,20 @@ model BusinessPath {
 /// Adding a second market is a row, not a deployment. Nothing downstream is
 /// allowed to assume there is only one.
 model Market {
-  id      String  @id @default(cuid())
+  id      String      @id @default(cuid())
   orgId   String
   name    String
   slug    String
-  /// metro | city | county | state | region
-  kind    String  @default("metro")
-  country String  @default("US")
+  /// How wide this market reaches. Drives which geographic filter each
+  /// connector applies, and whether it partitions the country.
+  scope   MarketScope @default(METRO)
+  /// Display label. `scope` is what the code branches on.
+  kind    String      @default("metro")
+  country String      @default("US")
+  /// Primary state. Multi-state markets list every one in `states`.
   state   String?
+  /// Every state this market covers. Empty under NATIONAL means all of them.
+  states  String[]    @default([])
 
   /// Centre point and radius drive geographic queries against place APIs.
   centerLat    Float?

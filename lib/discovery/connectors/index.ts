@@ -4,6 +4,8 @@ import { ALL_FIXTURES } from './fixtures';
 import { SocrataConnector } from './socrata';
 import { GooglePlacesConnector } from './googlePlaces';
 import { SamGovConnector } from './samGov';
+import { NppesConnector } from './nppes';
+import { UsaSpendingConnector } from './usaSpending';
 
 /**
  * Fixture-backed connector. Each instance stands in for one real source class.
@@ -174,12 +176,19 @@ export const BUILT_IN_CONNECTORS: DiscoveryConnector[] = [
 
   // Live sources. These reach real external APIs and are the only connectors
   // that produce leads a person can act on.
-  new SocrataConnector(),
+  // Nationwide, free, keyless federal sources. These are the foundation: they
+  // work in every state on day one without a credential or a per-city dataset.
+  new NppesConnector(),
+  new UsaSpendingConnector(),
+  // Nationwide with a credential.
   new GooglePlacesConnector(),
   new SamGovConnector(),
+  // Jurisdiction-specific, configured per market. Supplements the above; it is
+  // deliberately not the foundation, because it cannot cover the country.
+  new SocrataConnector(),
 ];
 
-export { SocrataConnector, GooglePlacesConnector, SamGovConnector };
+export { SocrataConnector, GooglePlacesConnector, SamGovConnector, NppesConnector, UsaSpendingConnector };
 
 let registered = false;
 

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { CompanyRole, LeadRole, MarketSegment, SignalCategory, SourceType } from '@prisma/client';
+import type { CompanyRole, LeadRole, MarketScope, MarketSegment, SignalCategory, SourceType } from '@prisma/client';
 
 /**
  * A connector fetches records from one class of source and normalises them
@@ -73,7 +73,10 @@ export type MarketContext = {
   id: string;
   name: string;
   slug: string;
+  scope: MarketScope;
   state: string | null;
+  /** Every state the market covers. Empty under NATIONAL means all of them. */
+  states: string[];
   centerLat: number | null;
   centerLng: number | null;
   radiusMeters: number;
@@ -116,6 +119,13 @@ export interface DiscoveryConnector {
   readonly credentialEnvVar?: string;
   /** True when this connector cannot run without a market. */
   readonly requiresMarket?: boolean;
+  /**
+   * True when the connector can cover the whole country by partitioning the
+   * query itself — one request per state, or a fifty-entry filter list. A
+   * connector without this is inherently local, and a NATIONAL market must not
+   * silently reduce it to whichever single place it happens to default to.
+   */
+  readonly supportsNationwide?: boolean;
   fetch(context: ConnectorContext): Promise<RawRecord[]>;
 }
 

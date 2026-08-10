@@ -3,6 +3,10 @@ import { SocrataConnector, buildSocrataUrl, readDatasets, toRawRecord, type Socr
 import { GooglePlacesConnector, DEFAULT_PLACE_QUERIES, readQueries, toPlaceRecord } from '@/lib/discovery/connectors/googlePlaces';
 import { SamGovConnector, readNaics, toSamRecord } from '@/lib/discovery/connectors/samGov';
 import { setTransport, resetTransport, resetRateLimits, httpJson, HttpError, MissingCredentialError, readCredential } from '@/lib/discovery/http';
+import { NppesConnector, geographicPartitions, toNppesRecord, toNppesRecords, readEmitDistribution, maxPartitionsFor, rotatePartitions, US_STATES } from '@/lib/discovery/connectors/nppes';
+import { placeOfPerformanceFilters, toAwardRecord, formatAwardLocation } from '@/lib/discovery/connectors/usaSpending';
+import { assignMarket, METRO_PRESETS } from '@/lib/discovery/markets';
+import { planTargets } from '@/lib/discovery/run';
 import type { ConnectorContext, MarketContext } from '@/lib/discovery/connector';
 
 /**
@@ -21,7 +25,9 @@ const MARKET: MarketContext = {
   id: 'mkt_1',
   name: 'Dallas–Fort Worth',
   slug: 'dfw',
+  scope: 'METRO',
   state: 'TX',
+  states: ['TX'],
   centerLat: 32.7767,
   centerLng: -96.797,
   radiusMeters: 40000,
@@ -389,7 +395,21 @@ describe('connector provenance', () => {
   it('marks the real connectors live and nothing else', async () => {
     const { BUILT_IN_CONNECTORS } = await import('@/lib/discovery/connectors');
     const live = BUILT_IN_CONNECTORS.filter((c) => c.isLive).map((c) => c.key).sort();
-    expect(live).toEqual(['google_places', 'sam_gov_opportunities', 'socrata_open_data']);
+    expect(live).toEqual([
+      'google_places',
+      'nppes_healthcare',
+      'sam_gov_opportunities',
+      'socrata_open_data',
+      'usaspending_awards',
+    ]);
+
+    // At least two live sources must work nationwide without a credential,
+    // or "nationwide" depends on the operator signing up for something.
+    const freeNationwide = BUILT_IN_CONNECTORS.filter(
+      (c) => c.isLive && c.supportsNationwide && !c.credentialEnvVar,
+    ).map((c) => c.key);
+    expect(freeNationwide).toContain('nppes_healthcare');
+    expect(freeNationwide).toContain('usaspending_awards');
 
     // Every fixture connector must report itself as not live, or the interface
     // cannot tell fabricated volume from real discovery.
@@ -404,5 +424,209 @@ describe('connector provenance', () => {
       expect(connector.termsUrl, `${connector.key} has no termsUrl`).toBeTruthy();
       expect(connector.accessBasis.length).toBeGreaterThan(40);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Nationwide coverage
+// ---------------------------------------------------------------------------
+
+describe('nationwide geography', () => {
+  const national: MarketContext = { ...MARKET, id: 'mkt_us', name: 'United States', slug: 'us', scope: 'NATIONAL', state: null, states: [], cities: [], counties: [] };
+
+  it('partitions a national NPPES run into one query per state', () => {
+    const partitions = geographicPartitions(national);
+    expect(partitions).toHaveLength(US_STATES.length);
+    expect(partitions[0]).toEqual({ state: 'AL' });
+    expect(partitions.some((p) => p.state === 'MT')).toBe(true);
+  });
+
+  it('honours an explicit state list instead of sweeping all fifty', () => {
+    expect(geographicPartitions({ ...national, states: ['TX', 'IL', 'AZ'] })).toEqual([
+      { state: 'TX' },
+      { state: 'IL' },
+      { state: 'AZ' },
+    ]);
+  });
+
+  it('queries a metro by its city list, not by its state alone', () => {
+    const parts = geographicPartitions({ ...MARKET, scope: 'METRO', cities: ['Dallas', 'Plano'] });
+    expect(parts).toEqual([{ city: 'Dallas', state: 'TX' }, { city: 'Plano', state: 'TX' }]);
+  });
+
+  it('queries a postal market by postcode', () => {
+    expect(geographicPartitions({ ...MARKET, scope: 'POSTAL', postalCodes: ['75201', '75202'] })).toEqual([
+      { postal_code: '75201' },
+      { postal_code: '75202' },
+    ]);
+  });
+
+  it('sends USAspending a single request covering every state rather than fifty requests', () => {
+    const filters = placeOfPerformanceFilters(national);
+    expect(filters).toHaveLength(US_STATES.length);
+    expect(filters[0]).toEqual({ country: 'USA', state: 'AL' });
+  });
+
+  it('files a USAspending award recipient as a contractor, not the buying agency', () => {
+    const record = toAwardRecord(
+      {
+        'Award ID': 'W912-26-C-0001',
+        'Recipient Name': 'National Facility Partners LLC',
+        'Award Amount': 4_200_000,
+        'Start Date': '2026-04-01',
+        'End Date': '2027-03-31',
+        'Awarding Sub Agency': 'Dept of the Army',
+        'Place of Performance State Code': 'MT',
+        generated_internal_id: 'CONT_AWD_1',
+      },
+      'United States',
+    );
+    expect(record?.leadRole).toBe('CONTRACTOR');
+    expect(record?.subjectRole).toBe('PRIME_CONTRACTOR');
+    expect(record?.companyName).toBe('National Facility Partners LLC');
+    expect(record?.state).toBe('MT');
+    expect(record?.sourceUrl).toContain('usaspending.gov/award/CONT_AWD_1');
+    expect(record?.whyRelevant).toMatch(/already won this work/i);
+  });
+
+  it('files an NPPES facility as a commercial buyer with its location address', () => {
+    const record = toNppesRecord(
+      {
+        number: 1234567890,
+        basic: { organization_name: 'Big Sky Dental PC', status: 'A' },
+        addresses: [
+          { address_purpose: 'MAILING', city: 'Denver', state: 'CO', telephone_number: '303-555-0100' },
+          { address_purpose: 'LOCATION', address_1: '12 Main St', city: 'Bozeman', state: 'MT', postal_code: '597151234', telephone_number: '406-555-0142' },
+        ],
+        taxonomies: [{ desc: 'Dental', primary: true }],
+      },
+      'Montana',
+    );
+    // The mailing address is often a billing company in another state; calling
+    // it reaches nobody with authority over the building.
+    expect(record?.state).toBe('MT');
+    expect(record?.location).toBe('Bozeman, MT');
+    expect(record?.contact?.phone).toBe('406-555-0142');
+    expect(record?.leadRole).toBe('BUYER');
+    expect(record?.sourceUrl).toContain('1234567890');
+  });
+
+  it('skips a deactivated NPPES record', () => {
+    expect(
+      toNppesRecord({ number: 1, basic: { organization_name: 'Closed Clinic', status: 'D' }, addresses: [] }, 'X'),
+    ).toBeNull();
+  });
+
+  it('routes a nationwide source to the national market once, not once per metro', () => {
+    const markets = [
+      { id: 'us', scope: 'NATIONAL' as const },
+      { id: 'dfw', scope: 'METRO' as const },
+      { id: 'chi', scope: 'METRO' as const },
+    ];
+    const targets = planTargets({ requiresMarket: true, supportsNationwide: true }, null, markets);
+    expect(targets).toHaveLength(1);
+    expect(targets[0]?.id).toBe('us');
+  });
+
+  it('never points a jurisdiction-specific source at the national market', () => {
+    const markets = [
+      { id: 'us', scope: 'NATIONAL' as const },
+      { id: 'dfw', scope: 'METRO' as const },
+      { id: 'chi', scope: 'METRO' as const },
+    ];
+    const targets = planTargets({ requiresMarket: true, supportsNationwide: false }, null, markets);
+    expect(targets.map((t) => t?.id)).toEqual(['dfw', 'chi']);
+  });
+
+  it('falls back to local markets when no national market is configured', () => {
+    const markets = [{ id: 'dfw', scope: 'METRO' as const }];
+    expect(planTargets({ requiresMarket: true, supportsNationwide: true }, null, markets).map((t) => t?.id)).toEqual(['dfw']);
+  });
+
+  it('re-homes a nationally discovered record onto the narrowest market containing it', () => {
+    const markets = [
+      { id: 'us', scope: 'NATIONAL' as const, state: null, states: [], cities: [], postalCodes: [] },
+      { id: 'tx', scope: 'STATE' as const, state: 'TX', states: ['TX'], cities: [], postalCodes: [] },
+      { id: 'dfw', scope: 'METRO' as const, state: 'TX', states: ['TX'], cities: ['Dallas', 'Plano'], postalCodes: [] },
+    ];
+    // A Dallas record belongs to the Dallas metro, not the sweep that found it.
+    expect(assignMarket(markets, { state: 'TX', location: 'Dallas, TX' })?.id).toBe('dfw');
+    // A Texas record outside the metro's city list still lands in Texas.
+    expect(assignMarket(markets, { state: 'TX', location: 'Lubbock, TX' })?.id).toBe('tx');
+    // Anything else falls back to the national market rather than being dropped.
+    expect(assignMarket(markets, { state: 'ME', location: 'Bangor, ME' })?.id).toBe('us');
+  });
+
+  it('covers multiple states across the metro presets, including non-urban ones', () => {
+    const states = new Set(METRO_PRESETS.flatMap((m) => m.states ?? []));
+    expect(states.size).toBeGreaterThanOrEqual(6);
+    expect(METRO_PRESETS.some((m) => m.kind === 'rural')).toBe(true);
+    expect(METRO_PRESETS.some((m) => m.scope === 'STATE')).toBe(true);
+    // No market may be privileged in code — Dallas is one row among several.
+    expect(METRO_PRESETS.filter((m) => m.isDefault).length).toBe(0);
+  });
+});
+
+describe('national run budgeting', () => {
+  it('caps how many partitions one run touches', () => {
+    // 51 states x 5 taxonomies is 255 requests. No serverless run finishes that.
+    expect(maxPartitionsFor(60, 5)).toBe(12);
+    expect(maxPartitionsFor(10, 5)).toBe(2);
+    expect(maxPartitionsFor(1, 5)).toBe(1);
+  });
+
+  it('rotates the slice by day so every state is reached over time', () => {
+    const states = US_STATES.map((s) => ({ state: s }));
+    const day0 = rotatePartitions(states, 12, 0);
+    const day1 = rotatePartitions(states, 12, 1);
+    expect(day0).toHaveLength(12);
+    expect(day0[0]).toEqual({ state: 'AL' });
+    expect(day1[0]).not.toEqual(day0[0]);
+
+    // Every state must be reachable within a full cycle, or the far end of the
+    // alphabet is never discovered at all.
+    const seen = new Set<string>();
+    for (let day = 0; day < 60; day++) {
+      for (const p of rotatePartitions(states, 12, day)) seen.add(p.state);
+    }
+    expect(seen.size).toBe(US_STATES.length);
+  });
+
+  it('is idempotent within a day', () => {
+    const states = US_STATES.map((s) => ({ state: s }));
+    expect(rotatePartitions(states, 12, 7)).toEqual(rotatePartitions(states, 12, 7));
+  });
+
+  it('wraps around the end of the list without dropping entries', () => {
+    const items = [1, 2, 3, 4, 5];
+    const slice = rotatePartitions(items, 3, 1);
+    expect(slice).toHaveLength(3);
+    expect(new Set(slice).size).toBe(3);
+  });
+
+  it('emits both a service lead and a consumables lead per facility', () => {
+    // The same clinic buys the cleaning contract and the gloves. Different
+    // budgets, different cycles — collapsing them loses the distribution path.
+    const records = toNppesRecords(
+      {
+        number: 1234567890,
+        basic: { organization_name: 'Big Sky Dental PC', status: 'A' },
+        addresses: [{ address_purpose: 'LOCATION', city: 'Bozeman', state: 'MT', telephone_number: '406-555-0142' }],
+        taxonomies: [{ desc: 'Dental', primary: true }],
+      },
+      'Montana',
+    );
+    expect(records).toHaveLength(2);
+    expect(records.map((r) => r.category)).toEqual(['BROKERAGE', 'DISTRIBUTION']);
+    // Distinct IDs so the two deduplicate independently.
+    expect(new Set(records.map((r) => r.externalId)).size).toBe(2);
+    expect(readEmitDistribution({ nppesEmitDistribution: false }, {})).toBe(false);
+  });
+
+  it('never renders a location as "KS, KS"', () => {
+    expect(formatAwardLocation('75201', 'TX')).toBe('75201, TX');
+    expect(formatAwardLocation(undefined, 'KS')).toBe('KS');
+    expect(formatAwardLocation('', 'KS')).toBe('KS');
+    expect(formatAwardLocation(undefined, undefined)).toBeNull();
   });
 });

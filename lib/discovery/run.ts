@@ -1,4 +1,4 @@
-import type { Company, CompanyRole, DataOrigin, DataSource, LeadRole, MarketSegment } from '@prisma/client';
+import type { Company, CompanyRole, DataOrigin, DataSource, LeadRole, MarketScope, MarketSegment } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { recordActivity } from '@/lib/audit';
 import { classifyCompanyRole } from '@/lib/ai/classify';
@@ -9,6 +9,7 @@ import { ensureConnectorsRegistered } from './connectors';
 import { hasCredential } from './http';
 import { detectSignals } from './signals';
 import { choosePathFor, getActivePaths } from '@/lib/paths';
+import { assignMarket } from './markets';
 
 export type DiscoveryRunResult = {
   dataSourceKey: string;
@@ -73,6 +74,18 @@ export async function runDiscoveryForSource(params: {
     return result;
   }
 
+  // A jurisdiction-specific source pointed at a national market would quietly
+  // return whichever single city it happens to be configured for and report a
+  // successful nationwide run. Skipping is honest; pretending is not.
+  if (market?.scope === 'NATIONAL' && connector.requiresMarket && !connector.supportsNationwide) {
+    const message =
+      `${dataSource.name} covers one jurisdiction at a time and cannot serve a nationwide market. ` +
+      `Bind it to a metro or state market instead.`;
+    result.errors.push(message);
+    await recordSourceOutcome(dataSource.id, { status: `skipped: ${message}`, failed: false, records: 0 });
+    return result;
+  }
+
   if (!hasCredential(connector.credentialEnvVar)) {
     const message = `${dataSource.name} needs ${connector.credentialEnvVar}, which is not set.`;
     result.errors.push(message);
@@ -104,6 +117,12 @@ export async function runDiscoveryForSource(params: {
   // Loaded once per run rather than per record: paths change rarely and a
   // record loop can be hundreds long.
   const paths = await getActivePaths(params.orgId);
+  // Every enabled market, so a record surfaced by the national sweep can be
+  // re-homed onto the narrowest market that actually contains it.
+  const allMarkets = await prisma.market.findMany({
+    where: { orgId: params.orgId, isEnabled: true },
+    select: { id: true, scope: true, state: true, states: true, cities: true, postalCodes: true },
+  });
 
   for (const record of records) {
     try {
@@ -117,6 +136,7 @@ export async function runDiscoveryForSource(params: {
         origin,
         marketId: market?.id ?? null,
         paths,
+        candidateMarkets: allMarkets,
       });
       result.evidenceCreated += outcome.evidenceCreated ? 1 : 0;
       result.companiesCreated += outcome.companyCreated ? 1 : 0;
@@ -169,7 +189,9 @@ export async function resolveMarket(params: {
     id: market.id,
     name: market.name,
     slug: market.slug,
+    scope: market.scope,
     state: market.state,
+    states: market.states,
     centerLat: market.centerLat,
     centerLng: market.centerLng,
     radiusMeters: market.radiusMeters,
@@ -178,6 +200,39 @@ export async function resolveMarket(params: {
     counties: market.counties,
     sourceConfig: (market.sourceConfig ?? {}) as Record<string, unknown>,
   };
+}
+
+/**
+ * Decides which markets a source actually runs against.
+ *
+ * The naive answer — every source against every market — is wrong in both
+ * directions. A nationwide source run once per metro would issue the same
+ * national query eight times and dedupe seven of them, burning quota to learn
+ * nothing. A jurisdiction-specific source run against the national market
+ * would return one city's data and call it national coverage.
+ *
+ * So: nationwide-capable sources run once against the national market when one
+ * is enabled, and local sources run once per local market.
+ */
+export function planTargets<M extends { id: string; scope: MarketScope }>(
+  connector: { requiresMarket?: boolean; supportsNationwide?: boolean },
+  boundMarketId: string | null,
+  markets: M[],
+): Array<M | null> {
+  if (!connector.requiresMarket) return [null];
+  if (boundMarketId) return markets.filter((m) => m.id === boundMarketId);
+
+  const national = markets.find((m) => m.scope === 'NATIONAL');
+  const local = markets.filter((m) => m.scope !== 'NATIONAL');
+
+  if (connector.supportsNationwide) {
+    // One national sweep covers every local market it contains. Without a
+    // national market configured, fall back to running each local one.
+    return national ? [national] : local;
+  }
+
+  // Local-only source: never point it at the national market.
+  return local;
 }
 
 /**
@@ -206,11 +261,7 @@ export async function runDiscoveryAcrossMarkets(params: {
     if (!connector) continue;
     if (params.liveOnly && !connector.isLive) continue;
 
-    const targets = connector.requiresMarket
-      ? source.marketId
-        ? markets.filter((m) => m.id === source.marketId)
-        : markets
-      : [null];
+    const targets = planTargets(connector, source.marketId, markets);
 
     for (const target of targets) {
       results.push(
@@ -244,6 +295,7 @@ async function ingestRecord(params: {
   origin: DataOrigin;
   marketId: string | null;
   paths: BusinessPath[];
+  candidateMarkets: Array<{ id: string; scope: MarketScope; state: string | null; states: string[]; cities: string[]; postalCodes: string[] }>;
 }): Promise<IngestOutcome> {
   const { orgId, dataSource, record } = params;
   const outcome: IngestOutcome = { evidenceCreated: false, companyCreated: false, signalsCreated: 0, signalsDuplicate: 0 };
@@ -316,9 +368,16 @@ async function ingestRecord(params: {
   const detected = detectSignals(text);
 
   /** Attributes every signal from this record shares, whatever triggered it. */
+  const resolvedMarketId =
+    assignMarket(params.candidateMarkets, {
+      state: record.state,
+      location: record.location,
+      postalCode: typeof record.payload?.postalCode === 'string' ? record.payload.postalCode : null,
+    })?.id ?? params.marketId;
+
   const leadFields = {
     origin: params.origin,
-    marketId: params.marketId,
+    marketId: resolvedMarketId,
     leadRole: record.leadRole ?? leadRoleFromCompanyRole(record.subjectRole),
     segment: record.segment ?? ('MIXED' as MarketSegment),
     requiredService: record.requiredService ?? null,
@@ -678,18 +737,44 @@ export async function runAllDiscovery(orgId: string): Promise<DiscoveryRunResult
   try {
     return await runDiscoveryAcrossMarkets({ orgId });
   } catch (error) {
-    return [
-      {
-        dataSourceKey: 'all',
-        marketName: null,
-        isLive: false,
-        recordsFetched: 0,
-        evidenceCreated: 0,
-        signalsCreated: 0,
-        signalsDuplicate: 0,
-        companiesCreated: 0,
-        errors: [String(error)],
-      },
-    ];
+    return [failedRun(String(error))];
   }
+}
+
+/**
+ * Fixture-only discovery, for the demonstration seed.
+ *
+ * The seed must never call a live source: it would spend real quota building
+ * fake data, take minutes instead of seconds, and fail entirely on a machine
+ * with no outbound network. Demo content comes from fixtures, and everything
+ * it produces is stamped SEED_DEMO.
+ */
+export async function runDemoDiscovery(orgId: string): Promise<DiscoveryRunResult[]> {
+  ensureConnectorsRegistered();
+  try {
+    const sources = await prisma.dataSource.findMany({ where: { orgId, isEnabled: true } });
+    const results: DiscoveryRunResult[] = [];
+    for (const source of sources) {
+      const connector = getConnector(source.connector);
+      if (!connector || connector.isLive) continue;
+      results.push(await runDiscoveryForSource({ orgId, dataSourceId: source.id }));
+    }
+    return results;
+  } catch (error) {
+    return [failedRun(String(error))];
+  }
+}
+
+function failedRun(message: string): DiscoveryRunResult {
+  return {
+    dataSourceKey: 'all',
+    marketName: null,
+    isLive: false,
+    recordsFetched: 0,
+    evidenceCreated: 0,
+    signalsCreated: 0,
+    signalsDuplicate: 0,
+    companiesCreated: 0,
+    errors: [message],
+  };
 }
