@@ -705,6 +705,21 @@ describe('partitioned connectors report total failure honestly', () => {
     );
   });
 
+  it('distinguishes a blocked key from a disabled API, because the fixes differ', async () => {
+    vi.stubEnv('GOOGLE_PLACES_API_KEY', 'restricted-key');
+    setTransport(async () =>
+      jsonResponse(
+        { error: { message: 'Requests to this API places.googleapis.com method google.maps.places.v1.Places.SearchText are blocked.' } },
+        403,
+      ),
+    );
+    // "Enable the API" is the wrong instruction here — it already is enabled,
+    // and the key's own restrictions are what refused the call.
+    await expect(new GooglePlacesConnector().fetch(context({ market: national }))).rejects.toThrow(
+      /not allowed to call it.*API restrictions/s,
+    );
+  });
+
   it(
     'NPPES fails the run when every request fails',
     async () => {

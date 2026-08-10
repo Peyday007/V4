@@ -219,6 +219,7 @@ export class GooglePlacesConnector implements DiscoveryConnector {
     const perRequest = Math.max(1, Math.floor(context.maxRecords / (anchors.length * queries.length)));
     const records: RawRecord[] = [];
     let attempted = 0;
+    let keyBlocked = false;
     const failures: string[] = [];
 
     for (const anchor of anchors) {
@@ -256,6 +257,9 @@ export class GooglePlacesConnector implements DiscoveryConnector {
             if (record) records.push(record);
           }
         } catch (error) {
+          // Tested against the untruncated error: the signature Google uses
+          // sits past the 120 characters kept for display.
+          if (/are blocked|API_KEY_SERVICE_BLOCKED/i.test(String(error))) keyBlocked = true;
           failures.push(`${anchor.name}/"${query.query}": ${String(error).slice(0, 120)}`);
         }
       }
@@ -265,10 +269,12 @@ export class GooglePlacesConnector implements DiscoveryConnector {
     // a quiet week. Reporting it as a successful run with zero results is the
     // one outcome that leaves the operator with nothing to act on.
     if (attempted > 0 && failures.length === attempted) {
-      throw new Error(
-        `All ${attempted} Places request(s) failed. Check the key is valid and that "Places API (New)" is enabled. ` +
-          failures.slice(0, 2).join(' | '),
-      );
+      // Google distinguishes these two cases in its own wording, and they have
+      // different fixes, so repeat the distinction rather than guessing.
+      const hint = keyBlocked
+        ? 'The API is reachable but this key is not allowed to call it — check the key\'s API restrictions in Google Cloud (Credentials → the key → API restrictions), and that the key belongs to the project where Places API (New) is enabled.'
+        : 'Check the key is valid, that "Places API (New)" is enabled, and that billing is active on the project.';
+      throw new Error(`All ${attempted} Places request(s) failed. ${hint} ${failures.slice(0, 2).join(' | ')}`);
     }
 
     return records.slice(0, context.maxRecords);

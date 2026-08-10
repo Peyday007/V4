@@ -140,7 +140,7 @@ export function DiscoveryStatus({ sources, liveLeads }: { sources: SourceStatus[
                   {source.lastRecordCount !== null && ` · ${source.lastRecordCount} record(s)`}
                   {source.lastRunStatus && source.lastRunStatus !== 'ok' && (
                     <div className="mono" style={{ color: 'var(--warning)' }}>
-                      {source.lastRunStatus.slice(0, 160)}
+                      {source.lastRunStatus.slice(0, 400)}
                     </div>
                   )}
                 </td>
