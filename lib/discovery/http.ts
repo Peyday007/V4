@@ -134,8 +134,16 @@ export async function httpJson<T = unknown>(options: HttpJsonOptions): Promise<T
       });
 
       if (!response.ok) {
-        const text = (await response.text().catch(() => '')).slice(0, 500);
-        throw new HttpError(`${response.status} from ${hostOf(options.url)}`, response.status, text);
+        const text = (await response.text().catch(() => '')).slice(0, 2000);
+        // The status alone is close to useless for diagnosis: Google returns a
+        // 403 that says exactly which API is disabled in which project, and
+        // USAspending returns a 500 naming the field it choked on. Surfacing
+        // that turns "it failed" into an instruction.
+        throw new HttpError(
+          `${response.status} from ${hostOf(options.url)}${summariseError(text) ? ` — ${summariseError(text)}` : ''}`,
+          response.status,
+          text,
+        );
       }
 
       const text = await response.text();
@@ -156,6 +164,35 @@ export async function httpJson<T = unknown>(options: HttpJsonOptions): Promise<T
   }
 
   throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
+
+/**
+ * Pulls the human-readable message out of an error body.
+ *
+ * Every API nests it somewhere different — Google under `error.message`,
+ * USAspending under `detail`, others under `message` — and falling back to the
+ * raw text is still better than discarding it.
+ */
+export function summariseError(body: string): string {
+  if (!body) return '';
+  try {
+    const parsed = JSON.parse(body) as Record<string, unknown>;
+    const nested = parsed.error as Record<string, unknown> | undefined;
+    const message =
+      (typeof nested?.message === 'string' && nested.message) ||
+      (typeof parsed.detail === 'string' && parsed.detail) ||
+      (typeof parsed.message === 'string' && parsed.message) ||
+      (typeof parsed.error === 'string' && parsed.error) ||
+      '';
+    if (message) return message.slice(0, 300);
+  } catch {
+    // Not JSON — HTML error pages are common and the tag soup is not useful.
+  }
+  // An HTML error page is a proxy or gateway talking, not the API. Its text is
+  // boilerplate, so it is worth less than the status code already reported.
+  // Tested against the raw body — stripping tags first would hide the evidence.
+  if (/^\s*<(?:!doctype|html|\?xml)/i.test(body)) return '';
+  return body.replace(/\s+/g, ' ').trim().slice(0, 300);
 }
 
 function hostOf(url: string): string {

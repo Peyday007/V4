@@ -2,9 +2,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SocrataConnector, buildSocrataUrl, readDatasets, toRawRecord, type SocrataDatasetConfig } from '@/lib/discovery/connectors/socrata';
 import { GooglePlacesConnector, DEFAULT_PLACE_QUERIES, readQueries, toPlaceRecord, searchAnchors, NATIONAL_ANCHORS, ANCHORS_PER_RUN } from '@/lib/discovery/connectors/googlePlaces';
 import { SamGovConnector, readNaics, toSamRecord } from '@/lib/discovery/connectors/samGov';
-import { setTransport, resetTransport, resetRateLimits, httpJson, HttpError, MissingCredentialError, readCredential } from '@/lib/discovery/http';
+import { setTransport, resetTransport, resetRateLimits, httpJson, HttpError, MissingCredentialError, readCredential, summariseError } from '@/lib/discovery/http';
 import { NppesConnector, geographicPartitions, toNppesRecord, toNppesRecords, readEmitDistribution, maxPartitionsFor, rotatePartitions, US_STATES } from '@/lib/discovery/connectors/nppes';
-import { placeOfPerformanceFilters, toAwardRecord, formatAwardLocation } from '@/lib/discovery/connectors/usaSpending';
+import { UsaSpendingConnector, placeOfPerformanceFilters, toAwardRecord, formatAwardLocation, chunk, LOCATIONS_PER_REQUEST } from '@/lib/discovery/connectors/usaSpending';
 import { assignMarket, METRO_PRESETS } from '@/lib/discovery/markets';
 import { planTargets } from '@/lib/discovery/run';
 import type { ConnectorContext, MarketContext } from '@/lib/discovery/connector';
@@ -727,4 +727,68 @@ describe('partitioned connectors report total failure honestly', () => {
     );
     expect(records.length).toBeGreaterThan(0);
   });
+});
+
+describe('upstream error messages are surfaced', () => {
+  it('extracts Google-style nested error messages', () => {
+    expect(
+      summariseError(JSON.stringify({ error: { code: 403, message: 'Places API (New) has not been used in project 123 before or it is disabled.' } })),
+    ).toMatch(/Places API \(New\) has not been used/);
+  });
+
+  it('extracts USAspending-style detail messages', () => {
+    expect(summariseError(JSON.stringify({ detail: 'Field \'Foo\' is not a valid field' }))).toBe(
+      "Field 'Foo' is not a valid field",
+    );
+  });
+
+  it('falls back to plain text and discards HTML soup', () => {
+    expect(summariseError('Service Unavailable')).toBe('Service Unavailable');
+    expect(summariseError('<html><body>nope</body></html>')).toBe('');
+    expect(summariseError('')).toBe('');
+  });
+
+  it('puts the message in the thrown error, not just the body', async () => {
+    setTransport(async () =>
+      new Response(JSON.stringify({ error: { message: 'API key not valid. Please pass a valid API key.' } }), {
+        status: 400,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    await expect(httpJson({ url: 'https://example.test/x', attempts: 1 })).rejects.toThrow(/API key not valid/);
+  });
+});
+
+describe('USAspending request batching', () => {
+  it('splits a nationwide sweep into batches rather than one huge query', () => {
+    expect(chunk(US_STATES, LOCATIONS_PER_REQUEST).length).toBe(Math.ceil(US_STATES.length / LOCATIONS_PER_REQUEST));
+    expect(chunk([1, 2, 3], 8)).toEqual([[1, 2, 3]]);
+    expect(chunk([], 8)).toEqual([]);
+  });
+
+  it('keeps results when only some batches fail', async () => {
+    let call = 0;
+    setTransport(async () => {
+      call += 1;
+      return call === 1
+        ? new Response('{"detail":"boom"}', { status: 500, headers: { 'content-type': 'application/json' } })
+        : new Response(
+            JSON.stringify({
+              results: [{ 'Award ID': 'A1', 'Recipient Name': 'Acme Facilities', 'Award Amount': 100, 'Place of Performance State Code': 'TX' }],
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          );
+    });
+    const records = await new UsaSpendingConnector().fetch(
+      context({ maxRecords: 50, market: { ...MARKET, scope: 'NATIONAL', state: null, states: ['TX', 'IL', 'AZ', 'GA', 'NY', 'MT', 'KS', 'ME', 'CA'], cities: [] } }),
+    );
+    expect(records.length).toBeGreaterThan(0);
+  }, 30_000);
+
+  it('fails the run when every batch fails', async () => {
+    setTransport(async () => new Response('{"detail":"nope"}', { status: 500, headers: { 'content-type': 'application/json' } }));
+    await expect(
+      new UsaSpendingConnector().fetch(context({ market: { ...MARKET, scope: 'STATE', states: ['TX'], cities: [] } })),
+    ).rejects.toThrow(/All 1 USAspending request\(s\) failed.*nope/s);
+  }, 30_000);
 });

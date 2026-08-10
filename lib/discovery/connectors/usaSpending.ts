@@ -24,6 +24,32 @@ import { US_STATES } from './nppes';
 
 const ENDPOINT = 'https://api.usaspending.gov/api/v2/search/spending_by_award/';
 
+/**
+ * Location filters per request. Fifty-one at once is a heavy enough query for
+ * the API to fail on, and batching lets one bad state fail alone.
+ */
+export const LOCATIONS_PER_REQUEST = 8;
+
+/** Documented contract fields. Anything outside this list risks a 500. */
+const AWARD_FIELDS = [
+  'Award ID',
+  'Recipient Name',
+  'Award Amount',
+  'Start Date',
+  'End Date',
+  'Awarding Agency',
+  'Awarding Sub Agency',
+  'Place of Performance State Code',
+  'Place of Performance Zip5',
+  'Description',
+];
+
+export function chunk<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
 /** Facility-services NAICS. Same family the SAM.gov connector uses. */
 const DEFAULT_NAICS = ['561720', '561790', '561210', '561740'];
 
@@ -70,40 +96,50 @@ export class UsaSpendingConnector implements DiscoveryConnector {
     // needs crews today.
     const since = context.since ?? new Date(Date.now() - 270 * 86_400_000);
 
-    const response = await httpJson<SpendingResponse>({
-      url: ENDPOINT,
-      method: 'POST',
-      body: {
-        filters: {
-          award_type_codes: ['A', 'B', 'C', 'D'],
-          time_period: [{ start_date: since.toISOString().slice(0, 10), end_date: new Date().toISOString().slice(0, 10) }],
-          naics_codes: naics,
-          place_of_performance_locations: locations,
-        },
-        fields: [
-          'Award ID',
-          'Recipient Name',
-          'Award Amount',
-          'Start Date',
-          'End Date',
-          'Awarding Agency',
-          'Awarding Sub Agency',
-          'Place of Performance State Code',
-          'Place of Performance Zip5',
-          'Description',
-        ],
-        sort: 'Award Amount',
-        order: 'desc',
-        limit: Math.min(context.maxRecords, 100),
-        page: 1,
-        subawards: false,
-      },
-      timeoutMs: 25_000,
-      rateLimitKey: 'usaspending',
-      rateLimitPerMin: context.rateLimitPerMin ?? 30,
-    });
+    // A nationwide sweep is fifty-one location filters. Sent as one request
+    // that is a large enough query to fail server-side, so it goes in batches.
+    // Batching also means one bad state cannot lose the whole run.
+    const batches = chunk(locations, LOCATIONS_PER_REQUEST);
+    const rows: NonNullable<SpendingResponse['results']> = [];
+    const failures: string[] = [];
 
-    return (response.results ?? [])
+    for (const batch of batches) {
+      if (rows.length >= context.maxRecords) break;
+      try {
+        const response = await httpJson<SpendingResponse>({
+          url: ENDPOINT,
+          method: 'POST',
+          body: {
+            filters: {
+              award_type_codes: ['A', 'B', 'C', 'D'],
+              time_period: [
+                { start_date: since.toISOString().slice(0, 10), end_date: new Date().toISOString().slice(0, 10) },
+              ],
+              naics_codes: naics,
+              place_of_performance_locations: batch,
+            },
+            fields: AWARD_FIELDS,
+            sort: 'Award Amount',
+            order: 'desc',
+            limit: Math.min(Math.max(context.maxRecords, 10), 100),
+            page: 1,
+            subawards: false,
+          },
+          timeoutMs: 25_000,
+          rateLimitKey: 'usaspending',
+          rateLimitPerMin: context.rateLimitPerMin ?? 30,
+        });
+        rows.push(...(response.results ?? []));
+      } catch (error) {
+        failures.push(`${batch.map((b) => b.state ?? b.zip ?? b.city).join(',')}: ${String(error).slice(0, 160)}`);
+      }
+    }
+
+    if (batches.length > 0 && failures.length === batches.length) {
+      throw new Error(`All ${batches.length} USAspending request(s) failed. ${failures.slice(0, 2).join(' | ')}`);
+    }
+
+    return rows
       .map((row) => toAwardRecord(row, market.name))
       .filter((record): record is RawRecord => record !== null)
       .slice(0, context.maxRecords);
