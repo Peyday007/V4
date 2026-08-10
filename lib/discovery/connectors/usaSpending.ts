@@ -136,7 +136,17 @@ export class UsaSpendingConnector implements DiscoveryConnector {
     }
 
     if (batches.length > 0 && failures.length === batches.length) {
-      throw new Error(`All ${batches.length} USAspending request(s) failed. ${failures.slice(0, 2).join(' | ')}`);
+      // A "Web Page Blocked" body is a security appliance in front of the API,
+      // not the API refusing the query — the request carries no credential and
+      // the endpoint is public. Nothing in the query can fix that, so say so
+      // rather than sending the operator to check their filters again.
+      const networkBlock = failures.some((f) => /Web Page Blocked|blocked by|access denied/i.test(f));
+      const hint = networkBlock
+        ? 'A network filter in front of the API is dropping these requests before they arrive — the response is a block page, not an API error. ' +
+          'This is outside the query: try setting DISCOVERY_USER_AGENT to a different value, or disable this source. ' +
+          'The other nationwide sources are unaffected.'
+        : 'Check the market has states configured.';
+      throw new Error(`All ${batches.length} USAspending request(s) failed. ${hint} ${failures.slice(0, 2).join(' | ')}`);
     }
 
     return rows

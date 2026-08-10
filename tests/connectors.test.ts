@@ -810,3 +810,42 @@ describe('USAspending request batching', () => {
     ).rejects.toThrow(/All 1 USAspending request\(s\) failed.*nope/s);
   }, 30_000);
 });
+
+describe('network-level blocks are named as such', () => {
+  it('says a block page is a filter, not a query problem', async () => {
+    // "Web Page Blocked!" is an appliance in front of the API. Telling the
+    // operator to check their query would send them somewhere with no fix.
+    setTransport(async () =>
+      new Response(JSON.stringify({ page_title: 'Web Page Blocked!', display_message: 'The page cannot be displayed.' }), {
+        status: 500,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    await expect(
+      new UsaSpendingConnector().fetch(context({ market: { ...MARKET, scope: 'STATE', states: ['TX'], cities: [] } })),
+    ).rejects.toThrow(/network filter in front of the API.*DISCOVERY_USER_AGENT/s);
+  }, 30_000);
+
+  it('lets the user agent be overridden without a deploy', async () => {
+    vi.stubEnv('DISCOVERY_USER_AGENT', 'CustomAgent/9.9');
+    let seen = '';
+    setTransport(async (_url, init) => {
+      seen = (init.headers as Record<string, string>)['user-agent'];
+      return jsonResponse({ ok: true });
+    });
+    await httpJson({ url: 'https://example.test/x' });
+    expect(seen).toBe('CustomAgent/9.9');
+  });
+
+  it('does not imitate a crawler signature by default', async () => {
+    let seen = '';
+    setTransport(async (_url, init) => {
+      seen = (init.headers as Record<string, string>)['user-agent'];
+      return jsonResponse({ ok: true });
+    });
+    await httpJson({ url: 'https://example.test/x' });
+    expect(seen).toContain('DealDispatch');
+    // "(compatible; ...)" is the classic bot format and some filters match it.
+    expect(seen).not.toContain('compatible;');
+  });
+});

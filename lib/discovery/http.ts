@@ -43,14 +43,21 @@ export class MissingCredentialError extends Error {
 /**
  * User agent.
  *
- * Identifies the client honestly, but leads with a conventional browser token
- * because several public APIs sit behind WAFs that drop unrecognised agents
- * outright. USAspending returned a Palo Alto "Web Page Blocked!" HTML page
- * rather than an API error, which is that filter rather than a rejection by
- * the service — the request itself is permitted and unauthenticated.
+ * Configurable, because this is the one request property that a security
+ * appliance in front of a public API is most likely to judge, and there is no
+ * way to know from here which string a given deployment needs. USAspending
+ * returns a "Web Page Blocked!" page for this client from Vercel's egress; a
+ * different deployment may not see it at all.
+ *
+ * The default identifies the software and its purpose plainly. Deliberately no
+ * "(compatible; ...)" wrapper — that is the classic crawler signature and some
+ * filters match on it specifically, so imitating it can hurt rather than help.
  */
-const USER_AGENT =
-  'Mozilla/5.0 (compatible; DealDispatch/1.0; +automated lead discovery; contact via deployment operator)';
+const DEFAULT_USER_AGENT = 'DealDispatch/1.0 (automated lead discovery for a facility-services operator)';
+
+function userAgent(): string {
+  return process.env.DISCOVERY_USER_AGENT?.trim() || DEFAULT_USER_AGENT;
+}
 
 /** Responses larger than this are a sign the query was wrong, not a windfall. */
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
@@ -134,7 +141,7 @@ export async function httpJson<T = unknown>(options: HttpJsonOptions): Promise<T
         method: options.method ?? 'GET',
         headers: {
           accept: 'application/json',
-          'user-agent': USER_AGENT,
+          'user-agent': userAgent(),
           ...(options.body ? { 'content-type': 'application/json' } : {}),
           ...(options.headers ?? {}),
         },
