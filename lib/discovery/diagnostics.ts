@@ -123,6 +123,58 @@ export function inspectDistribution(stats: DistributionStats): DistributionWarni
   return warnings;
 }
 
+/**
+ * Sub-component inspection.
+ *
+ * A total that is constant tells you something is wrong; it does not tell you
+ * which of five weighted parts is stuck. Account fit shipped as a constant
+ * twice — once at 100 and once at 71 — and both times the diagnosis took a
+ * person reading the scorer and doing the arithmetic by hand. Naming the
+ * invariant component turns that into a line of output.
+ *
+ * A component that never varies is reported even when the total does vary,
+ * because it is dead weight in the score either way.
+ */
+export function inspectComponents(
+  dimension: string,
+  samples: Array<Array<{ label: string; weight: number; value: number }>>,
+): DistributionWarning[] {
+  if (samples.length < MIN_SAMPLE) return [];
+
+  const byLabel = new Map<string, { weight: number; values: number[] }>();
+  for (const sample of samples) {
+    for (const part of sample) {
+      const entry = byLabel.get(part.label) ?? { weight: part.weight, values: [] };
+      entry.values.push(part.value);
+      byLabel.set(part.label, entry);
+    }
+  }
+
+  const warnings: DistributionWarning[] = [];
+  for (const [label, { weight, values }] of byLabel) {
+    if (values.length < MIN_SAMPLE) continue;
+    const distinct = new Set(values).size;
+    if (distinct > 1) continue;
+
+    const value = values[0];
+    warnings.push({
+      dimension: `${dimension}.${label}`,
+      // A component pinned at its maximum is the tautology case — a box that
+      // cannot be unticked. Pinned at anything else usually means the input
+      // feeding it is missing rather than uniform.
+      severity: value >= 0.999 ? 'CRITICAL' : 'WARNING',
+      finding:
+        `The "${label}" component of ${dimension} is ${value.toFixed(2)} for all ${values.length} records. ` +
+        `It contributes a fixed ${(value * weight * 100).toFixed(0)} points to every score and separates nothing.`,
+      likelyCause:
+        value >= 0.999
+          ? `This condition cannot be false for any record the pipeline produces — check whether it is implied by how the record got here at all. Removing it would change no ranking; only its ${(weight * 100).toFixed(0)}% of the weight going elsewhere would.`
+          : `Every record is failing or partially failing this check the same way, which usually means the input behind it is absent rather than uniform. Check that the data feeding "${label}" is actually populated.`,
+    });
+  }
+  return warnings;
+}
+
 export type DataQualityWarning = {
   kind: string;
   severity: Severity;
@@ -196,6 +248,8 @@ export function diagnose(input: {
   contactability: number[];
   fulfilment: number[];
   priority: number[];
+  /** Per-record breakdown of the fit score, when the caller has it. */
+  fitComponents?: Array<Array<{ label: string; weight: number; value: number }>>;
   records: Parameters<typeof inspectDataQuality>[0];
 }): RunDiagnostics {
   const distributions = [
@@ -206,7 +260,10 @@ export function diagnose(input: {
     describeDistribution('priority', input.priority),
   ];
 
-  const warnings = distributions.flatMap(inspectDistribution);
+  const warnings = [
+    ...distributions.flatMap(inspectDistribution),
+    ...(input.fitComponents ? inspectComponents('accountFit', input.fitComponents) : []),
+  ];
   const dataQuality = inspectDataQuality(input.records);
 
   // A run whose scores do not vary cannot be used to prioritise work, whatever

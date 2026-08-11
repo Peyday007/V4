@@ -20,8 +20,19 @@ export type RawRecord = {
   excerpt: string;
   sourceUrl?: string;
   observedAt?: Date;
+  /**
+   * The subject's own "City, ST", or absent.
+   *
+   * Never the market, metro anchor or jurisdiction a run was pointed at. A
+   * search scope is not a fact about the business, and substituting one for
+   * the other produced a board of businesses in twelve states all showing the
+   * same city.
+   */
   location?: string;
   state?: string;
+  /** Street line, where the source published one. A deduplication key. */
+  addressLine1?: string;
+  postalCode?: string;
   companyName?: string;
   companyWebsite?: string;
   /**

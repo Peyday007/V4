@@ -217,7 +217,7 @@ export function toAwardRecord(
     observedAt: start && !Number.isNaN(start.getTime()) ? start : undefined,
     // Zip then state, never "KS, KS" — the company's location row is built from
     // this string, and a city of "KS" is worse than no city at all.
-    location: formatAwardLocation(row['Place of Performance Zip5'], state) ?? marketName,
+    location: formatAwardLocation(row['Place of Performance Zip5'], state) ?? undefined,
     state: state ?? undefined,
     companyName: recipient,
     // The recipient won the work. They are a prime contractor who may need

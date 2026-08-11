@@ -3,7 +3,8 @@ import type { DataOrigin } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { requirePagePermission } from '@/lib/auth/page';
 import { getActivePaths } from '@/lib/paths';
-import { freshnessOf, scoreLead, type Freshness } from '@/lib/discovery/leadScore';
+import { buildBoard, missingEvidence, type BoardAccount, type RenderedHypothesis } from '@/lib/discovery/board';
+import { describeDiscoveryTime, type Freshness } from '@/lib/discovery/eventTime';
 import { Badge, Empty, humanize, relativeDays } from '@/components/ui';
 import { DiscoveryStatus } from '@/components/DiscoveryStatus';
 import { hasCredential } from '@/lib/discovery/http';
@@ -11,12 +12,17 @@ import { hasCredential } from '@/lib/discovery/http';
 export const dynamic = 'force-dynamic';
 
 /**
- * Discovered leads, ranked.
+ * Discovered accounts and what we think they might be.
  *
- * The board shows opportunities that have been qualified. This shows what
- * discovery found before anyone has looked at it, which is a different thing
- * and needs to stay visibly different — including whether the record came from
- * a real source or from the demonstration seed.
+ * One card per business. Its path candidacies sit beneath it, because a
+ * healthcare facility can legitimately be both a cleaning prospect and a
+ * consumables prospect without being two companies.
+ *
+ * Nothing on this page computes a score. Everything shown was written by the
+ * assessment run, and a record the assessment has not reached shows no number
+ * at all — the previous version fell back to a second scorer here, and that
+ * fallback is what produced a board of near-identical 88s ranked on the date
+ * we happened to fetch them.
  */
 
 const ORIGIN_LABEL: Record<DataOrigin, { label: string; tone: string }> = {
@@ -36,21 +42,28 @@ const STAGE_TONE: Record<string, string> = {
   NURTURE: 'accent',
 };
 
-function ScoreCell({ label, value }: { label: string; value: number }) {
-  return (
-    <div className="stat">
-      <div className="stat-label">{label}</div>
-      <div className="stat-value" style={{ fontSize: '1.1rem' }}>{Math.round(value * 100)}</div>
-    </div>
-  );
-}
-
 const FRESHNESS_TONE: Record<Freshness, string> = {
   FRESH: 'success',
   RECENT: 'accent',
   AGEING: 'warning',
   STALE: 'danger',
 };
+
+const VERDICT_TONE: Record<string, string> = {
+  CREDIBLE: 'success',
+  SUSPECT: 'warning',
+  NOT_CREDIBLE: 'danger',
+};
+
+function ScoreCell({ label, value, note }: { label: string; value: number; note?: string }) {
+  return (
+    <div className="stat">
+      <div className="stat-label">{label}</div>
+      <div className="stat-value" style={{ fontSize: '1.1rem' }}>{Math.round(value * 100)}</div>
+      {note && <div className="tiny dim">{note}</div>}
+    </div>
+  );
+}
 
 export default async function LeadsPage({
   searchParams,
@@ -61,28 +74,37 @@ export default async function LeadsPage({
 
   const originFilter = (searchParams.origin ?? 'LIVE_DISCOVERY').toUpperCase();
   const showAllOrigins = originFilter === 'ALL';
+  const originWhere = showAllOrigins ? {} : { origin: originFilter as DataOrigin };
 
-  const [paths, markets, liveSources, signals, counts] = await Promise.all([
+  const [paths, markets, liveSources, hypotheses, unassessed, counts] = await Promise.all([
     getActivePaths(user.orgId),
     prisma.market.findMany({ where: { orgId: user.orgId }, orderBy: { isDefault: 'desc' } }),
     prisma.dataSource.findMany({ where: { orgId: user.orgId, isLive: true }, orderBy: { name: 'asc' } }),
-    prisma.discoverySignal.findMany({
+    prisma.pathHypothesis.findMany({
+      where: {
+        orgId: user.orgId,
+        company: originWhere,
+        ...(searchParams.path ? { path: { key: searchParams.path } } : {}),
+        ...(searchParams.market ? { signals: { some: { marketId: searchParams.market } } } : {}),
+      },
+      include: {
+        path: true,
+        company: { include: { contacts: { orderBy: { createdAt: 'asc' } } } },
+        signals: { include: { dataSource: true, market: true }, orderBy: { createdAt: 'asc' } },
+      },
+      orderBy: { priorityScore: 'desc' },
+      take: 300,
+    }),
+    // Records that exist but have never been assessed. They are counted and
+    // named, never scored — an unassessed record with a number beside it is
+    // exactly the defect this page had.
+    prisma.discoverySignal.count({
       where: {
         orgId: user.orgId,
         status: { in: ['NEW', 'TRIAGED'] },
-        ...(showAllOrigins ? {} : { origin: originFilter as DataOrigin }),
-        ...(searchParams.path ? { path: { key: searchParams.path } } : {}),
-        ...(searchParams.market ? { marketId: searchParams.market } : {}),
+        hypothesisId: null,
+        ...originWhere,
       },
-      include: {
-        company: { include: { contacts: { take: 1, orderBy: { createdAt: 'asc' } } } },
-        path: true,
-        market: true,
-        dataSource: true,
-        hypothesis: { include: { path: true } },
-      },
-      orderBy: { observedAt: 'desc' },
-      take: 200,
     }),
     prisma.discoverySignal.groupBy({
       by: ['origin'],
@@ -94,48 +116,146 @@ export default async function LeadsPage({
   const byOrigin = Object.fromEntries(counts.map((c) => [c.origin, c._count])) as Record<string, number>;
   const liveCount = byOrigin.LIVE_DISCOVERY ?? 0;
 
-  // Ranking happens here rather than in SQL because the score depends on path
-  // weights and on contact availability, neither of which is a column.
-  const ranked = signals
-    .map((signal) => {
-      const contact = signal.company?.contacts[0];
-      const hint = (signal.contactHint ?? {}) as { phone?: string; email?: string };
-      const phone = contact?.phone ?? hint.phone ?? null;
-      const email = contact?.email ?? hint.email ?? null;
+  // Collapse hypotheses onto their account. The hypothesis table already holds
+  // one row per (company, path), so two sources finding the same business
+  // cannot produce two cards here however many signals they wrote.
+  const accountsById = new Map<string, BoardAccount>();
+  for (const h of hypotheses) {
+    const company = h.company;
+    const existing = accountsById.get(company.id);
+    const contact = company.contacts[0];
+    const account: BoardAccount =
+      existing ??
+      {
+        companyId: company.id,
+        name: company.legalName,
+        cityName: company.cityName,
+        stateCode: company.stateCode,
+        phone: company.phone ?? contact?.phone ?? null,
+        email: contact?.email ?? null,
+        website: company.website,
+        origin: company.origin,
+        externalPlaceId: company.externalPlaceId,
+        normalizedPhone: company.normalizedPhone,
+        normalizedAddress: company.normalizedAddress,
+        hypotheses: [],
+      };
 
-      const score = scoreLead(
-        {
-          strength: signal.strength,
-          confidence: signal.confidence,
-          observedAt: signal.observedAt,
-          lastSeenAt: signal.lastSeenAt,
-          origin: signal.origin,
-          leadRole: signal.leadRole,
-          segment: signal.segment,
-          hasPhone: Boolean(phone),
-          hasEmail: Boolean(email),
-          hasSourceUrl: Boolean(signal.sourceUrl),
-          requiredService: signal.requiredService,
-          sourceIsLive: signal.dataSource?.isLive ?? false,
-        },
-        signal.path,
-      );
+    const explanation = (h.scoreExplanation ?? {}) as Record<string, string>;
+    const withUrl = h.signals.find((s) => s.sourceUrl);
+    // Only a source-stated date is eligible. `observedAt` is deliberately not
+    // read anywhere in this file.
+    const published = h.signals
+      .map((s) => s.sourcePublishedAt)
+      .filter((d): d is Date => Boolean(d))
+      .sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
 
-      return { signal, score, phone, email };
-    })
-    .sort((a, b) => b.score.score - a.score.score);
+    account.hypotheses.push({
+      id: h.id,
+      pathId: h.pathId,
+      pathName: h.path.name,
+      leadRole: h.signals[0]?.leadRole ?? 'BUYER',
+      stage: h.stage,
+      accountFit: h.accountFitScore,
+      intent: h.intentScore,
+      contactability: h.contactabilityScore,
+      fulfilment: h.fulfillmentReadinessScore,
+      priority: Math.round(h.priorityScore),
+      scoreExplanation: explanation,
+      requiredService: h.signals[0]?.requiredService ?? null,
+      missing: missingEvidence({
+        needEvidence: h.needEvidence,
+        decisionMakerId: h.decisionMakerId,
+        timingEvidence: h.timingEvidence,
+        accountFit: h.accountFitScore,
+        nextStep: h.nextStep,
+      }),
+      sourceNames: [...new Set(h.signals.map((s) => s.dataSource?.name).filter((n): n is string => Boolean(n)))],
+      sourceUrl: withUrl?.sourceUrl ?? null,
+      sourcePublishedAt: published,
+      firstDiscoveredAt: h.firstDiscoveredAt,
+      lastSeenAt: h.lastSeenAt,
+      lastIntentSignalAt: h.lastIntentSignalAt,
+      signalCount: h.signals.length,
+      evidence: [...new Set(h.signals.flatMap((s) => s.classificationEvidence))].slice(0, 6),
+      marketName: h.signals.find((s) => s.market)?.market?.name ?? null,
+      isLiveSource: h.signals.some((s) => s.dataSource?.isLive),
+    });
+
+    if (!existing) accountsById.set(company.id, account);
+  }
+
+  const board = buildBoard({ accounts: [...accountsById.values()], unassessedSignals: unassessed });
 
   return (
     <>
       <div className="page-header">
         <div>
-          <h1>Discovered leads</h1>
+          <h1>Discovered accounts</h1>
           <p>
-            What the connectors found, ranked by how workable each one is rather than by when it arrived. Every lead
-            links back to the record it came from, so any ranking here can be checked against the source in one click.
+            One card per business. Each card lists the paths we think it might belong to, and every number beside it was
+            produced by the assessment run — nothing on this page is scored at render time.
           </p>
         </div>
-        <Badge tone={liveCount > 0 ? 'success' : 'warning'}>{liveCount} live</Badge>
+        <Badge tone={liveCount > 0 ? 'success' : 'warning'}>{liveCount} live records</Badge>
+      </div>
+
+      {/* The run's own assessment of its output, shown on load rather than
+          only after someone thinks to press a button. A degenerate board that
+          announces itself is recoverable; a silent one is not. */}
+      <div className={`card`}>
+        <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <div>
+            <div className="tiny dim">Can these scores be ranked?</div>
+            <div className="row mt">
+              <Badge tone={VERDICT_TONE[board.diagnostics.verdict] ?? ''}>{board.diagnostics.verdict.replace('_', ' ')}</Badge>
+              <span className="small">{board.diagnostics.verdictReason}</span>
+            </div>
+          </div>
+          <div className="tiny dim" style={{ textAlign: 'right', lineHeight: 1.7 }}>
+            {board.counts.accounts} account(s)<br />
+            {board.counts.hypotheses} path hypothes{board.counts.hypotheses === 1 ? 'is' : 'es'}<br />
+            {board.counts.signals} raw record(s), {board.counts.duplicateSignals} collapsed as duplicates<br />
+            {board.counts.quarantined} held back · {board.counts.unassessedSignals} unassessed
+          </div>
+        </div>
+
+        {board.rankingRefusedBecause && (
+          <div className="alert danger small mt">
+            <strong>Not presenting a ranking.</strong> {board.rankingRefusedBecause}
+          </div>
+        )}
+
+        {board.diagnostics.warnings.length > 0 && (
+          <ul className="list-reset tiny muted mt" style={{ lineHeight: 1.7 }}>
+            {board.diagnostics.warnings.map((w) => (
+              <li key={`${w.dimension}-${w.finding}`}>
+                <Badge tone={w.severity === 'CRITICAL' ? 'danger' : w.severity === 'WARNING' ? 'warning' : ''}>
+                  {w.severity.toLowerCase()}
+                </Badge>{' '}
+                <strong>{humanize(w.dimension)}:</strong> {w.finding} {w.likelyCause}
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {board.diagnostics.dataQuality.length > 0 && (
+          <ul className="list-reset tiny muted mt" style={{ lineHeight: 1.7 }}>
+            {board.diagnostics.dataQuality.map((q) => (
+              <li key={q.kind}>
+                <strong>{humanize(q.kind)}:</strong> {q.finding}
+                {q.examples.length > 0 && <span className="dim"> — {q.examples.join('; ')}</span>}
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {board.counts.unassessedSignals > 0 && (
+          <div className="alert warning small mt">
+            {board.counts.unassessedSignals} record(s) have been ingested but not assessed, so they carry no score and
+            are not shown below. Run <strong>Re-audit existing records</strong> to score them.
+          </div>
+        )}
       </div>
 
       <DiscoveryStatus
@@ -195,146 +315,75 @@ export default async function LeadsPage({
         </div>
       )}
 
-      {ranked.length === 0 ? (
+      {board.accounts.length === 0 ? (
         <div className="card">
-          <Empty>Nothing matching this filter.</Empty>
+          <Empty>
+            {board.counts.unassessedSignals > 0
+              ? 'Records are waiting to be assessed. Run the re-audit above to score them.'
+              : 'Nothing matching this filter.'}
+          </Empty>
         </div>
       ) : (
-        ranked.map(({ signal, score, phone, email }) => {
-          const origin = ORIGIN_LABEL[signal.origin];
-          const freshness = freshnessOf(signal.observedAt);
+        board.accounts.map((account) => {
+          const origin = ORIGIN_LABEL[account.origin as DataOrigin] ?? ORIGIN_LABEL.MANUAL;
+          const location = [account.cityName, account.stateCode].filter(Boolean).join(', ');
 
           return (
-            <div className="card" key={signal.id}>
+            <div className="card" key={account.companyId}>
               <div className="card-title">
                 <div>
                   <h2 style={{ marginBottom: '0.3rem' }}>
-                    {signal.company ? (
-                      <Link href={`/companies/${signal.company.id}`}>{signal.company.legalName}</Link>
-                    ) : (
-                      signal.headline
-                    )}
+                    <Link href={`/companies/${account.companyId}`}>{account.name}</Link>
                   </h2>
                   <div className="row">
                     <Badge tone={origin.tone}>{origin.label}</Badge>
-                    {signal.path && <Badge tone="accent">{signal.path.name}</Badge>}
-                    <Badge>{humanize(signal.leadRole)}</Badge>
-                    <Badge>{humanize(signal.segment)}</Badge>
-                    <Badge tone={FRESHNESS_TONE[freshness]}>{freshness.toLowerCase()}</Badge>
-                    {signal.hypothesis && (
-                      <Badge tone={STAGE_TONE[signal.hypothesis.stage] ?? ''}>{humanize(signal.hypothesis.stage)}</Badge>
-                    )}
-                    <Badge tone={signal.tier === 'USER_CONFIRMED' ? 'success' : signal.tier === 'SOURCE_FACT' ? 'accent' : ''}>
-                      {signal.tier === 'SOURCE_FACT' ? 'source fact' : signal.tier === 'USER_CONFIRMED' ? 'confirmed' : 'our inference'}
-                    </Badge>
+                    {account.hypotheses.map((h) => (
+                      <Badge key={h.id} tone="accent">{h.pathName}</Badge>
+                    ))}
+                    {account.quarantined && <Badge tone="danger">held back</Badge>}
                   </div>
                   <div className="tiny dim mt">
-                    {/* The lead's own location, never the market that surfaced it. */}
-                    {[signal.cityName ?? signal.company?.cityName, signal.stateCode ?? signal.company?.stateCode]
-                      .filter(Boolean)
-                      .join(', ') || 'location unknown'}
-                    {signal.market && <> · searched under {signal.market.name}</>}
+                    {/* The account's own location, never the market that surfaced it. */}
+                    {location || 'location unknown'}
+                    {account.hypotheses[0]?.marketName && <> · searched under {account.hypotheses[0].marketName}</>}
+                    {account.collapsedSignals > 0 && (
+                      <> · {account.collapsedSignals} duplicate record(s) collapsed into this account</>
+                    )}
                   </div>
                 </div>
                 <div style={{ textAlign: 'right' }}>
-                  <div className="stat-value">{signal.hypothesis?.priorityScore ?? score.score}</div>
-                  <div className="tiny dim">priority</div>
+                  {board.ranked && account.topPriority !== null && !account.quarantined ? (
+                    <>
+                      <div className="stat-value">{account.topPriority}</div>
+                      <div className="tiny dim">priority</div>
+                    </>
+                  ) : (
+                    <div className="tiny dim">{account.quarantined ? 'not ranked' : 'ranking withheld'}</div>
+                  )}
                 </div>
               </div>
 
-              {signal.requiredService && (
-                <div className="small">
-                  <strong>Need:</strong> {signal.requiredService}
+              {account.quarantined && (
+                <div className="alert warning tiny">
+                  <strong>Identity cannot be verified:</strong> {account.quarantineReason}. Held out of ranking and out
+                  of the credibility check rather than merged with anything or deleted.
                 </div>
               )}
 
-              {signal.whyRelevant && <p className="small muted">{signal.whyRelevant}</p>}
-
-              <div className="grid grid-2">
-                <div>
-                  <div className="tiny dim">Scores, kept separate</div>
-                  {signal.hypothesis ? (
-                    <>
-                      <div className="grid grid-4">
-                        <ScoreCell label="Account fit" value={signal.hypothesis.accountFitScore} />
-                        <ScoreCell label="Intent" value={signal.hypothesis.intentScore} />
-                        <ScoreCell label="Contactability" value={signal.hypothesis.contactabilityScore} />
-                        <ScoreCell label="Fulfilment" value={signal.hypothesis.fulfillmentReadinessScore} />
-                      </div>
-                      <ul className="list-reset tiny muted mt" style={{ lineHeight: 1.6 }}>
-                        {Object.entries((signal.hypothesis.scoreExplanation ?? {}) as Record<string, string>).map(
-                          ([key, reason]) => (
-                            <li key={key}>
-                              <strong>{humanize(key)}:</strong> {reason}
-                            </li>
-                          ),
-                        )}
-                      </ul>
-                      {signal.hypothesis.stage !== 'QUALIFIED_LEAD' && (
-                        <div className="alert warning tiny mt">
-                          Not a qualified lead. Still needed: need, decision-maker, timing, fit and an agreed next step —
-                          whichever of those are unticked below.
-                        </div>
-                      )}
-                    </>
-                  ) : (
-                    <ul className="list-reset tiny muted" style={{ lineHeight: 1.6 }}>
-                      {score.components
-                        .slice()
-                        .sort((a, b) => b.contribution - a.contribution)
-                        .map((component) => (
-                          <li key={component.label}>
-                            <strong>{component.label}:</strong> {component.reason}
-                          </li>
-                        ))}
-                    </ul>
-                  )}
-                </div>
-                <div>
-                  <div className="tiny dim">Provenance</div>
-                  <div className="tiny muted" style={{ lineHeight: 1.7 }}>
-                    Source: {signal.dataSource?.name ?? 'unknown'}
-                    {signal.dataSource && !signal.dataSource.isLive && ' (fixture — not a real source)'}
-                    <br />
-                    {signal.sourcePublishedAt
-                      ? `Source published ${relativeDays(signal.sourcePublishedAt)}`
-                      : 'Source gave no publication date'}
-                    <br />
-                    First discovered {relativeDays(signal.firstDiscoveredAt)} · last seen {relativeDays(signal.lastSeenAt)}
-                    {signal.hypothesis?.lastIntentSignalAt && (
-                      <> · last intent signal {relativeDays(signal.hypothesis.lastIntentSignalAt)}</>
-                    )}
-                    <br />
-                    {signal.sourceUrl ? (
-                      <a href={signal.sourceUrl} target="_blank" rel="noreferrer noopener">
-                        Open the original record ↗
-                      </a>
-                    ) : (
-                      <span className="dim">No source link — this lead cannot be verified externally.</span>
-                    )}
-                  </div>
-
-                  {signal.classificationEvidence.length > 0 && (
-                    <>
-                      <div className="tiny dim mt">Evidence for the classification</div>
-                      <div className="tiny mono muted">{signal.classificationEvidence.join(' · ')}</div>
-                    </>
-                  )}
-                </div>
-              </div>
+              {account.hypotheses.map((h) => (
+                <HypothesisBlock key={h.id} h={h} />
+              ))}
 
               <div className="divider" />
 
               <div className="row">
-                <div className="small" style={{ flex: 1 }}>
-                  <strong>Next:</strong> {signal.recommendedAction ?? 'Qualify before assigning a call.'}
-                </div>
-                <div className="tiny dim">
-                  {phone ? `☎ ${phone}` : email ? `✉ ${email}` : 'no contact yet'}
+                <div className="tiny dim" style={{ flex: 1 }}>
+                  {account.phone ? `☎ ${account.phone}` : account.email ? `✉ ${account.email}` : 'no contact yet'}
+                  {account.website && ' · website on file'}
                 </div>
               </div>
 
-              {phone && (
+              {account.phone && (
                 <div className="tiny dim">
                   Discovered contact details are not consent to contact. Calling hours, suppression and SMS opt-in are
                   enforced when a call or message is actually placed.
@@ -345,6 +394,92 @@ export default async function LeadsPage({
         })
       )}
     </>
+  );
+}
+
+/**
+ * One path candidacy. Deliberately verbose about what it is not: the heading
+ * above the service string carries the epistemic status, so a category match
+ * cannot be skim-read as something the business told us.
+ */
+function HypothesisBlock({ h }: { h: RenderedHypothesis }) {
+  return (
+    <div className="mt" style={{ borderTop: '1px solid var(--border, #2a2a2a)', paddingTop: '0.75rem' }}>
+      <div className="row">
+        <Badge tone={STAGE_TONE[h.stage] ?? ''}>{humanize(h.stage)}</Badge>
+        <Badge>{h.pathName}</Badge>
+        <Badge>{humanize(h.leadRole)}</Badge>
+        {h.recency.known && h.recency.freshness ? (
+          <Badge tone={FRESHNESS_TONE[h.recency.freshness]}>{h.recency.freshness.toLowerCase()}</Badge>
+        ) : (
+          <Badge>recency unknown</Badge>
+        )}
+        <Badge tone={h.need.asserted ? 'accent' : ''}>{h.need.asserted ? 'source fact' : 'our inference'}</Badge>
+        <span className="tiny dim" style={{ marginLeft: 'auto' }}>priority {h.priority}</span>
+      </div>
+
+      {h.requiredService && (
+        <div className="small mt">
+          <strong>{h.need.heading}:</strong> {h.requiredService}
+          <div className="tiny dim">{h.need.basis}</div>
+        </div>
+      )}
+
+      <div className="grid grid-2 mt">
+        <div>
+          <div className="grid grid-4">
+            <ScoreCell label="Account fit" value={h.accountFit} />
+            <ScoreCell label="Intent" value={h.intent} note={h.intent === 0 ? 'caps priority at 35' : undefined} />
+            <ScoreCell label="Contactability" value={h.contactability} />
+            <ScoreCell label="Fulfilment" value={h.fulfilment} />
+          </div>
+          <ul className="list-reset tiny muted mt" style={{ lineHeight: 1.6 }}>
+            {Object.entries(h.scoreExplanation).map(([key, reason]) => (
+              <li key={key}>
+                <strong>{humanize(key)}:</strong> {reason}
+              </li>
+            ))}
+          </ul>
+          {h.missing.length > 0 && (
+            <div className="alert warning tiny mt">
+              Not a qualified lead. Still missing {h.missing.join(', ')}.
+            </div>
+          )}
+        </div>
+
+        <div>
+          <div className="tiny dim">Provenance</div>
+          <div className="tiny muted" style={{ lineHeight: 1.7 }}>
+            Source: {h.sourceNames.join(', ') || 'unknown'}
+            {!h.isLiveSource && ' (fixture — not a real source)'}
+            {h.signalCount > 1 && ` · ${h.signalCount} records collapsed`}
+            <br />
+            {/* Event time and discovery time, labelled as different things,
+                because presenting the second as the first is what made every
+                record look current. */}
+            {h.recency.label}
+            <br />
+            {describeDiscoveryTime(h.firstDiscoveredAt)} Last seen {relativeDays(h.lastSeenAt)}.
+            {h.lastIntentSignalAt && <> Last intent signal {relativeDays(h.lastIntentSignalAt)}.</>}
+            <br />
+            {h.sourceUrl ? (
+              <a href={h.sourceUrl} target="_blank" rel="noreferrer noopener">
+                Open the original record ↗
+              </a>
+            ) : (
+              <span className="dim">No source link — this record cannot be verified externally.</span>
+            )}
+          </div>
+
+          {h.evidence.length > 0 && (
+            <>
+              <div className="tiny dim mt">Evidence for the classification</div>
+              <div className="tiny mono muted">{h.evidence.join(' · ')}</div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 

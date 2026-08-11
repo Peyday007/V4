@@ -316,6 +316,8 @@ describe('account fit', () => {
       serviceIsCatalogued: true,
       locationPrecision: 'CITY',
       matchedLocalMarket: true,
+      sourceFacts: 6,
+      corroboratingSources: 3,
     });
     expect(fit.score).toBe(1);
     expect(fit.reason).toMatch(/says nothing about whether they are buying/i);
@@ -335,6 +337,8 @@ describe('account fit discriminates between records', () => {
     serviceIsCatalogued: true,
     locationPrecision: 'CITY',
     matchedLocalMarket: true,
+    sourceFacts: 6,
+    corroboratingSources: 3,
   };
 
   it('separates a city-level local-market record from a state-only national one', () => {
@@ -347,10 +351,39 @@ describe('account fit discriminates between records', () => {
     expect(vague.reason).toMatch(/only a state is known/i);
   });
 
-  it('penalises a role the path does not deal in', () => {
-    const wrongRole = scoreAccountFit({ ...base, leadRole: 'SUPPLIER' });
-    expect(wrongRole.score).toBeLessThan(1);
-    expect(wrongRole.reason).toMatch(/not a role this path deals in/i);
+  it('does not score the role against the path, because the path is chosen by the role', () => {
+    // The role check was removed rather than reweighted. `choosePathFor`
+    // selects the path *from* the lead role, so comparing the two afterwards
+    // is a box that cannot be unticked — it contributed a fixed amount to
+    // every record and was a large part of why fit shipped as a constant 71.
+    const asSupplier = scoreAccountFit({ ...base, leadRole: 'SUPPLIER' });
+    expect(asSupplier.score).toBe(scoreAccountFit(base).score);
+    expect(asSupplier.components.map((c) => c.label)).not.toContain('role');
+  });
+
+  it('separates a richly described organisation from a bare name', () => {
+    // The component that replaced it. A CMS row with an address, postcode,
+    // phone, website and taxonomy is a materially better account than a map
+    // pin, and no path configuration can make the two look alike.
+    const rich = scoreAccountFit({ ...base, sourceFacts: 6, corroboratingSources: 3 });
+    const thin = scoreAccountFit({ ...base, sourceFacts: 1, corroboratingSources: 1 });
+    expect(rich.score).toBeGreaterThan(thin.score);
+  });
+
+  it('rewards corroboration between independent sources', () => {
+    const one = scoreAccountFit({ ...base, sourceFacts: 2, corroboratingSources: 1 });
+    const three = scoreAccountFit({ ...base, sourceFacts: 2, corroboratingSources: 3 });
+    expect(three.score).toBeGreaterThan(one.score);
+  });
+
+  it('exposes its components so an invariant one can be named', () => {
+    const fit = scoreAccountFit(base);
+    expect(fit.components.map((c) => c.label).sort()).toEqual([
+      'location', 'market', 'segment', 'service', 'sourceDepth',
+    ]);
+    // Weights are the whole score, so a component silently dropped would show
+    // up here rather than as a quietly compressed range.
+    expect(fit.components.reduce((sum, c) => sum + c.weight, 0)).toBeCloseTo(1, 5);
   });
 
   it('penalises a generic service label over a catalogued capability', () => {

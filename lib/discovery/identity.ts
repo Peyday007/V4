@@ -1,4 +1,3 @@
-import { normalizeCompanyName } from './run';
 
 /**
  * Company identity.
@@ -12,6 +11,22 @@ import { normalizeCompanyName } from './run';
  * the same company. Order matters: a place ID is issued by a provider and is
  * exact; a phone number is nearly exact; an address plus a name is a judgement.
  */
+
+/**
+ * Strips legal suffixes and punctuation so "Planet Fitness Inc" and "Planet
+ * Fitness" compare equal. Lives here rather than in the ingest module because
+ * it is an identity key, and keeping it there forced `identity.ts` to import
+ * from `run.ts` — a cycle between the two modules that most need to be
+ * loadable on their own.
+ */
+export function normalizeCompanyName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[.,]/g, '')
+    .replace(/\b(inc|llc|l\.l\.c|ltd|corp|corporation|company|co|group|holdings|services|service)\b/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 
 export type IdentityKeys = {
   /** Provider-issued identifier. Exact when present. */

@@ -166,6 +166,17 @@ export type FitInput = {
   pathRoles: LeadRole[];
   leadRole: LeadRole;
   /**
+   * How much the source actually established about this organisation.
+   *
+   * Counts distinct published facts: a street line, a postcode, a phone, a
+   * website, a stated business type, a named contact. This is the component
+   * that genuinely separates a rich CMS registry row from a bare directory
+   * hit, and unlike the role check it cannot be satisfied by construction.
+   */
+  sourceFacts: number;
+  /** Independent sources that returned this same organisation. */
+  corroboratingSources: number;
+  /**
    * True when the service maps to a capability already in the catalogue —
    * something we can price and match — rather than a connector's generic
    * fallback label.
@@ -188,27 +199,35 @@ export type FitInput = {
  * examined. Four boxes that could not be unticked, so every account scored 100
  * and the dimension carried no information at all.
  *
- * These five vary. A CMS record carries a city; a USAspending award often
- * carries only a state. A Places result matched to the Dallas metro is more
- * useful than one that only landed in the national sweep. A service naming a
- * capability we hold providers for is worth more than a generic label. That is
- * what a fit score is supposed to distinguish.
+ * The second version replaced them with five that looked like they varied,
+ * and shipped a constant 71 instead of a constant 100. Running the real
+ * pipeline showed why: the role check compared the lead's role against the
+ * path's roles, but the path is *selected* by that role, so it could never
+ * fail — a tautology at a different address. Segment was constant because
+ * every connector emits COMMERCIAL. Market was constant because only the
+ * nationwide sweep was enabled.
+ *
+ * Two lessons are built in here. The role check is gone rather than
+ * reweighted, because a component that cannot be false is noise at any weight.
+ * And the function now returns its components, so `inspectComponents` can name
+ * the invariant sub-score directly instead of leaving someone to work out
+ * which fifth of a total is stuck.
  */
-export function scoreAccountFit(input: FitInput): { score: number; reason: string } {
+export type ScoreComponent = { label: string; weight: number; value: number };
+
+export type FitResult = { score: number; reason: string; components: ScoreComponent[] };
+
+/** How many published facts count as a source having established a lot. */
+const RICH_SOURCE_FACTS = 5;
+
+export function scoreAccountFit(input: FitInput): FitResult {
   const parts = [
     {
       label: 'segment',
-      weight: 0.2,
+      weight: 0.15,
       value: input.pathSegments.length === 0 || input.pathSegments.includes(input.segment) ? 1 : 0,
       yes: `${titleCase(input.segment)} is a segment this path works`,
       no: `${titleCase(input.segment)} is outside this path's segments`,
-    },
-    {
-      label: 'role',
-      weight: 0.2,
-      value: input.pathRoles.length === 0 || input.pathRoles.includes(input.leadRole) ? 1 : 0,
-      yes: `${titleCase(input.leadRole)} is a role this path deals in`,
-      no: `${titleCase(input.leadRole)} is not a role this path deals in`,
     },
     {
       label: 'service',
@@ -219,17 +238,31 @@ export function scoreAccountFit(input: FitInput): { score: number; reason: strin
     },
     {
       label: 'location',
-      weight: 0.2,
+      weight: 0.25,
       value: input.locationPrecision === 'CITY' ? 1 : input.locationPrecision === 'STATE' ? 0.4 : 0,
       yes: 'city and state are both known',
       no: input.locationPrecision === 'STATE' ? 'only a state is known, no city' : 'no usable location',
     },
     {
       label: 'market',
-      weight: 0.2,
+      weight: 0.15,
       value: input.matchedLocalMarket ? 1 : 0.3,
       yes: 'falls inside a named market we work',
       no: 'only inside the nationwide sweep, not a market we actively work',
+    },
+    {
+      // The component that does the work of separating records. A registry row
+      // with an address, a postcode, a phone and a stated taxonomy is a
+      // materially better account than a name and a map pin, and no amount of
+      // path configuration can make the two look alike.
+      label: 'sourceDepth',
+      weight: 0.25,
+      value: clamp01(
+        Math.min(input.sourceFacts, RICH_SOURCE_FACTS) / RICH_SOURCE_FACTS +
+          Math.min(Math.max(0, input.corroboratingSources - 1), 2) * 0.15,
+      ),
+      yes: `the source published ${input.sourceFacts} usable fact(s)${input.corroboratingSources > 1 ? ` and ${input.corroboratingSources} sources agree` : ''}`,
+      no: `the source published only ${input.sourceFacts} usable fact(s), so little is known beyond the name`,
     },
   ];
 
@@ -239,6 +272,7 @@ export function scoreAccountFit(input: FitInput): { score: number; reason: strin
 
   return {
     score,
+    components: parts.map((p) => ({ label: p.label, weight: p.weight, value: p.value })),
     reason:
       `Profile fit only — this says nothing about whether they are buying. ` +
       `${strong.length > 0 ? `In favour: ${strong.join(', ')}. ` : ''}` +
@@ -499,6 +533,48 @@ export function describeRelevance(role: LeadRole, service: string | null, hasInt
     default:
       return `Live signal relating to ${subject}.`;
   }
+}
+
+export type NeedLabel = {
+  /** The heading shown above the service string. Never the bare word "Need". */
+  heading: string;
+  /** Where the claim comes from, in one clause. */
+  basis: string;
+  /** True only when a source stated it. Drives the badge tone. */
+  asserted: boolean;
+};
+
+/**
+ * How to introduce a service string in the interface.
+ *
+ * A category match is the system saying "businesses like this usually buy
+ * this". It is a useful hypothesis and a worthless promise, and the previous
+ * wording — "Identified need: Medical facility cleaning" — presented one as
+ * the other. The heading now carries the epistemic status, so it cannot be
+ * lost by someone skimming the card.
+ */
+export function needLabel(role: LeadRole, intentScore: number): NeedLabel {
+  const buying = role === 'BUYER' || role === 'CONTRACTOR';
+
+  if (intentScore > 0) {
+    return buying
+      ? { heading: 'Stated need', basis: 'A dated source event evidences this.', asserted: true }
+      : { heading: 'Offered capability', basis: 'Listed by the organisation itself, with a dated signal.', asserted: true };
+  }
+
+  return buying
+    ? {
+        heading: 'Possible need — our inference',
+        basis:
+          'Derived from the organisation category, not from anything they said, published or requested. ' +
+          'Treat as a hypothesis to test on the call.',
+        asserted: false,
+      }
+    : {
+        heading: 'Claimed capability — unverified',
+        basis: 'Taken from the organisation’s own listing. Capacity, credentials and pricing are unchecked.',
+        asserted: false,
+      };
 }
 
 function clamp01(value: number): number {

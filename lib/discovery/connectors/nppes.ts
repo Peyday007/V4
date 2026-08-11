@@ -1,6 +1,7 @@
 import type { DiscoveryConnector, ConnectorContext, MarketContext, RawRecord } from '../connector';
 import type { SignalCategory, SourceType } from '@prisma/client';
 import { httpJson } from '../http';
+import { recordLocation } from '../location';
 
 /**
  * NPPES — the federal NPI registry.
@@ -226,8 +227,12 @@ export function toNppesRecord(
         .join(', ')}. ` +
       `Registered with CMS under NPI ${npi}.`,
     sourceUrl: `https://npiregistry.cms.hhs.gov/provider-view/${npi}`,
-    location: [address.city, address.state].filter(Boolean).join(', ') || marketName,
+    // The facility's own city, from the register. Never the partition the
+    // sweep happened to query under.
+    location: recordLocation(address.city, address.state),
     state: address.state,
+    addressLine1: address.address_1?.trim() || undefined,
+    postalCode: address.postal_code?.slice(0, 5) || undefined,
     companyName: name,
     subjectRole: 'BUYER',
     describesSubject: false,

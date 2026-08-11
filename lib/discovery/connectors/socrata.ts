@@ -1,6 +1,7 @@
 import type { DiscoveryConnector, ConnectorContext, RawRecord } from '../connector';
 import type { MarketSegment, SignalCategory, SourceType } from '@prisma/client';
 import { httpJson } from '../http';
+import { recordLocation } from '../location';
 
 /**
  * Municipal open-data connector (Socrata / SODA).
@@ -34,11 +35,20 @@ export type SocrataDatasetConfig = {
   label: string;
   /** Column holding the record date, used for freshness filtering and ordering. */
   dateColumn: string;
+  /**
+   * The state this jurisdiction sits in.
+   *
+   * A property of the dataset, not of the run: a Dallas permit portal publishes
+   * Texas permits whatever market pointed at it. Distinct from a market name,
+   * which is a search scope and must never be stored as a record's location.
+   */
+  state?: string;
   /** Column mapping. Portals agree on nothing, so every field is nameable. */
   columns: {
     description?: string;
     address?: string;
     city?: string;
+    state?: string;
     postalCode?: string;
     value?: string;
     workType?: string;
@@ -217,8 +227,11 @@ export function toRawRecord(
   const valueRaw = get(dataset.columns.value).replace(/[^0-9.]/g, '');
   const value = valueRaw ? Number(valueRaw) : null;
 
-  const city = get(dataset.columns.city) || marketName;
-  const location = [address, city].filter(Boolean).join(', ') || marketName;
+  // The permit's own city. A jurisdiction dataset is named for a city, but
+  // the row may sit outside it, and inheriting the dataset's name would state
+  // a location the record never claimed.
+  const city = get(dataset.columns.city);
+  const location = recordLocation(city, get(dataset.columns.state) || dataset.state);
 
   return {
     externalId: permitNumber || `${dataset.datasetId}:${stableRowKey(row, dataset)}`,

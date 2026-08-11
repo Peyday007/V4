@@ -142,6 +142,9 @@ export async function reclassify(params: { orgId: string; userId: string; dryRun
   const providerIndex = await buildProviderIndex(orgId);
 
   const clusters: Cluster[] = [];
+  // Per-hypothesis breakdown of the fit score, so the diagnostics can name an
+  // invariant component rather than only an invariant total.
+  const fitComponents: Array<Array<{ label: string; weight: number; value: number }>> = [];
 
   for (const signal of signals) {
     if (!signal.company) continue;
@@ -246,11 +249,29 @@ export async function reclassify(params: { orgId: string; userId: string; dryRun
       const role = lead.leadRole;
 
       const marketForLead = markets.find((m) => m.id === lead.marketId);
+
+      // What the sources actually published about this organisation, counted
+      // once per fact rather than once per record, so four Places hits for one
+      // gym do not read as four times the evidence.
+      const sourceFacts = [
+        location?.line1,
+        location?.postalCode,
+        company.phone ?? contacts.find((c) => c.phone)?.phone,
+        company.website,
+        company.description,
+        contacts.find((c) => c.firstName && c.firstName !== 'Main'),
+      ].filter(Boolean).length;
+      const corroboratingSources = new Set(
+        cluster.signals.map((s) => s.dataSource?.key).filter(Boolean),
+      ).size;
+
       const fit = scoreAccountFit({
         pathSegments: path.segments,
         segment: lead.segment,
         pathRoles: path.leadRoles,
         leadRole: role,
+        sourceFacts,
+        corroboratingSources,
         // A capability already in the catalogue can be priced and matched; a
         // connector's generic label cannot.
         serviceIsCatalogued: lead.requiredService
@@ -363,6 +384,8 @@ export async function reclassify(params: { orgId: string; userId: string; dryRun
       // One row per hypothesis. An account with two paths produces two rows,
       // which is why the stage tally exceeds the account count — each row is a
       // path candidacy, not a company.
+      fitComponents.push(fit.components);
+
       result.rows.push({
         company: company.legalName,
         cityState: [cluster.identity.cityName, cluster.identity.stateCode].filter(Boolean).join(', ') || 'unknown',
@@ -411,6 +434,7 @@ export async function reclassify(params: { orgId: string; userId: string; dryRun
     contactability: ranked.map((r) => r.after.contactability),
     fulfilment: ranked.map((r) => r.after.fulfilment),
     priority: ranked.map((r) => r.after.priority),
+    fitComponents,
     records: result.rows.map((r) => ({
       company: r.company,
       cityState: r.cityState,

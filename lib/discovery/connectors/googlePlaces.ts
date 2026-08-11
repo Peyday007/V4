@@ -2,6 +2,7 @@ import type { DiscoveryConnector, ConnectorContext, RawRecord } from '../connect
 import type { CompanyRole, LeadRole, MarketSegment, SignalCategory, SourceType } from '@prisma/client';
 import type { MarketContext } from '../connector';
 import { httpJson, readCredential } from '../http';
+import { parseAddress, recordLocation } from '../location';
 
 /**
  * Google Places (New) — Text Search.
@@ -293,8 +294,17 @@ export function toPlaceRecord(
   // Closed businesses are still returned and are pure waste for a caller.
   if (place.businessStatus && place.businessStatus !== 'OPERATIONAL') return null;
 
-  const state = place.addressComponents?.find((c) => c.types?.includes('administrative_area_level_1'))?.shortText;
-  const city = place.addressComponents?.find((c) => c.types?.includes('locality'))?.longText;
+  // Structured components when Google returns them, the formatted address
+  // parsed when it does not. Both describe this business. The market name is
+  // not a third option — a result with no address is a result with no known
+  // location, and saying so is the only honest answer.
+  const parsed = parseAddress(place.formattedAddress);
+  const state =
+    place.addressComponents?.find((c) => c.types?.includes('administrative_area_level_1'))?.shortText ??
+    parsed.state ??
+    undefined;
+  const city =
+    place.addressComponents?.find((c) => c.types?.includes('locality'))?.longText ?? parsed.city ?? undefined;
 
   return {
     externalId: `places:${id}`,
@@ -302,13 +312,15 @@ export function toPlaceRecord(
     title: `${name} — ${query.service}`,
     excerpt:
       `${name}${place.formattedAddress ? `, ${place.formattedAddress}` : ''}. ` +
-      `Listed under ${humanisePlaceType(place.primaryType ?? query.query)} in ${city ?? marketName}. ` +
+      `Listed under ${humanisePlaceType(place.primaryType ?? query.query)}${city ? ` in ${city}` : ''}. ` +
       `Identified as a ${query.leadRole.toLowerCase()} candidate for ${query.service.toLowerCase()}.`,
     // Links to the canonical Google listing by place ID, which is the one
     // durable identifier and lets a person verify the lead in one click.
     sourceUrl: `https://www.google.com/maps/place/?q=place_id:${encodeURIComponent(id)}`,
-    location: [city, state].filter(Boolean).join(', ') || marketName,
+    location: recordLocation(city, state),
     state: state ?? undefined,
+    addressLine1: parsed.line1 ?? undefined,
+    postalCode: parsed.postalCode ?? undefined,
     companyName: name,
     companyWebsite: place.websiteUri,
     subjectRole: query.companyRole,

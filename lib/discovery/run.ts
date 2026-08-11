@@ -8,6 +8,7 @@ import { contentHash, getConnector, type MarketContext, type RawRecord } from '.
 import { ensureConnectorsRegistered } from './connectors';
 import { hasCredential } from './http';
 import { detectSignals } from './signals';
+import { cleanCity, cleanState, normalizeAddress, normalizeCompanyName, normalizePhone } from './identity';
 import { choosePathFor, getActivePaths } from '@/lib/paths';
 import { assignMarket } from './markets';
 
@@ -322,6 +323,9 @@ async function ingestRecord(params: {
       inferRoleFromText: record.describesSubject === true,
       location: record.location,
       state: record.state,
+      addressLine1: record.addressLine1,
+      postalCode: record.postalCode,
+      phone: record.contact?.phone,
       origin: params.origin,
       externalPlaceId: record.externalPlaceId,
     });
@@ -635,6 +639,18 @@ export async function resolveCompany(params: {
   externalPlaceId?: string;
   location?: string | null;
   state?: string | null;
+  /**
+   * Street line, where the source published one.
+   *
+   * Stored so `normalizedAddress` becomes available as a deduplication key.
+   * Without it the only strong keys are a place ID and a phone number, and a
+   * record carrying neither gets quarantined for want of data the source
+   * actually gave us.
+   */
+  addressLine1?: string | null;
+  postalCode?: string | null;
+  /** Published phone, used to build the normalised identity key. */
+  phone?: string | null;
 }): Promise<{ company: Company; created: boolean }> {
   const name = params.name.trim();
 
@@ -689,17 +705,31 @@ export async function resolveCompany(params: {
       accountStage: 'DISCOVERED',
       origin: params.origin ?? 'LIVE_DISCOVERY',
       externalPlaceId: params.externalPlaceId ?? null,
+      // Set at ingest, not only when a re-audit runs. A record that has never
+      // been reclassified still has to know where it is.
+      cityName: cleanCity(params.location?.split(',')[0]),
+      stateCode: cleanState(params.state ?? params.location?.split(',')[1]),
+      normalizedPhone: normalizePhone(params.phone),
+      normalizedAddress: normalizeAddress(
+        [params.addressLine1, params.location].filter(Boolean).join(' ') || null,
+      ),
       lastEnrichedAt: new Date(),
-      locations: params.location
-        ? {
-            create: {
-              label: 'Discovered',
-              city: params.location.split(',')[0]?.trim() || null,
-              state: params.state ?? params.location.split(',')[1]?.trim() ?? null,
-              isHeadquarters: true,
-            },
-          }
-        : undefined,
+      // Validated on the way in: `cleanCity` rejects a house number or a
+      // postcode sitting where a city should be, so the column holds a real
+      // place or null rather than a fragment that reads like data.
+      locations:
+        params.location || params.addressLine1
+          ? {
+              create: {
+                label: 'Discovered',
+                line1: params.addressLine1 ?? null,
+                city: cleanCity(params.location?.split(',')[0]) ,
+                state: cleanState(params.state ?? params.location?.split(',')[1]),
+                postalCode: params.postalCode ?? null,
+                isHeadquarters: true,
+              },
+            }
+          : undefined,
     },
   });
 
@@ -719,14 +749,6 @@ export async function resolveCompany(params: {
   return { company, created: true };
 }
 
-export function normalizeCompanyName(name: string): string {
-  return name
-    .toLowerCase()
-    .replace(/[.,]/g, '')
-    .replace(/\b(inc|llc|l\.l\.c|ltd|corp|corporation|company|co|group|holdings|services|service)\b/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
 
 function safeHost(url: string): string | null {
   try {
@@ -785,3 +807,7 @@ function failedRun(message: string): DiscoveryRunResult {
     errors: [message],
   };
 }
+
+// Company-name normalisation lives with the other identity keys now, so that
+// `identity.ts` does not have to import from this module and create a cycle.
+export { normalizeCompanyName };
