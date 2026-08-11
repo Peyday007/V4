@@ -1,9 +1,11 @@
-import type { Contact, CompanyLocation, DiscoverySignal, LeadRole, LeadStage } from '@prisma/client';
+import type { Contact, CompanyLocation, DiscoverySignal, LeadRole, LeadStage, LeadTier } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { audit } from '@/lib/audit';
 import { getActivePaths } from '@/lib/paths';
 import { assessIdentity, buildIdentity, normalizeAddress, normalizePhone, sameCompany, type IdentityKeys } from './identity';
 import { diagnose, type RunDiagnostics } from './diagnostics';
+import { matchCapability } from './capabilityMatch';
+import { classifyTier, estimateBuyingWindow, rejectionFlags } from './tiers';
 import {
   decideStage,
   describeRelevance,
@@ -49,6 +51,10 @@ export type BeforeAfterRow = {
     companyId: string;
     mergedFrom: number;
     stage: LeadStage;
+    /** Evidence tier. The number the operator should read first. */
+    tier: LeadTier;
+    tierReason: string;
+    buyingWindow: string;
     accountFit: number;
     intent: number;
     contactability: number;
@@ -76,6 +82,14 @@ export type ReclassifyResult = {
   /** The same tally collapsed to one entry per account, by its best stage. */
   accountStageCounts: Record<string, number>;
   quarantinedAccounts: number;
+  /**
+   * Evidence tiers across the run.
+   *
+   * The number that matters. A run producing 500 Tier D records and no Tier A
+   * has discovered a lot of organisations and no demand, and the totals must
+   * make that impossible to misread as pipeline.
+   */
+  tierCounts: Record<string, number>;
   /** The run's assessment of its own output. */
   diagnostics: RunDiagnostics;
   rows: BeforeAfterRow[];
@@ -118,6 +132,7 @@ export async function reclassify(params: { orgId: string; userId: string; dryRun
     stageCounts: {},
     accountStageCounts: {},
     quarantinedAccounts: 0,
+    tierCounts: {},
     diagnostics: emptyDiagnostics(),
     rows: [],
   };
@@ -133,8 +148,8 @@ export async function reclassify(params: { orgId: string; userId: string; dryRun
 
   // Capability names we actually hold, lowercased, so "service is catalogued"
   // is a real check rather than "the connector set a string".
-  const catalogue = new Set(
-    (await prisma.capability.findMany({ where: { orgId }, select: { name: true } })).map((c) => c.name.toLowerCase()),
+  const catalogue = (await prisma.capability.findMany({ where: { orgId }, select: { name: true } })).map(
+    (c) => c.name,
   );
 
   // Supply-side companies indexed by capability and state, so fulfilment can
@@ -274,9 +289,10 @@ export async function reclassify(params: { orgId: string; userId: string; dryRun
         corroboratingSources,
         // A capability already in the catalogue can be priced and matched; a
         // connector's generic label cannot.
-        serviceIsCatalogued: lead.requiredService
-          ? catalogue.has(lead.requiredService.toLowerCase())
-          : false,
+        // Matched on meaning rather than on spelling. "Commercial cleaning"
+        // and "Commercial janitorial" are the same trade, and treating them
+        // as different scored the whole board at the floor.
+        serviceIsCatalogued: matchCapability(lead.requiredService, catalogue).capability !== null,
         locationPrecision: cluster.identity.cityName
           ? 'CITY'
           : cluster.identity.stateCode
@@ -316,6 +332,31 @@ export async function reclassify(params: { orgId: string; userId: string; dryRun
         fulfilmentReadiness: fulfil.score,
       });
 
+      // Tier is decided by the evidence, not by the score. A record with a
+      // high priority and no dated event is still a directory prospect, and
+      // the two numbers disagreeing is the point of having both.
+      const tierVerdict = classifyTier({ intentSignals });
+
+      const providerCount = providersFor(providerIndex, lead.requiredService, cluster.identity.stateCode);
+      const flags = rejectionFlags({
+        hasIdentifiableBuyer: Boolean(company.legalName),
+        hasContactRoute: contacts.some((c) => c.phone || c.email) || Boolean(company.phone),
+        deadline: null,
+        availableProviders: providerCount,
+        networkHasProviders: providerIndex.total > 0,
+        requiresSupply: !SUPPLY_ROLES.includes(role),
+        estimatedGrossProfit: null,
+        minimumGrossProfit: 0,
+        quarantined: quarantine.quarantined,
+      });
+      const tier = flags.length > 0 ? ('REJECTED' as const) : tierVerdict.tier;
+      const window = estimateBuyingWindow({
+        tier,
+        deadline: null,
+        strongestSignal: intent.strongest,
+      });
+      result.tierCounts[tier] = (result.tierCounts[tier] ?? 0) + 1;
+
       // Nothing here has been confirmed by anyone, which is the point.
       const evidence: QualificationEvidence = {
         need: { present: intent.score > 0, tier: intent.score > 0 ? 'SOURCE_FACT' : 'SYSTEM_INFERENCE' },
@@ -341,6 +382,10 @@ export async function reclassify(params: { orgId: string; userId: string; dryRun
             contactabilityScore: contact.score,
             fulfillmentReadinessScore: fulfil.score,
             priorityScore: priority.score,
+            tier,
+            tierReason: flags.length > 0 ? flags.join('; ') : tierVerdict.reason,
+            rejectionFlags: flags,
+            buyingWindow: window.window,
             scoreExplanation: {
               accountFit: fit.reason,
               intent: intent.reason,
@@ -359,6 +404,10 @@ export async function reclassify(params: { orgId: string; userId: string; dryRun
             contactabilityScore: contact.score,
             fulfillmentReadinessScore: fulfil.score,
             priorityScore: priority.score,
+            tier,
+            tierReason: flags.length > 0 ? flags.join('; ') : tierVerdict.reason,
+            rejectionFlags: flags,
+            buyingWindow: window.window,
             lastSeenAt: lead.lastSeenAt,
             lastIntentSignalAt: intent.lastSignalAt,
           },
@@ -398,6 +447,9 @@ export async function reclassify(params: { orgId: string; userId: string; dryRun
           companyId: company.id,
           mergedFrom: cluster.companyIds.size,
           stage: stage.stage,
+          tier,
+          tierReason: flags.length > 0 ? flags.join('; ') : tierVerdict.reason,
+          buyingWindow: window.window,
           accountFit: Math.round(fit.score * 100),
           intent: Math.round(intent.score * 100),
           contactability: Math.round(contact.score * 100),
@@ -458,6 +510,7 @@ export async function reclassify(params: { orgId: string; userId: string; dryRun
         hypotheses: result.hypothesesCreated,
         stages: result.stageCounts,
         quarantined: result.quarantinedAccounts,
+        tiers: result.tierCounts,
         verdict: result.diagnostics.verdict,
         warnings: result.diagnostics.warnings.map((w) => `${w.severity} ${w.dimension}: ${w.finding}`),
       },
@@ -502,7 +555,7 @@ export async function buildProviderIndex(orgId: string): Promise<ProviderIndex> 
       continue;
     }
     for (const link of provider.capabilities) {
-      const key = link.capability.name.toLowerCase();
+      const key = link.capability.name;
       const states = byCapability.get(key) ?? new Map<string, number>();
       states.set(state, (states.get(state) ?? 0) + 1);
       byCapability.set(key, states);
@@ -521,7 +574,12 @@ export async function buildProviderIndex(orgId: string): Promise<ProviderIndex> 
  */
 export function providersFor(index: ProviderIndex, service: string | null, stateCode: string | null): number {
   if (!service) return 0;
-  const states = index.byCapability.get(service.toLowerCase());
+  // Same meaning-based match as the fit score. Exact-string lookup here was
+  // returning zero for nearly every lead, which made fulfilment readiness a
+  // constant and then, once rejection rules existed, rejected the work.
+  const match = matchCapability(service, index.byCapability.keys());
+  if (!match.capability) return 0;
+  const states = index.byCapability.get(match.capability);
   if (!states) return 0;
 
   if (!stateCode) {

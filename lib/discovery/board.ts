@@ -2,7 +2,8 @@ import { assessIdentity, buildIdentity } from './identity';
 import { diagnose, type RunDiagnostics } from './diagnostics';
 import { eventRecency, type EventRecency } from './eventTime';
 import { needLabel, type NeedLabel } from './qualification';
-import type { LeadRole, LeadStage } from '@prisma/client';
+import type { LeadRole, LeadStage, LeadTier } from '@prisma/client';
+import { TIER_LABEL, TIER_ORDER, TIER_OUTREACH } from './tiers';
 
 /**
  * The lead board, assembled once and judged before it is shown.
@@ -33,6 +34,11 @@ export type BoardHypothesis = {
   fulfilment: number;
   /** 0–100, already capped by `scorePriority`. */
   priority: number;
+  /** Evidence tier. Read before the priority score, never after it. */
+  tier: LeadTier;
+  tierReason: string;
+  rejectionFlags: string[];
+  buyingWindow: string | null;
   scoreExplanation: Record<string, string>;
   requiredService: string | null;
   missing: string[];
@@ -69,6 +75,9 @@ export type BoardAccount = {
 export type RenderedHypothesis = BoardHypothesis & {
   recency: EventRecency;
   need: NeedLabel;
+  tierLabel: string;
+  /** Channels this tier's evidence justifies. Calls are not free. */
+  outreach: { channels: string[]; note: string };
 };
 
 export type RenderedAccount = Omit<BoardAccount, 'hypotheses'> & {
@@ -79,6 +88,24 @@ export type RenderedAccount = Omit<BoardAccount, 'hypotheses'> & {
   quarantineReason: string | null;
   /** Raw records that collapsed into this account beyond the first per path. */
   collapsedSignals: number;
+};
+
+/**
+ * The funnel, stated in the only terms that cannot flatter it.
+ *
+ * "Pipeline" is the word that hides the problem: ten thousand scraped
+ * companies and one real solicitation both increase it. These counts are kept
+ * separate and named for what they are, so a board of directory prospects
+ * reads as a board of directory prospects.
+ */
+export type PipelineTruth = {
+  rawRecords: number;
+  accounts: number;
+  hypotheses: number;
+  byTier: Array<{ tier: LeadTier; label: string; count: number }>;
+  /** Tier A and B only. The records with an actual reason to make contact. */
+  actionable: number;
+  qualified: number;
 };
 
 export type BoardCounts = {
@@ -103,6 +130,13 @@ export type Board = {
    */
   ranked: boolean;
   rankingRefusedBecause: string | null;
+  pipeline: PipelineTruth;
+  /**
+   * Set when the whole board is Tier D. Not a warning about a score — a
+   * statement that discovery has found organisations and no demand, which is
+   * a sourcing problem and cannot be fixed by ranking harder.
+   */
+  noDemandFound: string | null;
 };
 
 /**
@@ -154,6 +188,8 @@ export function buildBoard(input: {
       // There is no branch here that can reach a discovery timestamp.
       recency: eventRecency(h.sourcePublishedAt, now),
       need: needLabel(h.leadRole, h.intent),
+      tierLabel: TIER_LABEL[h.tier],
+      outreach: TIER_OUTREACH[h.tier],
     }));
 
     const priorities = hypotheses.map((h) => h.priority);
@@ -208,8 +244,31 @@ export function buildBoard(input: {
   );
   const hypotheses = rendered.reduce((sum, a) => sum + a.hypotheses.length, 0);
 
+  const all = rendered.flatMap((a) => a.hypotheses);
+  const byTier = TIER_ORDER.map((tier) => ({
+    tier,
+    label: TIER_LABEL[tier],
+    count: all.filter((h) => h.tier === tier).length,
+  }));
+  const actionable = all.filter((h) => h.tier === 'ACTIVE_DEMAND' || h.tier === 'STRONG_TRIGGER').length;
+
   return {
     accounts: [...rendered].sort(order),
+    pipeline: {
+      rawRecords: signals + input.unassessedSignals,
+      accounts: rendered.length,
+      hypotheses,
+      byTier,
+      actionable,
+      qualified: all.filter((h) => h.stage === 'QUALIFIED_LEAD' || h.stage === 'ACTIVE_OPPORTUNITY').length,
+    },
+    noDemandFound:
+      all.length > 0 && actionable === 0
+        ? `None of the ${all.length} record(s) on this board carry dated demand evidence — every one is a ` +
+          `directory or registry listing. That is a sourcing gap, not a scoring one: no amount of ranking turns ` +
+          `a list of organisations into a list of buyers. Enable a solicitation or award source (SAM.gov, ` +
+          `USAspending, a permit portal) to produce Tier A and B records.`
+        : null,
     diagnostics,
     counts: {
       accounts: rendered.length,

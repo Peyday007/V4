@@ -172,9 +172,28 @@ describe('fulfilment counts actual providers', () => {
     expect(providersFor(index, 'Commercial cleaning', 'IL')).toBe(3);
   });
 
-  it('returns zero for a capability nobody holds', () => {
-    expect(providersFor(index, 'Window cleaning', 'TX')).toBe(0);
+  it('returns zero for work in a different trade', () => {
+    // Structured cabling shares no vocabulary with cleaning. This is the case
+    // the exact-string version was meant to catch, and still does.
+    expect(providersFor(index, 'Structured cabling', 'TX')).toBe(0);
+    expect(providersFor(index, 'Commercial electrical', 'TX')).toBe(0);
     expect(providersFor(index, null, 'TX')).toBe(0);
+  });
+
+  it('matches the same trade under a different name', () => {
+    // "Commercial janitorial" and "commercial cleaning" are one trade. Exact
+    // matching missed every pair like this, which held fulfilment at zero for
+    // most of the board and made the fit score's service component a constant.
+    expect(providersFor(index, 'Commercial janitorial', 'TX')).toBe(4.5);
+    expect(providersFor(index, 'Post-construction cleaning subcontract', 'TX')).toBeGreaterThan(0);
+  });
+
+  it('lets a specific need reach a broadly-named capability, but not the reverse', () => {
+    // A provider catalogued as "Janitorial" can take cleaning work described
+    // more specifically. A provider catalogued only for one specialism cannot
+    // be assumed to cover a different one.
+    expect(providersFor(index, 'Office cleaning', 'TX')).toBeGreaterThan(0);
+    expect(providersFor(index, 'Cold storage logistics', 'TX')).toBe(0);
   });
 
   it('falls back to the national count when the lead has no state', () => {

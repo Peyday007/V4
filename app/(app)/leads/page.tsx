@@ -5,6 +5,7 @@ import { requirePagePermission } from '@/lib/auth/page';
 import { getActivePaths } from '@/lib/paths';
 import { buildBoard, missingEvidence, type BoardAccount, type RenderedHypothesis } from '@/lib/discovery/board';
 import { describeDiscoveryTime, type Freshness } from '@/lib/discovery/eventTime';
+import { TIER_LABEL, TIER_ORDER } from '@/lib/discovery/tiers';
 import { Badge, Empty, humanize, relativeDays } from '@/components/ui';
 import { DiscoveryStatus } from '@/components/DiscoveryStatus';
 import { hasCredential } from '@/lib/discovery/http';
@@ -47,6 +48,22 @@ const FRESHNESS_TONE: Record<Freshness, string> = {
   RECENT: 'accent',
   AGEING: 'warning',
   STALE: 'danger',
+};
+
+/**
+ * Tier drives the eye before the score does.
+ *
+ * A priority number invites comparison between records; the tier says whether
+ * the comparison is worth making at all. Tier D is deliberately given no
+ * colour — it is the default state of a discovered organisation, not an
+ * achievement, and a board of grey badges should look like what it is.
+ */
+const TIER_TONE: Record<string, string> = {
+  ACTIVE_DEMAND: 'success',
+  STRONG_TRIGGER: 'warning',
+  PREDICTED_NEED: 'accent',
+  DIRECTORY_PROSPECT: '',
+  REJECTED: 'danger',
 };
 
 const VERDICT_TONE: Record<string, string> = {
@@ -161,6 +178,10 @@ export default async function LeadsPage({
       contactability: h.contactabilityScore,
       fulfilment: h.fulfillmentReadinessScore,
       priority: Math.round(h.priorityScore),
+      tier: h.tier,
+      tierReason: h.tierReason ?? '',
+      rejectionFlags: h.rejectionFlags,
+      buyingWindow: h.buyingWindow,
       scoreExplanation: explanation,
       requiredService: h.signals[0]?.requiredService ?? null,
       missing: missingEvidence({
@@ -198,6 +219,47 @@ export default async function LeadsPage({
           </p>
         </div>
         <Badge tone={liveCount > 0 ? 'success' : 'warning'}>{liveCount} live records</Badge>
+      </div>
+
+      {/* The funnel in the terms that cannot flatter it. "Pipeline" counts a
+          scraped company and an open solicitation the same; these do not. */}
+      <div className="card">
+        <div className="tiny dim">What discovery actually produced</div>
+        <div className="grid grid-4 mt">
+          <div className="stat">
+            <div className="stat-label">Raw records</div>
+            <div className="stat-value" style={{ fontSize: '1.3rem' }}>{board.pipeline.rawRecords}</div>
+          </div>
+          <div className="stat">
+            <div className="stat-label">Accounts</div>
+            <div className="stat-value" style={{ fontSize: '1.3rem' }}>{board.pipeline.accounts}</div>
+          </div>
+          <div className="stat">
+            <div className="stat-label">Path hypotheses</div>
+            <div className="stat-value" style={{ fontSize: '1.3rem' }}>{board.pipeline.hypotheses}</div>
+          </div>
+          <div className="stat">
+            <div className="stat-label">Worth contacting</div>
+            <div className="stat-value" style={{ fontSize: '1.3rem' }}>{board.pipeline.actionable}</div>
+            <div className="tiny dim">tier A + B only</div>
+          </div>
+        </div>
+
+        <div className="row mt">
+          {board.pipeline.byTier
+            .filter((t) => t.count > 0)
+            .map((t) => (
+              <Badge key={t.tier} tone={TIER_TONE[t.tier]}>
+                {t.label}: {t.count}
+              </Badge>
+            ))}
+        </div>
+
+        {board.noDemandFound && (
+          <div className="alert warning small mt">
+            <strong>No demand evidence anywhere on this board.</strong> {board.noDemandFound}
+          </div>
+        )}
       </div>
 
       {/* The run's own assessment of its output, shown on load rather than
@@ -327,6 +389,10 @@ export default async function LeadsPage({
         board.accounts.map((account) => {
           const origin = ORIGIN_LABEL[account.origin as DataOrigin] ?? ORIGIN_LABEL.MANUAL;
           const location = [account.cityName, account.stateCode].filter(Boolean).join(', ');
+          // The account inherits its strongest candidacy's tier: one path with
+          // a live solicitation makes the whole account worth a call.
+          const bestTier = TIER_ORDER.find((tier) => account.hypotheses.some((h) => h.tier === tier))
+            ?? 'DIRECTORY_PROSPECT';
 
           return (
             <div className="card" key={account.companyId}>
@@ -336,6 +402,7 @@ export default async function LeadsPage({
                     <Link href={`/companies/${account.companyId}`}>{account.name}</Link>
                   </h2>
                   <div className="row">
+                    <Badge tone={TIER_TONE[bestTier] ?? ''}>{TIER_LABEL[bestTier]}</Badge>
                     <Badge tone={origin.tone}>{origin.label}</Badge>
                     {account.hypotheses.map((h) => (
                       <Badge key={h.id} tone="accent">{h.pathName}</Badge>
@@ -406,6 +473,7 @@ function HypothesisBlock({ h }: { h: RenderedHypothesis }) {
   return (
     <div className="mt" style={{ borderTop: '1px solid var(--border, #2a2a2a)', paddingTop: '0.75rem' }}>
       <div className="row">
+        <Badge tone={TIER_TONE[h.tier] ?? ''}>{h.tierLabel}</Badge>
         <Badge tone={STAGE_TONE[h.stage] ?? ''}>{humanize(h.stage)}</Badge>
         <Badge>{h.pathName}</Badge>
         <Badge>{humanize(h.leadRole)}</Badge>
@@ -416,6 +484,19 @@ function HypothesisBlock({ h }: { h: RenderedHypothesis }) {
         )}
         <Badge tone={h.need.asserted ? 'accent' : ''}>{h.need.asserted ? 'source fact' : 'our inference'}</Badge>
         <span className="tiny dim" style={{ marginLeft: 'auto' }}>priority {h.priority}</span>
+      </div>
+
+      <div className="tiny muted mt">
+        <strong>Why this tier:</strong> {h.tierReason}
+      </div>
+      {h.rejectionFlags.length > 0 && (
+        <div className="alert danger tiny mt">
+          <strong>Rejected:</strong> {h.rejectionFlags.join('; ')}. Kept searchable, kept out of the work queue.
+        </div>
+      )}
+      <div className="tiny dim">
+        Outreach this evidence justifies: {h.outreach.channels.join(', ') || 'none'} — {h.outreach.note}
+        {h.buyingWindow && h.buyingWindow !== 'UNKNOWN' && <> · buying window {humanize(h.buyingWindow)}</>}
       </div>
 
       {h.requiredService && (

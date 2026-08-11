@@ -157,6 +157,30 @@ enum LeadRole {
 /// organisation exists and may fit the target profile. It does not prove any
 /// intent to buy anything. Those were previously the same state, which is how a
 /// gym that has never heard of us reached 88 points.
+/// How much evidence exists that this account needs something *now*.
+///
+/// Separate from `LeadStage`, which tracks how far a hypothesis has been
+/// worked. A record can sit in OPPORTUNITY_HYPOTHESIS forever at Tier D and a
+/// brand-new Tier A record deserves attention before any of them. The two axes
+/// answer different questions: the stage says what we have done, the tier says
+/// what the world has done.
+enum LeadTier {
+  /// Direct evidence of a current commercial requirement — an open
+  /// solicitation, an inbound request, a buyer actively sourcing vendors.
+  ACTIVE_DEMAND
+  /// No explicit request, but a dated event that usually creates need now:
+  /// a permit, an award, a facility opening, an expansion.
+  STRONG_TRIGGER
+  /// Fits a pattern that has produced work before, with no current trigger.
+  /// Campaign material. Must not compete with A or B for attention.
+  PREDICTED_NEED
+  /// Firmographic fit only — a directory or registry listing. Stored cheaply,
+  /// kept out of the active pipeline. Most discovered records are this.
+  DIRECTORY_PROSPECT
+  /// Failed a rejection rule. Searchable, never surfaced as work.
+  REJECTED
+}
+
 enum LeadStage {
   /// The organisation exists and a source vouches for it. Nothing more.
   DISCOVERED_ACCOUNT
@@ -824,8 +848,19 @@ model PathHypothesis {
   stageEnteredAt     DateTime  @default(now())
 
   disqualifiedReason String?
-  createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+
+  /// Evidence tier. Defaults to the weakest: a record earns a better tier by
+  /// carrying dated demand evidence, never by being processed.
+  tier           LeadTier @default(DIRECTORY_PROSPECT)
+  /// Why this tier, in the operator's language. Never a bare score.
+  tierReason     String?
+  /// Rejection rules this record tripped. Non-empty implies tier REJECTED.
+  rejectionFlags String[] @default([])
+  /// When demand is expected to be live, so nurture can replace pestering.
+  buyingWindow   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   org           Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
   company       Company           @relation(fields: [companyId], references: [id], onDelete: Cascade)
@@ -838,6 +873,7 @@ model PathHypothesis {
   /// duplicate cards impossible rather than merely unlikely.
   @@unique([companyId, pathId])
   @@index([orgId, stage, priorityScore])
+  @@index([orgId, tier, priorityScore])
 }
 
 /// A dated external event suggesting someone may be buying.

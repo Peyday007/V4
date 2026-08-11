@@ -164,6 +164,10 @@ async function main() {
       accountFit: h.accountFitScore, intent: h.intentScore,
       contactability: h.contactabilityScore, fulfilment: h.fulfillmentReadinessScore,
       priority: Math.round(h.priorityScore),
+      tier: h.tier,
+      tierReason: h.tierReason ?? '',
+      rejectionFlags: h.rejectionFlags,
+      buyingWindow: h.buyingWindow,
       scoreExplanation: (h.scoreExplanation ?? {}) as Record<string, string>,
       requiredService: h.signals[0]?.requiredService ?? null,
       missing: missingEvidence({ needEvidence: h.needEvidence, decisionMakerId: h.decisionMakerId, timingEvidence: h.timingEvidence, accountFit: h.accountFitScore, nextStep: h.nextStep }),
@@ -179,7 +183,12 @@ async function main() {
 
   const board = buildBoard({ accounts: [...byId.values()], unassessedSignals: unassessed });
 
-  console.log(`accounts ${board.counts.accounts} · hypotheses ${board.counts.hypotheses} · raw records ${board.counts.signals} · duplicates collapsed ${board.counts.duplicateSignals} · held back ${board.counts.quarantined} · unassessed ${board.counts.unassessedSignals}`);
+  console.log('\n--- pipeline truth ---------------------------------------------');
+  console.log(`raw records ${board.pipeline.rawRecords} · accounts ${board.pipeline.accounts} · hypotheses ${board.pipeline.hypotheses} · worth contacting (A+B) ${board.pipeline.actionable}`);
+  for (const t of board.pipeline.byTier) console.log(`  ${t.label.padEnd(24)} ${t.count}`);
+  if (board.noDemandFound) console.log(`\n!! ${board.noDemandFound}`);
+
+  console.log(`\naccounts ${board.counts.accounts} · hypotheses ${board.counts.hypotheses} · raw records ${board.counts.signals} · duplicates collapsed ${board.counts.duplicateSignals} · held back ${board.counts.quarantined} · unassessed ${board.counts.unassessedSignals}`);
   console.log(`\nVERDICT: ${board.diagnostics.verdict} — ${board.diagnostics.verdictReason}`);
   console.log(`ranked: ${board.ranked}${board.rankingRefusedBecause ? ` (${board.rankingRefusedBecause})` : ''}`);
 
