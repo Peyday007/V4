@@ -162,37 +162,87 @@ export type FitInput = {
   /** Path segments; empty means the path takes anything. */
   pathSegments: MarketSegment[];
   segment: MarketSegment;
-  /** Does the company have a capability or need the path cares about? */
-  hasRelevantService: boolean;
-  /** Is the company inside a market we actually work? */
-  inServedMarket: boolean;
-  /** Did a source vouch for the organisation's existence? */
-  sourceVerified: boolean;
+  /** Roles this path actually deals in. Empty means any. */
+  pathRoles: LeadRole[];
+  leadRole: LeadRole;
+  /**
+   * True when the service maps to a capability already in the catalogue —
+   * something we can price and match — rather than a connector's generic
+   * fallback label.
+   */
+  serviceIsCatalogued: boolean;
+  /** City and state both known and plausible, not just a state. */
+  locationPrecision: 'CITY' | 'STATE' | 'UNKNOWN';
+  /** Matched to a named local market rather than only the national sweep. */
+  matchedLocalMarket: boolean;
 };
 
+/**
+ * Account fit.
+ *
+ * The first version of this scored four things that were true of every record
+ * by construction — the segment always matched because every connector emits
+ * COMMERCIAL, the service was always present because every connector hardcodes
+ * one, the market always matched because the market was assigned from the
+ * enabled list, and the source was always live because only live records were
+ * examined. Four boxes that could not be unticked, so every account scored 100
+ * and the dimension carried no information at all.
+ *
+ * These five vary. A CMS record carries a city; a USAspending award often
+ * carries only a state. A Places result matched to the Dallas metro is more
+ * useful than one that only landed in the national sweep. A service naming a
+ * capability we hold providers for is worth more than a generic label. That is
+ * what a fit score is supposed to distinguish.
+ */
 export function scoreAccountFit(input: FitInput): { score: number; reason: string } {
-  const parts: Array<{ ok: boolean; weight: number; yes: string; no: string }> = [
+  const parts = [
     {
-      ok: input.pathSegments.length === 0 || input.pathSegments.includes(input.segment),
-      weight: 0.3,
+      label: 'segment',
+      weight: 0.2,
+      value: input.pathSegments.length === 0 || input.pathSegments.includes(input.segment) ? 1 : 0,
       yes: `${titleCase(input.segment)} is a segment this path works`,
       no: `${titleCase(input.segment)} is outside this path's segments`,
     },
-    { ok: input.hasRelevantService, weight: 0.3, yes: 'a relevant service or product is identified', no: 'no relevant service identified' },
-    { ok: input.inServedMarket, weight: 0.25, yes: 'located in a market we work', no: 'outside the markets we work' },
-    { ok: input.sourceVerified, weight: 0.15, yes: 'existence verified by an external source', no: 'existence not independently verified' },
+    {
+      label: 'role',
+      weight: 0.2,
+      value: input.pathRoles.length === 0 || input.pathRoles.includes(input.leadRole) ? 1 : 0,
+      yes: `${titleCase(input.leadRole)} is a role this path deals in`,
+      no: `${titleCase(input.leadRole)} is not a role this path deals in`,
+    },
+    {
+      label: 'service',
+      weight: 0.2,
+      value: input.serviceIsCatalogued ? 1 : 0.25,
+      yes: 'the service maps to a capability we can price and match',
+      no: 'the service is a generic label, not a catalogued capability',
+    },
+    {
+      label: 'location',
+      weight: 0.2,
+      value: input.locationPrecision === 'CITY' ? 1 : input.locationPrecision === 'STATE' ? 0.4 : 0,
+      yes: 'city and state are both known',
+      no: input.locationPrecision === 'STATE' ? 'only a state is known, no city' : 'no usable location',
+    },
+    {
+      label: 'market',
+      weight: 0.2,
+      value: input.matchedLocalMarket ? 1 : 0.3,
+      yes: 'falls inside a named market we work',
+      no: 'only inside the nationwide sweep, not a market we actively work',
+    },
   ];
 
-  const score = clamp01(parts.reduce((sum, p) => sum + (p.ok ? p.weight : 0), 0));
-  const met = parts.filter((p) => p.ok).map((p) => p.yes);
-  const missing = parts.filter((p) => !p.ok).map((p) => p.no);
+  const score = clamp01(parts.reduce((sum, p) => sum + p.value * p.weight, 0));
+  const strong = parts.filter((p) => p.value >= 0.9).map((p) => p.yes);
+  const weak = parts.filter((p) => p.value < 0.9).map((p) => p.no);
 
   return {
     score,
     reason:
       `Profile fit only — this says nothing about whether they are buying. ` +
-      `${met.length > 0 ? `In favour: ${met.join(', ')}. ` : ''}` +
-      `${missing.length > 0 ? `Against: ${missing.join(', ')}.` : ''}`.trim(),
+      `${strong.length > 0 ? `In favour: ${strong.join(', ')}. ` : ''}` +
+      `${weak.length > 0 ? `Against: ${weak.join(', ')}.` : ''}`.trim(),
   };
 }
 
@@ -204,19 +254,31 @@ export type ContactInput = {
   hasRoutingPhone: boolean;
   hasDirectPhone: boolean;
   hasEmail: boolean;
+  /** A website is a route to finding a named person, not a contact itself. */
+  hasWebsite: boolean;
+  /** A person's name from the source, rather than an unnamed main line. */
+  hasNamedPerson: boolean;
   /** A named person established to decide or sign. */
   hasIdentifiedDecisionMaker: boolean;
   decisionMakerVerified: boolean;
 };
 
 /**
- * A switchboard number is not a decision-maker.
+ * Contactability.
  *
- * The old model gave a main line the full contactability score, so a
- * directory listing looked as reachable as a named buyer with a direct dial.
- * A routing number is worth something — it is a way in — but it caps low,
- * because the work of finding the right person has not been done.
+ * A switchboard number is not a decision-maker, and the first version was
+ * right about that but got the shape wrong: it returned the first matching
+ * branch, so every discovered record — all of which have a main line, no
+ * mobile and no named person — returned exactly 0.3. Correct in principle,
+ * useless in practice, because it could not tell a bare phone number from a
+ * phone number plus an email plus a named office manager.
+ *
+ * A routing-only record now accumulates from its corroborating channels but
+ * stays capped well below a named decision-maker, which is the property that
+ * matters.
  */
+export const ROUTING_ONLY_CEILING = 0.45;
+
 export function scoreContactability(input: ContactInput): { score: number; reason: string } {
   if (input.hasIdentifiedDecisionMaker && input.decisionMakerVerified) {
     return { score: 1, reason: 'A verified decision-maker with direct contact details is on file.' };
@@ -224,19 +286,30 @@ export function scoreContactability(input: ContactInput): { score: number; reaso
   if (input.hasIdentifiedDecisionMaker) {
     return { score: 0.75, reason: 'A decision-maker is named but not yet verified.' };
   }
-  if (input.hasDirectPhone) {
-    return { score: 0.5, reason: 'A direct line is on file, but nobody has been established as the decision-maker.' };
+
+  const routes: Array<{ has: boolean; value: number; label: string }> = [
+    { has: input.hasDirectPhone, value: 0.3, label: 'a direct or mobile number' },
+    { has: input.hasRoutingPhone, value: 0.2, label: 'a main switchboard line' },
+    { has: input.hasEmail, value: 0.12, label: 'an email address' },
+    { has: input.hasNamedPerson, value: 0.1, label: 'a named person (role unconfirmed)' },
+    { has: input.hasWebsite, value: 0.05, label: 'a website to research a contact from' },
+  ];
+
+  const present = routes.filter((r) => r.has);
+  if (present.length === 0) {
+    return { score: 0, reason: 'No contact route at all. Research is needed before this can be worked.' };
   }
-  if (input.hasRoutingPhone) {
-    return {
-      score: 0.3,
-      reason: 'Main switchboard number only. That is a way in, not a decision-maker — expect a gatekeeper first.',
-    };
-  }
-  if (input.hasEmail) {
-    return { score: 0.2, reason: 'Email only, and no named contact.' };
-  }
-  return { score: 0, reason: 'No contact route at all. Research is needed before this can be worked.' };
+
+  const raw = present.reduce((sum, r) => sum + r.value, 0);
+  const score = Math.min(raw, ROUTING_ONLY_CEILING);
+
+  return {
+    score,
+    reason:
+      `Nobody has been established as the decision-maker, so this is capped at ${Math.round(ROUTING_ONLY_CEILING * 100)}. ` +
+      `Available: ${present.map((r) => r.label).join(', ')}. ` +
+      `${input.hasRoutingPhone && !input.hasDirectPhone ? 'Expect a gatekeeper on the main line first.' : ''}`.trim(),
+  };
 }
 
 // ---------------------------------------------------------------------------

@@ -7,9 +7,11 @@ import {
   scoreContactability,
   scoreIntent,
   scorePriority,
+  ROUTING_ONLY_CEILING,
+  type FitInput,
   type QualificationEvidence,
 } from '@/lib/discovery/qualification';
-import { buildIdentity, normalizeAddress, normalizePhone, sameCompany } from '@/lib/discovery/identity';
+import { buildIdentity, cleanCity, cleanState, isPlausibleCityName, normalizeAddress, normalizePhone, sameCompany } from '@/lib/discovery/identity';
 import { intentKindFor } from '@/lib/discovery/reclassify';
 
 /**
@@ -115,11 +117,11 @@ describe('discovery time is never presented as publication time', () => {
 // ---------------------------------------------------------------------------
 
 describe('contactability distinguishes a switchboard from a decision-maker', () => {
-  const none = { hasRoutingPhone: false, hasDirectPhone: false, hasEmail: false, hasIdentifiedDecisionMaker: false, decisionMakerVerified: false };
+  const none = { hasRoutingPhone: false, hasDirectPhone: false, hasEmail: false, hasWebsite: false, hasNamedPerson: false, hasIdentifiedDecisionMaker: false, decisionMakerVerified: false };
 
   it('does not treat a main business phone as an identified decision-maker', () => {
     const routing = scoreContactability({ ...none, hasRoutingPhone: true });
-    expect(routing.score).toBeLessThanOrEqual(0.3);
+    expect(routing.score).toBeLessThanOrEqual(ROUTING_ONLY_CEILING);
     expect(routing.reason).toMatch(/not a decision-maker|gatekeeper/i);
   });
 
@@ -127,7 +129,7 @@ describe('contactability distinguishes a switchboard from a decision-maker', () 
     const verified = scoreContactability({ ...none, hasIdentifiedDecisionMaker: true, decisionMakerVerified: true });
     const routing = scoreContactability({ ...none, hasRoutingPhone: true });
     expect(verified.score).toBe(1);
-    expect(verified.score).toBeGreaterThan(routing.score * 3);
+    expect(verified.score).toBeGreaterThan(routing.score * 2);
   });
 
   it('gives no contactability at all when there is no route in', () => {
@@ -309,11 +311,132 @@ describe('account fit', () => {
     const fit = scoreAccountFit({
       pathSegments: ['COMMERCIAL'],
       segment: 'COMMERCIAL',
-      hasRelevantService: true,
-      inServedMarket: true,
-      sourceVerified: true,
+      pathRoles: ['BUYER'],
+      leadRole: 'BUYER',
+      serviceIsCatalogued: true,
+      locationPrecision: 'CITY',
+      matchedLocalMarket: true,
     });
     expect(fit.score).toBe(1);
     expect(fit.reason).toMatch(/says nothing about whether they are buying/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The dimensions must actually discriminate
+// ---------------------------------------------------------------------------
+
+describe('account fit discriminates between records', () => {
+  const base: FitInput = {
+    pathSegments: ['COMMERCIAL'],
+    segment: 'COMMERCIAL',
+    pathRoles: ['BUYER'],
+    leadRole: 'BUYER',
+    serviceIsCatalogued: true,
+    locationPrecision: 'CITY',
+    matchedLocalMarket: true,
+  };
+
+  it('separates a city-level local-market record from a state-only national one', () => {
+    // This is the case that made every account score 100: nothing in the old
+    // inputs could tell a CMS record with a city from an award with a state.
+    const precise = scoreAccountFit({ ...base });
+    const vague = scoreAccountFit({ ...base, locationPrecision: 'STATE', matchedLocalMarket: false });
+    expect(precise.score).toBe(1);
+    expect(vague.score).toBeLessThan(0.75);
+    expect(vague.reason).toMatch(/only a state is known/i);
+  });
+
+  it('penalises a role the path does not deal in', () => {
+    const wrongRole = scoreAccountFit({ ...base, leadRole: 'SUPPLIER' });
+    expect(wrongRole.score).toBeLessThan(1);
+    expect(wrongRole.reason).toMatch(/not a role this path deals in/i);
+  });
+
+  it('penalises a generic service label over a catalogued capability', () => {
+    const generic = scoreAccountFit({ ...base, serviceIsCatalogued: false });
+    expect(generic.score).toBeLessThan(scoreAccountFit(base).score);
+    expect(generic.reason).toMatch(/generic label/i);
+  });
+
+  it('produces a spread across plausible record shapes rather than one value', () => {
+    const shapes = [
+      scoreAccountFit(base),
+      scoreAccountFit({ ...base, locationPrecision: 'STATE' }),
+      scoreAccountFit({ ...base, matchedLocalMarket: false }),
+      scoreAccountFit({ ...base, serviceIsCatalogued: false, locationPrecision: 'UNKNOWN' }),
+      scoreAccountFit({ ...base, leadRole: 'PARTNER', matchedLocalMarket: false }),
+    ].map((f) => f.score);
+    expect(new Set(shapes).size).toBeGreaterThanOrEqual(4);
+  });
+});
+
+describe('contactability discriminates between records', () => {
+  const none = { hasRoutingPhone: false, hasDirectPhone: false, hasEmail: false, hasWebsite: false, hasNamedPerson: false, hasIdentifiedDecisionMaker: false, decisionMakerVerified: false };
+
+  it('separates a bare main line from one with an email and a named person', () => {
+    // Both are routing-only, but they are not equally workable, and the old
+    // first-match-wins branch returned 0.3 for both.
+    const bare = scoreContactability({ ...none, hasRoutingPhone: true });
+    const richer = scoreContactability({ ...none, hasRoutingPhone: true, hasEmail: true, hasNamedPerson: true, hasWebsite: true });
+    expect(richer.score).toBeGreaterThan(bare.score);
+  });
+
+  it('never lets routing-only reach decision-maker territory', () => {
+    const everything = scoreContactability({
+      ...none,
+      hasRoutingPhone: true,
+      hasDirectPhone: true,
+      hasEmail: true,
+      hasWebsite: true,
+      hasNamedPerson: true,
+    });
+    expect(everything.score).toBeLessThanOrEqual(ROUTING_ONLY_CEILING);
+    expect(everything.score).toBeLessThan(0.75);
+    expect(everything.reason).toMatch(/Nobody has been established as the decision-maker/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Malformed identity fragments
+// ---------------------------------------------------------------------------
+
+describe('malformed identity values are rejected', () => {
+  it('refuses a house number as a city', () => {
+    // "633" reached the interface as a lead's location. A null is honest;
+    // a house number pretending to be a city is not.
+    expect(isPlausibleCityName('633')).toBe(false);
+    expect(cleanCity('633')).toBeNull();
+    expect(cleanCity('633 Main St')).toBeNull();
+    expect(cleanCity('Ste 400')).toBeNull();
+    expect(cleanCity('')).toBeNull();
+  });
+
+  it('accepts real city names including multi-word and hyphenated ones', () => {
+    expect(cleanCity('Dallas')).toBe('Dallas');
+    expect(cleanCity('Fort Worth')).toBe('Fort Worth');
+    expect(cleanCity('Winston-Salem')).toBe('Winston-Salem');
+    expect(cleanCity("Coeur d'Alene")).toBe("Coeur d'Alene");
+  });
+
+  it('refuses anything that is not a real state code', () => {
+    expect(cleanState('TX')).toBe('TX');
+    expect(cleanState('tx')).toBe('TX');
+    expect(cleanState('75201')).toBeNull();
+    expect(cleanState('Texas')).toBeNull();
+    expect(cleanState('ZZ')).toBeNull();
+  });
+
+  it('drops the fragment from the identity rather than storing it', () => {
+    const identity = buildIdentity({ name: 'Some Clinic', city: '633', state: '75201' });
+    expect(identity.cityName).toBeNull();
+    expect(identity.stateCode).toBeNull();
+  });
+
+  it('does not merge two accounts merely because both have unusable locations', () => {
+    // Without this, every record with a rejected city would collapse together.
+    const a = buildIdentity({ name: 'Acme Clinic', city: '633', state: '99' });
+    const b = buildIdentity({ name: 'Acme Clinic', city: '712', state: '88' });
+    expect(sameCompany(a, b).matched).toBe(false);
   });
 });

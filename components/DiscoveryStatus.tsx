@@ -31,9 +31,12 @@ type AuditResult = {
   hypothesesCreated: number;
   intentEventsFound: number;
   stageCounts: Record<string, number>;
+  accountStageCounts: Record<string, number>;
   rows: Array<{
     company: string;
     cityState: string;
+    path: string;
+    leadRole: string;
     before: { duplicateCards: number; score: number };
     after: { stage: string; accountFit: number; intent: number; contactability: number; priority: number; paths: string[]; missing: string[] };
   }>;
@@ -163,7 +166,12 @@ export function DiscoveryStatus({ sources, liveLeads }: { sources: SourceStatus[
           {audit.companiesAfter} accounts ({audit.companiesMerged} merged) · {audit.hypothesesCreated} path hypothesis(es) ·{' '}
           {audit.intentEventsFound} intent event(s) found.
           <div className="tiny mt">
-            Stages: {Object.entries(audit.stageCounts).map(([k, v]) => `${humanStage(k)} ${v}`).join(' · ')}
+            By account: {Object.entries(audit.accountStageCounts ?? {}).map(([k, v]) => `${humanStage(k)} ${v}`).join(' · ')}
+          </div>
+          <div className="tiny dim">
+            By hypothesis: {Object.entries(audit.stageCounts).map(([k, v]) => `${humanStage(k)} ${v}`).join(' · ')} — one
+            row per path candidacy, so an account working two paths counts twice. That is why this total exceeds the
+            account count.
           </div>
           <div className="table-wrap mt">
             <table>
@@ -171,6 +179,8 @@ export function DiscoveryStatus({ sources, liveLeads }: { sources: SourceStatus[
                 <tr>
                   <th>Account</th>
                   <th>City, state</th>
+                  <th>Path hypothesis</th>
+                  <th>Role</th>
                   <th>Was</th>
                   <th>Stage</th>
                   <th>Fit</th>
@@ -182,9 +192,11 @@ export function DiscoveryStatus({ sources, liveLeads }: { sources: SourceStatus[
               </thead>
               <tbody>
                 {audit.rows.map((row) => (
-                  <tr key={row.company + row.cityState}>
+                  <tr key={row.company + row.path + row.cityState}>
                     <td className="small">{row.company}</td>
                     <td className="tiny">{row.cityState}</td>
+                    <td className="tiny">{row.path}</td>
+                    <td className="tiny dim">{row.leadRole.toLowerCase()}</td>
                     <td className="tiny dim">{row.before.score}</td>
                     <td className="tiny">{humanStage(row.after.stage)}</td>
                     <td className="tiny">{row.after.accountFit}</td>

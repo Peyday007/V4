@@ -38,6 +38,9 @@ export type BeforeAfterRow = {
     claimedStage: string;
     claimedRelevance: string;
   };
+  /** One row per hypothesis, so the path each account was included for is visible. */
+  path: string;
+  leadRole: string;
   after: {
     companyId: string;
     mergedFrom: number;
@@ -60,7 +63,14 @@ export type ReclassifyResult = {
   companiesMerged: number;
   hypothesesCreated: number;
   intentEventsFound: number;
+  /**
+   * Counted per hypothesis, not per account. An account with two path
+   * candidacies contributes two entries — which is why this total exceeds
+   * `companiesAfter`.
+   */
   stageCounts: Record<string, number>;
+  /** The same tally collapsed to one entry per account, by its best stage. */
+  accountStageCounts: Record<string, number>;
   rows: BeforeAfterRow[];
 };
 
@@ -95,6 +105,7 @@ export async function reclassify(params: { orgId: string; userId: string; dryRun
     hypothesesCreated: 0,
     intentEventsFound: 0,
     stageCounts: {},
+    accountStageCounts: {},
     rows: [],
   };
   if (signals.length === 0) return result;
@@ -106,6 +117,12 @@ export async function reclassify(params: { orgId: string; userId: string; dryRun
     signals: typeof signals;
     primary: typeof signals[number]['company'] & { contacts: Contact[]; locations: CompanyLocation[] };
   };
+
+  // Capability names we actually hold, lowercased, so "service is catalogued"
+  // is a real check rather than "the connector set a string".
+  const catalogue = new Set(
+    (await prisma.capability.findMany({ where: { orgId }, select: { name: true } })).map((c) => c.name.toLowerCase()),
+  );
 
   const clusters: Cluster[] = [];
 
@@ -208,12 +225,24 @@ export async function reclassify(params: { orgId: string; userId: string; dryRun
       const lead = pathSignals[0];
       const role = lead.leadRole;
 
+      const marketForLead = markets.find((m) => m.id === lead.marketId);
       const fit = scoreAccountFit({
         pathSegments: path.segments,
         segment: lead.segment,
-        hasRelevantService: Boolean(lead.requiredService),
-        inServedMarket: markets.some((m) => m.id === lead.marketId),
-        sourceVerified: lead.dataSource?.isLive ?? false,
+        pathRoles: path.leadRoles,
+        leadRole: role,
+        // A capability already in the catalogue can be priced and matched; a
+        // connector's generic label cannot.
+        serviceIsCatalogued: lead.requiredService
+          ? catalogue.has(lead.requiredService.toLowerCase())
+          : false,
+        locationPrecision: cluster.identity.cityName
+          ? 'CITY'
+          : cluster.identity.stateCode
+            ? 'STATE'
+            : 'UNKNOWN',
+        // The nationwide sweep is coverage, not a market anyone is working.
+        matchedLocalMarket: Boolean(marketForLead && marketForLead.scope !== 'NATIONAL'),
       });
 
       const routing = contacts.filter((c) => !c.isDecisionMaker);
@@ -221,6 +250,10 @@ export async function reclassify(params: { orgId: string; userId: string; dryRun
         hasRoutingPhone: routing.some((c) => Boolean(c.phone)),
         hasDirectPhone: contacts.some((c) => Boolean(c.mobile)),
         hasEmail: contacts.some((c) => Boolean(c.email)),
+        hasWebsite: Boolean(company.website),
+        // "Main line" is the placeholder the ingest path writes when a source
+        // gives a number but no person, so it does not count as a named one.
+        hasNamedPerson: contacts.some((c) => c.firstName && c.firstName !== 'Main'),
         hasIdentifiedDecisionMaker: contacts.some((c) => c.isDecisionMaker),
         decisionMakerVerified: contacts.some((c) => c.isDecisionMaker && c.verificationStatus !== 'UNVERIFIED'),
       });
@@ -303,6 +336,30 @@ export async function reclassify(params: { orgId: string; userId: string; dryRun
         result.hypothesesCreated += 1;
       }
 
+      // One row per hypothesis. An account with two paths produces two rows,
+      // which is why the stage tally exceeds the account count — each row is a
+      // path candidacy, not a company.
+      result.rows.push({
+        company: company.legalName,
+        cityState: [cluster.identity.cityName, cluster.identity.stateCode].filter(Boolean).join(', ') || 'unknown',
+        path: path.name,
+        leadRole: role,
+        before: { ...before },
+        after: {
+          companyId: company.id,
+          mergedFrom: cluster.companyIds.size,
+          stage: stage.stage,
+          accountFit: Math.round(fit.score * 100),
+          intent: Math.round(intent.score * 100),
+          contactability: Math.round(contact.score * 100),
+          fulfilment: Math.round(fulfil.score * 100),
+          priority: priority.score,
+          paths: [path.name],
+          missing: stage.missing,
+          relevance,
+        },
+      });
+
       rowPaths.push(`${path.name} (${stage.stage.toLowerCase().replace(/_/g, ' ')})`);
       if (priority.score > topPriority) {
         topPriority = priority.score;
@@ -315,24 +372,7 @@ export async function reclassify(params: { orgId: string; userId: string; dryRun
       result.stageCounts[stage.stage] = (result.stageCounts[stage.stage] ?? 0) + 1;
     }
 
-    result.rows.push({
-      company: company.legalName,
-      cityState: [cluster.identity.cityName, cluster.identity.stateCode].filter(Boolean).join(', ') || 'unknown',
-      before,
-      after: {
-        companyId: company.id,
-        mergedFrom: cluster.companyIds.size,
-        stage: rowStage,
-        accountFit: Math.round(fitScore * 100),
-        intent: Math.round(intent.score * 100),
-        contactability: Math.round(contactScore * 100),
-        fulfilment: Math.round(fulfilScore * 100),
-        priority: topPriority,
-        paths: rowPaths,
-        missing: rowMissing,
-        relevance,
-      },
-    });
+    result.accountStageCounts[rowStage] = (result.accountStageCounts[rowStage] ?? 0) + 1;
   }
 
   if (!params.dryRun) {

@@ -74,6 +74,50 @@ export function normalizeAddress(value: string | null | undefined): string | nul
   return normalised.length >= 4 ? normalised : null;
 }
 
+/**
+ * Two-letter US state codes, so "TX" is accepted and "Suite" is not.
+ */
+const STATE_CODES = new Set([
+  'AL','AK','AZ','AR','CA','CO','CT','DE','DC','FL','GA','HI','ID','IL','IN','IA','KS','KY','LA','ME','MD','MA',
+  'MI','MN','MS','MO','MT','NE','NV','NH','NJ','NM','NY','NC','ND','OH','OK','OR','PA','RI','SC','SD','TN','TX',
+  'UT','VT','VA','WA','WV','WI','WY','PR','VI','GU','AS','MP',
+]);
+
+/**
+ * Rejects a city that is not a city.
+ *
+ * Several connectors build a location string by joining fields, and the
+ * downstream split can leave a house number or a postcode where the city
+ * should be — which is how "633" ended up displayed as a lead's location. A
+ * name with no letters is not a place, and storing it is worse than storing
+ * nothing, because null is visibly unknown while "633" looks like data.
+ */
+export function isPlausibleCityName(value: string | null | undefined): boolean {
+  if (!value) return false;
+  const trimmed = value.trim();
+  if (trimmed.length < 2 || trimmed.length > 60) return false;
+  // Must contain at least two consecutive letters; digits alone or mixed
+  // fragments like "633" and "STE 4" are address parts, not city names.
+  if (!/[A-Za-z]{2}/.test(trimmed)) return false;
+  if (/^\d/.test(trimmed)) return false;
+  if (/^(ste|suite|apt|unit|floor|fl|bldg|po box)\b/i.test(trimmed)) return false;
+  return true;
+}
+
+export function isPlausibleStateCode(value: string | null | undefined): boolean {
+  if (!value) return false;
+  return STATE_CODES.has(value.trim().toUpperCase());
+}
+
+/** Keeps a plausible city or returns null, never a fragment. */
+export function cleanCity(value: string | null | undefined): string | null {
+  return isPlausibleCityName(value) ? value!.trim() : null;
+}
+
+export function cleanState(value: string | null | undefined): string | null {
+  return isPlausibleStateCode(value) ? value!.trim().toUpperCase() : null;
+}
+
 export function buildIdentity(input: {
   name: string;
   externalPlaceId?: string | null;
@@ -87,8 +131,10 @@ export function buildIdentity(input: {
     normalizedPhone: normalizePhone(input.phone),
     normalizedAddress: normalizeAddress(input.address),
     normalizedName: normalizeCompanyName(input.name),
-    cityName: input.city?.trim() || null,
-    stateCode: input.state?.trim().toUpperCase() || null,
+    // Validated rather than trusted: a malformed fragment is discarded so the
+    // interface shows "location unknown" instead of a house number.
+    cityName: cleanCity(input.city),
+    stateCode: cleanState(input.state),
   };
 }
 
