@@ -15,6 +15,8 @@ export type JobKind =
   | 'discovery.run_source'
   | 'discovery.run_all'
   | 'discovery.promote_signals'
+  | 'demand.poll_sources'
+  | 'demand.run_pipeline'
   | 'enrichment.company'
   | 'transcription.process'
   | 'transcript.analyze'

@@ -598,6 +598,9 @@ model Organization {
   dataSources            DataSource[]
   dealLanes              DealLane[]
   auditEvents            AuditEvent[]
+  demandEvents           DemandEvent[]
+  routeHypotheses        RouteHypothesis[]
+  sourceRuns             SourceRun[]
   jobs                   Job[]
   dailyPlans             DailyPlan[]
   scriptTemplates        ScriptTemplate[]
@@ -964,9 +967,10 @@ model BusinessPath {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  org        Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  signals    DiscoverySignal[]
-  hypotheses PathHypothesis[]
+  org             Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  signals         DiscoverySignal[]
+  hypotheses      PathHypothesis[]
+  routeHypotheses RouteHypothesis[]
 
   @@unique([orgId, key])
   @@index([orgId, isActive, priority])
@@ -1150,6 +1154,8 @@ model Company {
   supplyOffers       SupplierAvailability[]
   subCapacity        SubcontractorCapacity[]
   signals            DiscoverySignal[]
+  eventParties       DemandEventParty[]
+  routeHypotheses    RouteHypothesis[]
   opportunityParties OpportunityParty[]
   matchesAsCandidate Match[]                 @relation("MatchCandidate")
   callAssignments    CallAssignment[]
@@ -1352,6 +1358,7 @@ model DataSource {
   market   Market?           @relation(fields: [marketId], references: [id], onDelete: SetNull)
   evidence SourceEvidence[]
   signals  DiscoverySignal[]
+  runs     SourceRun[]
 
   @@unique([orgId, key])
 }
@@ -1360,6 +1367,7 @@ model SourceEvidence {
   id               String     @id @default(cuid())
   orgId            String
   dataSourceId     String?
+  demandEventId    String?
   companyId        String?
   sourceType       SourceType
   sourceUrl        String?
@@ -1374,8 +1382,9 @@ model SourceEvidence {
   createdByProcess String
   contentHash      String
 
-  dataSource DataSource? @relation(fields: [dataSourceId], references: [id])
-  company    Company?    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  dataSource  DataSource?  @relation(fields: [dataSourceId], references: [id])
+  company     Company?     @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  demandEvent DemandEvent? @relation(fields: [demandEventId], references: [id], onDelete: Cascade)
 
   signals       DiscoverySignal[]
   facts         ExtractedFact[]
@@ -2473,4 +2482,303 @@ model DailyPlan {
   org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
   @@unique([orgId, planDate])
+}
+
+// ===========================================================================
+// Demand engine
+// ===========================================================================
+
+/// A dated thing that happened in the world.
+///
+/// The acquisition pattern this replaces was: find a company, match its
+/// category, infer a generic need, score it. That pattern cannot produce
+/// demand, because none of its inputs is an event — a gym existing is not a
+/// cleaning opportunity, whereas a gym opening in three weeks is.
+enum DemandEventType {
+  /// Someone is asking for proposals or quotes right now.
+  ACTIVE_RFP
+  ACTIVE_RFQ
+  PROCUREMENT_NOTICE
+  VENDOR_REQUEST
+  /// A prime or facilities company is asking for local fulfilment capacity.
+  SUBCONTRACTOR_REQUEST
+  /// Work was awarded to someone. Evidence of a prime, not of open demand.
+  CONTRACT_AWARD
+  FACILITY_OPENING
+  /// Certificate of occupancy, operating licence, health permit.
+  OCCUPANCY_OR_OPERATING_APPROVAL
+  RENOVATION_OR_CONSTRUCTION
+  EXPANSION
+  PROPERTY_TURNOVER
+  NEW_LOCATION
+  NEW_LEASE
+  CONTRACT_EXPIRATION
+  VENDOR_FAILURE_OR_COMPLAINT
+  STAFFING_OR_CAPACITY_GAP
+  /// They contacted us. The only kind we do not have to go and find.
+  INBOUND_REQUEST
+}
+
+/// Where an event is in its own life, separate from any opportunity built on it.
+enum EventLifecycle {
+  DISCOVERED
+  VERIFIED
+  /// Held because its identity or facts could not be established. Never merged
+  /// or deleted on a guess.
+  QUARANTINED
+  /// Its window closed. Kept, because an expired event is still evidence.
+  EXPIRED
+  REJECTED
+  /// A better record of the same event exists.
+  SUPERSEDED
+}
+
+/// How much of an event has actually been checked.
+enum DemandVerification {
+  /// Taken from the source and not yet examined.
+  UNVERIFIED
+  /// Machine checks passed: date present and current, org resolved, location real.
+  AUTO_VERIFIED
+  /// A person confirmed it, by call or by reading the source.
+  HUMAN_VERIFIED
+  /// Checked and found wrong.
+  FAILED
+}
+
+/// How much relationship work an opportunity demands.
+///
+/// Deliberately separate from tier. A federal solicitation is unambiguous
+/// demand and a miserable relationship; an independent gym opening is a weaker
+/// signal and a single phone call. Conflating the two is how "recurring
+/// revenue" gets mistaken for "easy".
+enum FrictionLevel {
+  LOW
+  MODERATE
+  HIGH
+  /// Not yet assessable. Must never be presented as LOW.
+  UNKNOWN_RESEARCH_REQUIRED
+}
+
+/// The role a company plays in one event. The same company is a buyer in one
+/// event and a prime contractor in another.
+enum EventPartyRole {
+  /// Owns the need and the budget.
+  BUYER
+  /// Holds the property.
+  PROPERTY_OWNER
+  /// Runs the site day to day.
+  PROPERTY_MANAGER
+  /// Won the work and may need local capacity.
+  PRIME_CONTRACTOR
+  /// Named as doing the work.
+  INCUMBENT_PROVIDER
+  /// Filed the permit or licence. Often an agent, not the buyer.
+  APPLICANT
+  /// The authority that published the record.
+  ISSUING_AUTHORITY
+  /// Referenced but whose part is not yet established.
+  MENTIONED
+}
+
+model DemandEvent {
+  id    String @id @default(cuid())
+  orgId String
+
+  type         DemandEventType
+  lifecycle    EventLifecycle     @default(DISCOVERED)
+  verification DemandVerification @default(UNVERIFIED)
+
+  /// Which connector produced it, and its identifier there. Together with
+  /// `dedupeKey` these make re-ingesting the same record a no-op.
+  connector      String
+  sourceRecordId String
+  sourceUrl      String?
+  /// The source's own words, kept so a claim can always be checked against it.
+  rawPayload     Json    @default("{}")
+
+  /// The date the source states the event happened or will happen.
+  ///
+  /// Required for tier A and B. Never our ingestion time — that is
+  /// `discoveredAt`, stored separately and deliberately unusable as an event
+  /// date anywhere in the pipeline.
+  eventDate    DateTime?
+  discoveredAt DateTime  @default(now())
+  lastSeenAt   DateTime  @default(now())
+  /// Whichever of these the event type carries.
+  deadlineAt   DateTime?
+  opensAt      DateTime?
+  completesAt  DateTime?
+  effectiveAt  DateTime?
+
+  headline String
+  /// The source's own description, untouched.
+  summary  String
+
+  /// Location as the source gave it. Never a search anchor or market name.
+  cityName     String?
+  stateCode    String?
+  postalCode   String?
+  addressLine1 String?
+
+  /// Facts the source states outright.
+  confirmedFacts Json     @default("[]")
+  /// What we concluded from them. Never presented as stated.
+  inferredFacts  Json     @default("[]")
+  /// Named but unresolved organisations and people.
+  mentionedNames String[] @default([])
+
+  /// 0–1, how much the record itself can be trusted.
+  confidence        Float @default(0.5)
+  /// 0–1, how reliable this connector has proven.
+  sourceReliability Float @default(0.5)
+
+  /// Capabilities the event plausibly requires. Inference, labelled as such.
+  relatedCapabilities String[] @default([])
+
+  /// Identity for deduplication across sources: permit number, solicitation
+  /// number, address+date, project id.
+  dedupeKey String
+
+  expiredReason    String?
+  rejectedReason   String?
+  quarantineReason String?
+  lastVerifiedAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org      Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  parties  DemandEventParty[]
+  routes   RouteHypothesis[]
+  evidence SourceEvidence[]
+
+  @@unique([orgId, dedupeKey])
+  @@index([orgId, lifecycle, eventDate])
+  @@index([orgId, type, eventDate])
+  @@index([orgId, connector, discoveredAt])
+}
+
+/// One event involves several organisations, each in a different part.
+model DemandEventParty {
+  id        String  @id @default(cuid())
+  eventId   String
+  companyId String?
+
+  role                 EventPartyRole
+  /// The name exactly as the source wrote it, kept even once resolved.
+  sourceName           String
+  /// How sure we are this is the right company. Below the bar, `companyId`
+  /// stays null and the name is held for review rather than guessed at.
+  resolutionConfidence Float          @default(0)
+  resolutionMethod     String?
+
+  createdAt DateTime @default(now())
+
+  event   DemandEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  company Company?    @relation(fields: [companyId], references: [id], onDelete: SetNull)
+
+  @@unique([eventId, role, sourceName])
+  @@index([companyId])
+}
+
+/// A commercial route built from an event.
+///
+/// One verified event can support several: a gym opening creates a
+/// pre-opening clean and a recurring contract (brokerage) and an initial
+/// consumables order and a replenishment (distribution). It creates a
+/// subcontracting route only when a prime or a capacity request is in evidence.
+model RouteHypothesis {
+  id        String  @id @default(cuid())
+  orgId     String
+  eventId   String
+  /// The account this route is for. One account, many routes beneath it.
+  companyId String
+  pathId    String?
+
+  route       SignalCategory
+  /// Which playbook entry produced it, so the reasoning is traceable.
+  playbookKey String
+  headline    String
+  /// Why this route exists at all, in the operator's language.
+  rationale   String
+
+  tier            LeadTier      @default(DIRECTORY_PROSPECT)
+  friction        FrictionLevel @default(UNKNOWN_RESEARCH_REQUIRED)
+  frictionReason  String?
+  frictionFactors Json          @default("[]")
+
+  /// Whether the need is stated by a source or concluded by us.
+  needIsConfirmed    Boolean        @default(false)
+  requiredCapability String?
+  buyerRole          EventPartyRole @default(BUYER)
+
+  buyingWindow   String?
+  windowOpensAt  DateTime?
+  windowClosesAt DateTime?
+
+  /// Supply side.
+  fulfilmentStatus String @default("UNKNOWN")
+  providerCount    Float  @default(0)
+
+  /// Economics, null wherever they cannot honestly be estimated.
+  estimatedBuyerPrice   Decimal? @db.Decimal(14, 2)
+  estimatedProviderCost Decimal? @db.Decimal(14, 2)
+  estimatedGrossProfit  Decimal? @db.Decimal(14, 2)
+  estimatedHumanMinutes Int?
+  economicsBasis        String?
+
+  /// Chosen commercial structure, and why. Never taken from the connector name.
+  commercialStructure String?
+  structureReason     String?
+
+  status       String    @default("RESEARCH")
+  statusReason String?
+  missingInfo  String[]  @default([])
+  nextAction   String?
+  nextActionBy DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org     Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  event   DemandEvent   @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  company Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  path    BusinessPath? @relation(fields: [pathId], references: [id], onDelete: SetNull)
+
+  @@unique([eventId, companyId, playbookKey])
+  @@index([orgId, tier, friction])
+  @@index([orgId, route, status])
+}
+
+/// One attempt by one connector, kept whether it succeeded or not.
+///
+/// A source that silently returns nothing looks identical to a quiet week, and
+/// the difference is the whole question when discovery produces no demand.
+model SourceRun {
+  id           String  @id @default(cuid())
+  orgId        String
+  dataSourceId String?
+  connector    String
+
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+  status     String    @default("RUNNING")
+
+  recordsExamined Int @default(0)
+  eventsCreated   Int @default(0)
+  eventsUpdated   Int @default(0)
+  eventsRejected  Int @default(0)
+
+  /// Where the next run should resume from.
+  cursor      String?
+  windowStart DateTime?
+  windowEnd   DateTime?
+
+  error   String?
+  details Json    @default("{}")
+
+  org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  dataSource DataSource?  @relation(fields: [dataSourceId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, connector, startedAt])
 }

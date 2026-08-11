@@ -89,8 +89,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             {can(user, 'company.read') && <NavLink href="/companies">Companies</NavLink>}
             {can(user, 'discovery.read') && (
               <>
+                {/* Demand first: it is the queue with actual buyers in it. */}
+                <NavLink href="/demand">Demand</NavLink>
                 <NavLink href="/leads" count={liveLeads}>
-                  Discovered leads
+                  Cold prospects
                 </NavLink>
                 <NavLink href="/signals" count={signals}>
                   Signals

@@ -40,12 +40,31 @@ export async function GET(request: Request) {
 
     for (const org of orgs) {
       let queued = 0;
+
+      // Demand polling runs on every tick, not only the daily sweep. The
+      // connectors decide their own cadence — `demand.poll_sources` only runs
+      // the ones whose interval has elapsed — so asking often is cheap, and it
+      // means an inbound request entered at nine is routed by nine-fifteen
+      // rather than waiting for tomorrow's sweep.
+      const pollQueued = await enqueue({
+        orgId: org.id,
+        kind: 'demand.poll_sources',
+        priority: 25,
+        // One in flight at a time. A slow portal must not stack polls.
+        idempotencyKey: `cron:demand.poll_sources:${new Date().toISOString().slice(0, 13)}`,
+        skipIfCompleted: false,
+      });
+      if (pollQueued) queued += 1;
+
       if (mode === 'daily') {
         // Idempotency keys are date-stamped so a retried cron on the same day
         // does not stack duplicate sweeps.
         const day = new Date().toISOString().slice(0, 10);
         const jobs = [
           { kind: 'discovery.run_all' as const, priority: 20 },
+          // Revalidation: re-checks every live event's window so a deadline
+          // that passed overnight stops being presented as work.
+          { kind: 'demand.run_pipeline' as const, priority: 30 },
           { kind: 'followup.generate' as const, priority: 40 },
           { kind: 'planning.daily' as const, priority: 90 },
           { kind: 'analytics.snapshot' as const, priority: 95 },

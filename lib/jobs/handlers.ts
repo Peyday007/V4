@@ -2,6 +2,8 @@ import type { Job } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { runAllDiscovery, runDiscoveryForSource } from '@/lib/discovery/run';
 import { promoteSignals } from '@/lib/discovery/promote';
+import { dueConnectors, runDemandSource } from '@/lib/demand/run';
+import { runDemandPipeline } from '@/lib/demand/pipeline';
 import { generateDocument } from '@/lib/ai/documents';
 import { configureDeal } from '@/lib/ai/dealConfig';
 import { findMatches } from '@/lib/ai/matching';
@@ -48,6 +50,35 @@ export const HANDLERS: Record<string, JobHandler> = {
     const results = await runAllDiscovery(job.orgId);
     await enqueue({ orgId: job.orgId, kind: 'discovery.promote_signals', priority: 40 });
     return { sources: results.length, results };
+  },
+
+  /**
+   * Polls the demand sources whose interval has elapsed.
+   *
+   * Only the due ones: each connector declares how often its source actually
+   * changes, and a licence portal republished daily gains nothing from being
+   * asked every fifteen minutes. The pipeline is queued separately so that one
+   * slow source cannot stop the others' events being routed.
+   */
+  'demand.poll_sources': async (job) => {
+    const due = await dueConnectors(job.orgId);
+    const results = [];
+    for (const connector of due) {
+      results.push(await runDemandSource({ orgId: job.orgId, connectorKey: connector.key }));
+    }
+    if (results.some((r) => r.eventsCreated > 0 || r.eventsUpdated > 0)) {
+      await enqueue({ orgId: job.orgId, kind: 'demand.run_pipeline', priority: 30 });
+    }
+    return { polled: due.length, results };
+  },
+
+  /**
+   * Verifies, resolves and routes. Also the revalidation pass: it re-checks
+   * every live event's window, so a solicitation whose deadline passed
+   * overnight stops being work without anybody touching it.
+   */
+  'demand.run_pipeline': async (job) => {
+    return runDemandPipeline({ orgId: job.orgId });
   },
 
   'discovery.promote_signals': async (job) => {
