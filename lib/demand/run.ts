@@ -10,6 +10,7 @@ import {
 } from './connector';
 import { ensureDemandConnectorsRegistered } from './connectors';
 import { ingestEvents, runDemandPipeline, type PipelineResult } from './pipeline';
+import { recordOutcome } from './performance';
 
 /**
  * Running the demand sources.
@@ -95,6 +96,18 @@ export async function runDemandSource(params: {
       states: params.states ?? [],
       rateLimitPerMin: dataSource?.rateLimitPerMin,
     });
+
+    // Every record the source looked at, counted at the top of the chain. A
+    // source that examines ten thousand rows to produce two events has a
+    // signal-to-noise problem that only this comparison exposes.
+    if (result.recordsExamined > 0) {
+      await recordOutcome({
+        orgId: params.orgId,
+        connector: connector.key,
+        stage: 'SOURCE_RECORD',
+        note: `${result.recordsExamined} record(s) examined`,
+      });
+    }
 
     const ingest = await ingestEvents({
       orgId: params.orgId,

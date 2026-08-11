@@ -4,6 +4,8 @@ import { prisma } from '@/lib/db';
 import { requirePagePermission } from '@/lib/auth/page';
 import { demandSourceHealth } from '@/lib/demand/run';
 import { humaniseEvent } from '@/lib/demand/events';
+import { thesisGaps, type Thesis } from '@/lib/demand/thesis';
+import { funnelTotals, sourceScorecards } from '@/lib/demand/performance';
 import { Badge, Empty, humanize, relativeDays } from '@/components/ui';
 import { DemandControls } from '@/components/DemandControls';
 
@@ -53,6 +55,15 @@ const FRICTION_LABEL: Record<FrictionLevel, string> = {
   UNKNOWN_RESEARCH_REQUIRED: 'friction unknown — research needed',
 };
 
+const RISK_TONE: Record<string, string> = {
+  LOW: 'success',
+  MODERATE: 'warning',
+  HIGH: 'danger',
+  // Unknown gets no colour at all. Colouring it would put it on the same
+  // footing as an assessment somebody actually made.
+  UNKNOWN: '',
+};
+
 const ROUTE_TONE: Record<string, string> = {
   BROKERAGE: 'accent',
   DISTRIBUTION: 'accent',
@@ -94,7 +105,7 @@ export default async function DemandPage({ searchParams }: { searchParams: { que
   const user = await requirePagePermission('discovery.read');
   const queue = (QUEUES.find((q) => q.key === searchParams.queue)?.key ?? 'low_friction') as Queue;
 
-  const [health, routes, counts, eventStats] = await Promise.all([
+  const [health, routes, counts, eventStats, funnel, scorecards] = await Promise.all([
     demandSourceHealth(user.orgId),
     prisma.routeHypothesis.findMany({
       where: { orgId: user.orgId, ...whereFor(queue) },
@@ -110,6 +121,8 @@ export default async function DemandPage({ searchParams }: { searchParams: { que
       select: { tier: true, friction: true, route: true, status: true, fulfilmentStatus: true },
     }),
     prisma.demandEvent.groupBy({ by: ['lifecycle'], where: { orgId: user.orgId }, _count: true }),
+    funnelTotals(user.orgId),
+    sourceScorecards(user.orgId),
   ]);
 
   const queueCounts = Object.fromEntries(
@@ -141,7 +154,23 @@ export default async function DemandPage({ searchParams }: { searchParams: { que
         <Badge tone={actionable > 0 ? 'success' : 'warning'}>{actionable} actionable</Badge>
       </div>
 
-      <DemandControls health={health} totalEvents={totalEvents} actionable={actionable} />
+      <DemandControls
+        health={health}
+        totalEvents={totalEvents}
+        actionable={actionable}
+        funnel={funnel}
+        scorecards={scorecards.map((s) => ({
+          connector: s.connector,
+          sourceRecords: s.counts.SOURCE_RECORD,
+          events: s.counts.DEMAND_EVENT,
+          verifiedLeads: s.counts.VERIFIED_LEAD,
+          quoted: s.counts.QUOTED,
+          won: s.counts.WON,
+          paid: s.counts.PAID,
+          collectedGrossProfit: s.collectedGrossProfit,
+          verdict: s.verdict,
+        }))}
+      />
 
       <div className="filter-bar">
         {QUEUES.map((q) => (
@@ -205,6 +234,9 @@ function RouteBlock({ route }: { route: RouteWithEvent }) {
   const event = route.event;
   const facts = (event.confirmedFacts as unknown as string[]) ?? [];
   const inferences = (event.inferredFacts as unknown as string[]) ?? [];
+  const thesis = (route.thesis as unknown as Thesis | null) ?? null;
+  const isHighTier = route.tier === 'ACTIVE_DEMAND' || route.tier === 'STRONG_TRIGGER';
+  const gaps = isHighTier ? thesisGaps(thesis) : [];
 
   return (
     <div className="mt" style={{ borderTop: '1px solid var(--border, #2a2a2a)', paddingTop: '0.75rem' }}>
@@ -326,6 +358,68 @@ function RouteBlock({ route }: { route: RouteWithEvent }) {
           <div className="tiny dim mt">Structure</div>
           <div className="tiny muted" style={{ lineHeight: 1.6 }}>
             {humanize(route.commercialStructure ?? 'UNSET')} — <span className="dim">{route.structureReason}</span>
+          </div>
+        </div>
+      </div>
+
+      {thesis && (
+        <div className="mt" style={{ background: 'var(--surface-alt, rgba(255,255,255,0.03))', padding: '0.7rem 0.85rem' }}>
+          <div className="tiny dim">Lead thesis</div>
+          <div className="tiny muted" style={{ lineHeight: 1.7 }}>
+            <strong>Why this company:</strong> {thesis.whyThisCompany}
+            <br />
+            <strong>Why now:</strong> {thesis.whyNow}
+            <br />
+            <strong>Likely need:</strong> {thesis.likelyNeed}
+            <br />
+            <strong>Who to ask for:</strong> {thesis.likelyStakeholder}
+            <br />
+            <strong>Fulfilment:</strong> {thesis.fulfilmentRequirement}
+            <br />
+            <strong>Economics:</strong> {thesis.economics}
+          </div>
+          {thesis.uncertainties.length > 0 && (
+            <>
+              <div className="tiny dim mt">What could make this wrong</div>
+              <ul className="list-reset tiny muted" style={{ lineHeight: 1.6 }}>
+                {thesis.uncertainties.map((u) => (
+                  <li key={u}>· {u}</li>
+                ))}
+              </ul>
+            </>
+          )}
+        </div>
+      )}
+
+      {isHighTier && gaps.length > 0 && (
+        <div className="alert warning tiny mt">
+          <strong>Thesis incomplete.</strong> Missing: {gaps.join(', ')}. Every tier A and B route is required to
+          carry all of it.
+        </div>
+      )}
+
+      <div className="grid grid-2 mt">
+        <div>
+          <div className="tiny dim">Money at risk</div>
+          <div className="tiny muted" style={{ lineHeight: 1.6 }}>
+            {route.maxCashExposure !== null ? (
+              <>
+                Up to ${Number(route.maxCashExposure).toLocaleString()} of our own money
+                {route.daysCapitalExposed !== null ? ` for about ${route.daysCapitalExposed} days` : ', for an unknown period'}.
+              </>
+            ) : (
+              'Cash exposure cannot be calculated yet.'
+            )}
+          </div>
+        </div>
+        <div>
+          <div className="tiny dim">Risk</div>
+          <div className="row">
+            <Badge tone={RISK_TONE[route.paymentRisk]}>payment {route.paymentRisk.toLowerCase()}</Badge>
+            <Badge tone={RISK_TONE[route.counterpartyRisk]}>counterparty {route.counterpartyRisk.toLowerCase()}</Badge>
+            <Badge tone={route.complianceStatus === 'STRUCTURALLY_UNQUALIFIED' ? 'danger' : ''}>
+              compliance {humanize(route.complianceStatus).toLowerCase()}
+            </Badge>
           </div>
         </div>
       </div>

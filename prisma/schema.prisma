@@ -601,6 +601,7 @@ model Organization {
   demandEvents           DemandEvent[]
   routeHypotheses        RouteHypothesis[]
   sourceRuns             SourceRun[]
+  demandOutcomes         DemandOutcome[]
   jobs                   Job[]
   dailyPlans             DailyPlan[]
   scriptTemplates        ScriptTemplate[]
@@ -2731,6 +2732,30 @@ model RouteHypothesis {
   commercialStructure String?
   structureReason     String?
 
+  /// Why this company, why now, and what remains unknown.
+  ///
+  /// Written for a person about to make the call. Held as structured JSON
+  /// rather than prose so each part can be checked for presence — an
+  /// opportunity missing its stakeholder hypothesis is missing something
+  /// specific, not merely thin.
+  thesis Json?
+
+  /// Working capital and counterparty risk. Null where genuinely unknown:
+  /// a default here would be an invented number wearing a calculation's
+  /// clothes.
+  maxCashExposure    Decimal?  @db.Decimal(14, 2)
+  daysCapitalExposed Int?
+  paymentRisk        RiskLevel @default(UNKNOWN)
+  counterpartyRisk   RiskLevel @default(UNKNOWN)
+  complianceStatus   String    @default("UNKNOWN")
+  /// Requirements we cannot currently satisfy. Non-empty blocks pursuit.
+  complianceGaps     String[]  @default([])
+  riskNotes          Json      @default("[]")
+
+  /// Fulfilment detail, beyond the headline status.
+  fulfilmentReason   String?
+  matchedProviderIds String[] @default([])
+
   status       String    @default("RESEARCH")
   statusReason String?
   missingInfo  String[]  @default([])
@@ -2781,4 +2806,68 @@ model SourceRun {
   dataSource DataSource?  @relation(fields: [dataSourceId], references: [id], onDelete: SetNull)
 
   @@index([orgId, connector, startedAt])
+}
+
+/// How much risk an input carries, where it can be judged at all.
+///
+/// UNKNOWN is a real value and the default. A missing payment history is not
+/// a good payment history, and defaulting it to LOW would put unverified
+/// counterparties at the top of the queue.
+enum RiskLevel {
+  LOW
+  MODERATE
+  HIGH
+  UNKNOWN
+}
+
+/// One step in the chain from a source record to collected money.
+///
+/// The chain is recorded from the beginning even though the later stages will
+/// be empty for months, because a source's worth is decided by completed paid
+/// jobs and nothing else. Counting records discovered is how a source that
+/// produces fifty thousand companies and no revenue looks productive.
+enum OutcomeStage {
+  SOURCE_RECORD
+  DEMAND_EVENT
+  VERIFIED_LEAD
+  CONTACTED
+  RESPONDED
+  QUALIFIED_CONVERSATION
+  QUOTED
+  WON
+  LOST
+  COMPLETED
+  PAID
+}
+
+model DemandOutcome {
+  id    String @id @default(cuid())
+  orgId String
+
+  /// Which connector and playbook produced this. Both, because a source that
+  /// feeds a good playbook and a bad one has two different track records.
+  connector   String
+  playbookKey String?
+  route       SignalCategory?
+
+  eventId String?
+  routeId String?
+
+  stage                OutcomeStage
+  occurredAt           DateTime     @default(now())
+  /// Set when money actually moved. Never an expectation.
+  collectedRevenue     Decimal?     @db.Decimal(14, 2)
+  collectedGrossProfit Decimal?     @db.Decimal(14, 2)
+  humanMinutes         Int?
+  note                 String?
+
+  createdAt DateTime @default(now())
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  /// One row per (route, stage): a lead that is contacted twice has one
+  /// contacted milestone, so counts stay milestones rather than activity.
+  @@unique([routeId, stage])
+  @@index([orgId, connector, stage])
+  @@index([orgId, occurredAt])
 }

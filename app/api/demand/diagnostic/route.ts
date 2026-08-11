@@ -3,6 +3,10 @@ import { requirePermission } from '@/lib/auth/session';
 import { handleRouteError, json } from '@/lib/api';
 import { demandSourceHealth } from '@/lib/demand/run';
 import { describeDistribution, inspectDistribution } from '@/lib/discovery/diagnostics';
+import { funnelTotals, sourceScorecards } from '@/lib/demand/performance';
+import { thesisGaps, type Thesis } from '@/lib/demand/thesis';
+import { DEFAULT_JURISDICTIONS } from '@/lib/demand/connectors/municipalOpenData';
+import { DEFAULT_SOLICITATION_DATASETS } from '@/lib/demand/connectors/municipalSolicitations';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -38,6 +42,8 @@ export async function GET() {
       recentRuns,
       opportunities,
       quotes,
+      funnel,
+      scorecards,
     ] = await Promise.all([
       demandSourceHealth(orgId),
       prisma.discoverySignal.count({ where: { orgId } }),
@@ -83,6 +89,8 @@ export async function GET() {
       }),
       prisma.opportunity.count({ where: { orgId } }),
       prisma.quote.count({ where: { orgId } }),
+      funnelTotals(orgId),
+      sourceScorecards(orgId),
     ]);
 
     // Event-date coverage is the single most diagnostic number here: an event
@@ -132,6 +140,36 @@ export async function GET() {
       },
 
       sourceHealth: health,
+
+      // Which portals are configured, so a dataset that has been republished
+      // can be identified by name rather than by a 404 in a log.
+      configuredJurisdictions: {
+        licencesAndPermits: DEFAULT_JURISDICTIONS.map((j) => ({
+          label: j.label,
+          state: j.state,
+          url: `https://${j.domain}/resource/${j.datasetId}.json?$limit=1`,
+          eventType: j.eventType,
+        })),
+        solicitations: DEFAULT_SOLICITATION_DATASETS.map((d) => ({
+          label: d.label,
+          state: d.state,
+          url: `https://${d.domain}/resource/${d.datasetId}.json?$limit=1`,
+        })),
+        note:
+          'Open any of these URLs in a browser to check the dataset still exists. A 404 means the city has ' +
+          'republished it and the identifier needs updating.',
+      },
+
+      // The chain from a source record to money. Empty stages are shown
+      // deliberately: a funnel that stops at "verified lead" is telling the
+      // truth about the business.
+      sourceToProfit: {
+        funnel,
+        byConnector: scorecards,
+        note:
+          'Nothing here is projected. A stage with no rows reports zero, and conversion rates stay null until ' +
+          'the sample is large enough to mean anything.',
+      },
 
       recentRuns: recentRuns.map((r) => ({
         connector: r.connector,
@@ -189,6 +227,16 @@ export async function GET() {
 
       routes: {
         byTier: tierCounts,
+        byPaymentRisk: tally(routes.map((r) => r.paymentRisk)),
+        byCounterpartyRisk: tally(routes.map((r) => r.counterpartyRisk)),
+        byCompliance: tally(routes.map((r) => r.complianceStatus)),
+        // Any tier A or B route missing part of its thesis is a defect, and
+        // this is the number that surfaces it without reading every card.
+        incompleteTheses: routes.filter(
+          (r) =>
+            (r.tier === 'ACTIVE_DEMAND' || r.tier === 'STRONG_TRIGGER') &&
+            thesisGaps((r.thesis as unknown as Thesis | null) ?? null).length > 0,
+        ).length,
         byFriction: frictionCounts,
         byRoute: routeCounts,
         byStatus: statusCounts,
@@ -215,6 +263,17 @@ export async function GET() {
         frictionReason: r.frictionReason,
         needIsConfirmed: r.needIsConfirmed,
         rationale: r.rationale,
+        thesis: r.thesis,
+        thesisGaps: thesisGaps((r.thesis as unknown as Thesis | null) ?? null),
+        risk: {
+          maxCashExposure: r.maxCashExposure,
+          daysCapitalExposed: r.daysCapitalExposed,
+          paymentRisk: r.paymentRisk,
+          counterpartyRisk: r.counterpartyRisk,
+          complianceStatus: r.complianceStatus,
+          complianceGaps: r.complianceGaps,
+          notes: r.riskNotes,
+        },
         event: {
           type: r.event.type,
           externalDate: r.event.eventDate?.toISOString() ?? null,
@@ -228,7 +287,12 @@ export async function GET() {
           opensAt: r.windowOpensAt?.toISOString() ?? null,
           closesAt: r.windowClosesAt?.toISOString() ?? null,
         },
-        fulfilment: { status: r.fulfilmentStatus, providerCount: r.providerCount },
+        fulfilment: {
+          status: r.fulfilmentStatus,
+          reason: r.fulfilmentReason,
+          providerCount: r.providerCount,
+          matchedProviderIds: r.matchedProviderIds,
+        },
         economics: {
           buyerPrice: r.estimatedBuyerPrice,
           providerCost: r.estimatedProviderCost,

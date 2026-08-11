@@ -339,6 +339,106 @@ export const CLEANING_PLAYBOOKS: Playbook[] = [
     noisySources: ['google_places', 'usaspending_awards'],
   },
 
+  {
+    key: 'cleaning.subcontracting.award_capacity_gap',
+    route: 'SUBCONTRACTING',
+    vertical: 'Commercial facility services',
+    subvertical: 'Cleaning',
+    label: 'Local crew for an out-of-area prime',
+    // The careful one. An award alone is not an open subcontracting job, and
+    // treating it as one manufactures a pipeline out of nothing. What an award
+    // *can* support is a narrower hypothesis: a janitorial contract performed
+    // in a state where the winner has no presence needs crews on the ground
+    // there, and that is usually a local subcontractor. The required evidence
+    // below is what makes the difference — the geography must actually differ.
+    qualifyingEvents: ['CONTRACT_AWARD'],
+    requiredEvidence: [
+      'a named prime contractor who won the work',
+      'a stated place of performance',
+      'evidence the prime is not already established in that market',
+    ],
+    optionalEvidence: ['award value', 'period of performance', 'number of sites'],
+    likelyBuyerRoles: ['PRIME_CONTRACTOR'],
+    requiredCapability: 'Commercial janitorial',
+    window: {
+      // Primes staff up between award and start of performance. Before the
+      // award there is nothing; long after it the crews are hired.
+      opensDaysFromEvent: 0,
+      closesDaysFromEvent: 75,
+      reason:
+        'A prime staffs a new territory in the weeks after the award. Approaching six months later reaches ' +
+        'somebody who solved the problem in month one.',
+    },
+    typicalBuyerPrice: { low: 2000, high: 30000 },
+    typicalMarginPct: 16,
+    typicalCycleDays: 30,
+    typicalHumanMinutes: 150,
+    automationPotential: 0.5,
+    frictionFactors: [
+      { key: 'onboarding', question: 'Does the prime require vendor onboarding?', weight: 3 },
+      { key: 'insurance_burden', question: 'Are insurance limits above the ordinary commercial level?', weight: 2 },
+      { key: 'no_incumbent', question: 'Is the territory genuinely uncovered for them?', weight: -2 },
+      { key: 'standard_scope', question: 'Is the scope standard commercial cleaning?', weight: -1 },
+    ],
+    compliance: [
+      ...CLEANING_COMPLIANCE,
+      'Whatever the prime requires of subcontractors, which is usually stricter than the end buyer would be',
+    ],
+    verificationQuestions: [
+      'Do they already have crews in this market, or are they subcontracting it?',
+      'Which specific sites, and when does performance start?',
+      'What rate are they paying a subcontractor, and does it leave a margin?',
+    ],
+    rejectionConditions: [
+      'They confirm they already have local crews',
+      'The period of performance has already ended',
+      'The rate offered leaves no margin after provider cost',
+    ],
+    firstAction:
+      'Call the prime and ask whether they are covering this territory in-house or looking for a local crew. ' +
+      'The whole hypothesis rests on that answer.',
+    authoritativeSources: ['contract_awards'],
+    noisySources: ['google_places'],
+  },
+  {
+    key: 'cleaning.subcontracting.vendor_network',
+    route: 'SUBCONTRACTING',
+    vertical: 'Commercial facility services',
+    subvertical: 'Cleaning',
+    label: 'Join a vendor network or approved list',
+    // A standing vendor list is an invitation to register, not a job. It is
+    // worth doing and it is worth almost nothing until work follows, which is
+    // why the economics here are deliberately small.
+    qualifyingEvents: ['VENDOR_REQUEST'],
+    requiredEvidence: ['an organisation inviting vendors to register', 'the trade it covers'],
+    optionalEvidence: ['registration deadline', 'expected volume', 'insurance requirements'],
+    likelyBuyerRoles: ['BUYER', 'PRIME_CONTRACTOR'],
+    requiredCapability: 'Commercial janitorial',
+    window: {
+      opensDaysFromEvent: 0,
+      closesDaysFromEvent: 120,
+      reason: 'Registration windows are long, and being on the list before work appears is the entire value.',
+    },
+    typicalBuyerPrice: { low: 0, high: 0 },
+    typicalMarginPct: 0,
+    typicalCycleDays: 14,
+    typicalHumanMinutes: 60,
+    automationPotential: 0.7,
+    frictionFactors: [
+      { key: 'onboarding', question: 'Is the registration paperwork heavy?', weight: 3 },
+      { key: 'standard_scope', question: 'Is the trade standard commercial cleaning?', weight: -1 },
+    ],
+    compliance: CLEANING_COMPLIANCE,
+    verificationQuestions: [
+      'What work actually flows through this list, and how often?',
+      'Is registration a prerequisite for the jobs we want?',
+    ],
+    rejectionConditions: ['The registration window has closed'],
+    firstAction: 'Register, then ask what volume actually flows through the list before investing more time.',
+    authoritativeSources: ['municipal_solicitations', 'inbound_intake'],
+    noisySources: [],
+  },
+
   // -------------------------------------------------------------------------
   // Distribution — we sell the consumables
   // -------------------------------------------------------------------------
@@ -439,6 +539,54 @@ export const CLEANING_PLAYBOOKS: Playbook[] = [
     firstAction: 'Ask what they currently order, how often, and from whom.',
     authoritativeSources: ['socrata_business_licenses', 'inbound_intake'],
     noisySources: ['google_places'],
+  },
+  {
+    key: 'cleaning.distribution.supply_procurement',
+    route: 'DISTRIBUTION',
+    vertical: 'Janitorial supplies',
+    subvertical: 'Consumables',
+    label: 'Answer an open supply procurement',
+    // A published request to buy janitorial products. Distinct from the
+    // opening-stock route: here somebody has actually asked, which is why this
+    // is the only distribution playbook that can reach tier A.
+    qualifyingEvents: ['ACTIVE_RFQ', 'ACTIVE_RFP', 'PROCUREMENT_NOTICE', 'INBOUND_REQUEST', 'VENDOR_REQUEST'],
+    requiredEvidence: ['a published request to purchase janitorial products', 'a buying organisation'],
+    optionalEvidence: ['quantities', 'deadline', 'incumbent supplier', 'delivery schedule'],
+    likelyBuyerRoles: ['BUYER'],
+    requiredCapability: 'Janitorial consumables',
+    window: {
+      opensDaysFromEvent: 0,
+      closesDaysFromEvent: 45,
+      reason: 'The window is the notice itself. A published deadline overrides this entirely.',
+    },
+    typicalBuyerPrice: { low: 1000, high: 25000 },
+    typicalMarginPct: 18,
+    typicalCycleDays: 30,
+    typicalHumanMinutes: 180,
+    automationPotential: 0.6,
+    frictionFactors: [
+      { key: 'formal_procurement', question: 'Does a formal procurement process apply?', weight: 4 },
+      { key: 'onboarding', question: 'Is vendor registration required?', weight: 2 },
+      { key: 'inbound', question: 'Did the buyer approach us?', weight: -4 },
+      { key: 'standard_scope', question: 'Is this a standard consumables list?', weight: -2 },
+    ],
+    compliance: [
+      'Resale registration where the state requires it for wholesale purchase',
+      'Any product certification the notice names',
+    ],
+    verificationQuestions: [
+      'Is the deadline still open?',
+      'Can our wholesaler meet the quantities and the delivery schedule?',
+      'Is there an incumbent with a price we cannot beat?',
+    ],
+    rejectionConditions: [
+      'The deadline has passed',
+      'It has been awarded',
+      'No wholesaler we hold can supply the listed products',
+    ],
+    firstAction: 'Price the listed items with a wholesaler before committing time to the response.',
+    authoritativeSources: ['municipal_solicitations', 'inbound_intake'],
+    noisySources: [],
   },
 ];
 

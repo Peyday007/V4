@@ -2,6 +2,8 @@ import { registerDemandConnector } from '../connector';
 import { MunicipalOpenDataConnector } from './municipalOpenData';
 import { InboundIntakeConnector } from './inboundIntake';
 import { SamGovDemandConnector } from './samGovDemand';
+import { MunicipalSolicitationsConnector } from './municipalSolicitations';
+import { ContractAwardsConnector } from './contractAwards';
 
 /**
  * Demand connector registry.
@@ -22,9 +24,17 @@ let registered = false;
 export function ensureDemandConnectorsRegistered(): void {
   if (registered) return;
   registerDemandConnector(new MunicipalOpenDataConnector());
+  registerDemandConnector(new MunicipalSolicitationsConnector());
+  registerDemandConnector(new ContractAwardsConnector());
   registerDemandConnector(new InboundIntakeConnector());
   registerDemandConnector(new SamGovDemandConnector());
   registered = true;
 }
 
-export { MunicipalOpenDataConnector, InboundIntakeConnector, SamGovDemandConnector };
+export {
+  MunicipalOpenDataConnector,
+  MunicipalSolicitationsConnector,
+  ContractAwardsConnector,
+  InboundIntakeConnector,
+  SamGovDemandConnector,
+};

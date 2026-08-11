@@ -19,6 +19,7 @@ import { ensureDefaultPaths } from '@/lib/paths';
 import { setTransport } from '@/lib/discovery/http';
 import { runDemandSource } from '@/lib/demand/run';
 import { runDemandPipeline } from '@/lib/demand/pipeline';
+import { funnelTotals, sourceScorecards } from '@/lib/demand/performance';
 
 const STUB = process.argv.includes('--stub');
 const DAY = 86_400_000;
@@ -141,6 +142,67 @@ const AUSTIN_ROWS = [
   },
 ];
 
+/** Baltimore-shaped bid rows: an open cleaning job and a supply purchase. */
+const BID_ROWS = [
+  {
+    title: 'Janitorial services for municipal buildings',
+    description: 'Nightly custodial cleaning across four downtown sites.',
+    agency: 'Department of General Services',
+    bid_number: 'B50006543',
+    issue_date: iso(-4),
+    due_date: iso(21),
+    type: 'IFB',
+  },
+  {
+    title: 'Annual purchase of janitorial supplies',
+    description: 'Paper products, can liners and cleaning chemicals for city facilities.',
+    agency: 'Bureau of Purchases',
+    bid_number: 'B50006588',
+    issue_date: iso(-9),
+    due_date: iso(16),
+    type: 'IFB',
+  },
+  {
+    // Not our trade. Must be filtered out entirely.
+    title: 'Asphalt resurfacing, district 4',
+    description: 'Milling and resurfacing.',
+    agency: 'Department of Transportation',
+    bid_number: 'B50006590',
+    issue_date: iso(-3),
+  },
+];
+
+/** USAspending-shaped awards: one out-of-state prime, one already local. */
+const AWARD_ROWS = [
+  {
+    'Award ID': 'GS-26-C-0042',
+    'Recipient Name': 'Continental Facility Services',
+    'Start Date': iso(-8),
+    'End Date': iso(350),
+    'Award Amount': '480000',
+    'Place of Performance State Code': 'IL',
+    'Place of Performance City Code': 'Chicago',
+    'Recipient Location State Code': 'GA',
+    'Awarding Agency': 'General Services Administration',
+    Description: 'Custodial services for federal buildings.',
+    generated_internal_id: 'CONT_AWD_1',
+  },
+  {
+    // The prime is already in the state. No capacity gap, no route.
+    'Award ID': 'GS-26-C-0043',
+    'Recipient Name': 'Prairie Building Services',
+    'Start Date': iso(-6),
+    'End Date': iso(300),
+    'Award Amount': '210000',
+    'Place of Performance State Code': 'IL',
+    'Place of Performance City Code': 'Chicago',
+    'Recipient Location State Code': 'IL',
+    'Awarding Agency': 'General Services Administration',
+    Description: 'Custodial services.',
+    generated_internal_id: 'CONT_AWD_2',
+  },
+];
+
 async function main() {
   const org = await prisma.organization.findFirst({ orderBy: { createdAt: 'asc' } });
   if (!org) throw new Error('No organisation. Run the seed first.');
@@ -152,11 +214,19 @@ async function main() {
   if (STUB) {
     setTransport(async (url) => {
       const target = String(url);
-      const rows = target.includes('cityofchicago')
-        ? CHICAGO_ROWS
-        : target.includes('austintexas')
-          ? AUSTIN_ROWS
-          : [];
+      if (target.includes('usaspending')) {
+        return new Response(JSON.stringify({ results: AWARD_ROWS }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      const rows = target.includes('baltimorecity')
+        ? BID_ROWS
+        : target.includes('cityofchicago')
+          ? CHICAGO_ROWS
+          : target.includes('austintexas')
+            ? AUSTIN_ROWS
+            : [];
       // Every other configured portal answers empty, which is a legitimate
       // outcome and must not be reported as a failure.
       return new Response(JSON.stringify(rows), {
@@ -166,18 +236,24 @@ async function main() {
     });
   }
 
-  console.log('--- running the demand source ---------------------------------');
-  const run = await runDemandSource({ orgId: org.id, connectorKey: 'municipal_open_data', maxRecords: 100 });
-  console.log(
-    `${run.connector}: ${run.status} · examined ${run.recordsExamined} · created ${run.eventsCreated} · ` +
-      `updated ${run.eventsUpdated} · rejected ${run.eventsRejected} · quarantined ${run.quarantined}`,
-  );
-  if (run.error) console.log(`  error: ${run.error}`);
-  for (const warning of run.warnings) console.log(`  warning: ${warning.slice(0, 140)}`);
+  console.log('--- running every automatic demand source ----------------------');
+  const connectors = ['municipal_open_data', 'municipal_solicitations', 'contract_awards'];
+  for (const key of connectors) {
+    const run = await runDemandSource({ orgId: org.id, connectorKey: key, maxRecords: 100 });
+    console.log(
+      `${run.connector.padEnd(24)} ${run.status.padEnd(6)} examined ${String(run.recordsExamined).padStart(3)} · ` +
+        `created ${String(run.eventsCreated).padStart(3)} · updated ${String(run.eventsUpdated).padStart(3)} · ` +
+        `rejected ${run.eventsRejected} · quarantined ${run.quarantined}`,
+    );
+    if (run.error) console.log(`    error: ${run.error.slice(0, 160)}`);
+    for (const warning of run.warnings) console.log(`    warning: ${warning.slice(0, 140)}`);
+  }
 
-  console.log('\n--- idempotency: running it again ------------------------------');
-  const rerun = await runDemandSource({ orgId: org.id, connectorKey: 'municipal_open_data', maxRecords: 100 });
-  console.log(`created ${rerun.eventsCreated} (should be 0) · updated ${rerun.eventsUpdated}`);
+  console.log('\n--- idempotency: running them again ----------------------------');
+  for (const key of connectors) {
+    const rerun = await runDemandSource({ orgId: org.id, connectorKey: key, maxRecords: 100 });
+    console.log(`${rerun.connector.padEnd(24)} created ${rerun.eventsCreated} (should be 0) · updated ${rerun.eventsUpdated}`);
+  }
 
   console.log('\n--- pipeline ---------------------------------------------------');
   const pipeline = await runDemandPipeline({ orgId: org.id, userId: user.id });
@@ -257,7 +333,23 @@ async function main() {
   console.log(`tier A/B routes lacking a durable source link:     ${withoutSourceUrl.length} (must be 0)`);
   console.log(`routes with unknown friction:                      ${lowFrictionUnknown.length} (none may sit in the low-friction queue)`);
   console.log(`routes in the low-friction queue:                  ${routes.filter((r) => r.friction === 'LOW' && r.status !== 'EXPIRED').length}`);
-  console.log(`subcontracting routes:                             ${routes.filter((r) => r.route === 'SUBCONTRACTING').length} (0 expected — no prime asked for capacity)`);
+  const subs = routes.filter((r) => r.route === 'SUBCONTRACTING');
+  console.log(`subcontracting routes:                             ${subs.length}`);
+  for (const s of subs) console.log(`    ${s.company.legalName} — ${s.playbookKey} — ${s.tier}`);
+
+  const withThesis = routes.filter(
+    (r) => (r.tier === 'ACTIVE_DEMAND' || r.tier === 'STRONG_TRIGGER') && r.thesis !== null,
+  );
+  const highTier = routes.filter((r) => r.tier === 'ACTIVE_DEMAND' || r.tier === 'STRONG_TRIGGER');
+  console.log(`tier A/B routes carrying a full thesis:            ${withThesis.length} of ${highTier.length}`);
+  console.log(`routes with unknown payment risk:                  ${routes.filter((r) => r.paymentRisk === 'UNKNOWN').length}`);
+
+  console.log('\n--- source to profit -------------------------------------------');
+  const funnel = await funnelTotals(org.id);
+  console.log(funnel.map((f) => `${f.stage.toLowerCase().replace(/_/g, ' ')}: ${f.count}`).join(' · '));
+  for (const card of await sourceScorecards(org.id)) {
+    console.log(`  ${card.connector.padEnd(24)} ${card.verdict}`);
+  }
 
   await prisma.$disconnect();
 }

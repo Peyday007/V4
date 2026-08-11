@@ -34,14 +34,32 @@ type SourceHealth = {
   nextScheduledAt: string | null;
 };
 
+type FunnelStage = { stage: string; count: number };
+
+type Scorecard = {
+  connector: string;
+  sourceRecords: number;
+  events: number;
+  verifiedLeads: number;
+  quoted: number;
+  won: number;
+  paid: number;
+  collectedGrossProfit: number;
+  verdict: string;
+};
+
 export function DemandControls({
   health,
   totalEvents,
   actionable,
+  funnel,
+  scorecards,
 }: {
   health: SourceHealth[];
   totalEvents: number;
   actionable: number;
+  funnel: FunnelStage[];
+  scorecards: Scorecard[];
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [result, setResult] = useState<unknown>(null);
@@ -171,6 +189,59 @@ export function DemandControls({
         <div className="alert small mt">
           <strong>Optional sources not configured:</strong>{' '}
           {unconfigured.map((s) => `${s.name} (${s.credentialEnvVar})`).join(', ')}. The engine runs without them.
+        </div>
+      )}
+
+      {/* The funnel, with its empty stages showing. A funnel that stops at
+          "verified lead" is telling the truth about the business, and hiding
+          the empty stages would make a source look better than it is. */}
+      <div className="mt">
+        <div className="tiny dim">Source to collected money</div>
+        <div className="row tiny mt" style={{ flexWrap: 'wrap', gap: '0.4rem' }}>
+          {funnel.map((stage) => (
+            <span
+              key={stage.stage}
+              className="badge"
+              style={{ opacity: stage.count === 0 ? 0.45 : 1 }}
+            >
+              {stage.stage.toLowerCase().replace(/_/g, ' ')}: <strong>{stage.count}</strong>
+            </span>
+          ))}
+        </div>
+      </div>
+
+      {scorecards.length > 0 && (
+        <div className="table-scroll mt">
+          <table className="table tiny">
+            <thead>
+              <tr>
+                <th>Source</th>
+                <th>Records</th>
+                <th>Events</th>
+                <th>Leads</th>
+                <th>Quoted</th>
+                <th>Won</th>
+                <th>Paid</th>
+                <th>Collected GP</th>
+                <th>Verdict</th>
+              </tr>
+            </thead>
+            <tbody>
+              {scorecards.map((s) => (
+                <tr key={s.connector}>
+                  <td>{s.connector}</td>
+                  <td>{s.sourceRecords}</td>
+                  <td>{s.events}</td>
+                  <td>{s.verifiedLeads}</td>
+                  <td>{s.quoted}</td>
+                  <td>{s.won}</td>
+                  <td>{s.paid}</td>
+                  <td>${Math.round(s.collectedGrossProfit).toLocaleString()}</td>
+                  <td className="dim">{s.verdict}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
 

@@ -11,6 +11,8 @@ import { assessFriction, qualifiesForLowFrictionQueue, UNKNOWN_SIGNALS } from '@
 import { chooseStructure, estimateEconomics, meetsEconomicFloor } from '@/lib/demand/economics';
 import { toDemandEvent, type JurisdictionDataset } from '@/lib/demand/connectors/municipalOpenData';
 import { parseIntake } from '@/lib/demand/connectors/inboundIntake';
+import { toAwardEvent } from '@/lib/demand/connectors/contractAwards';
+import { toSolicitationEvent, type SolicitationDataset } from '@/lib/demand/connectors/municipalSolicitations';
 import type { RawDemandEvent } from '@/lib/demand/events';
 
 /**
@@ -185,12 +187,45 @@ describe('4. a prime contractor explicitly asking for a local cleaning crew', ()
 });
 
 describe('5. a contract award with no evidence of a subcontracting need', () => {
-  it('does not produce a subcontracting route', () => {
-    // The easiest way to manufacture a pipeline from nothing is to treat every
-    // award as somebody needing crews. An award says work was won, not that
-    // capacity is short.
-    const playbooks = playbooksFor('CONTRACT_AWARD');
-    expect(playbooks.some((p) => p.route === 'SUBCONTRACTING')).toBe(false);
+  it('requires a geography mismatch before a capacity hypothesis exists', () => {
+    // Awards do feed a playbook — that is how subcontracting is discovered
+    // automatically. What keeps it honest is the required evidence: work
+    // performed where the winner already sits creates no capacity gap, and the
+    // playbook says so rather than treating every award as an open job.
+    const playbook = playbooksFor('CONTRACT_AWARD').find((p) => p.route === 'SUBCONTRACTING')!;
+    expect(playbook.key).toBe('cleaning.subcontracting.award_capacity_gap');
+    expect(playbook.requiredEvidence.join(' ')).toMatch(/not already established in that market/i);
+    expect(playbook.likelyBuyerRoles).toEqual(['PRIME_CONTRACTOR']);
+    // The prime is who we sell capacity to. They are never a cleaning buyer.
+    expect(playbook.likelyBuyerRoles).not.toContain('BUYER');
+  });
+
+  it('carries the prime’s own state so the mismatch can be checked', () => {
+    const withState = toAwardEvent({
+      'Award ID': 'A-1',
+      'Recipient Name': 'National Facility Partners',
+      'Start Date': '2026-08-01',
+      'Place of Performance State Code': 'IL',
+      'Recipient Location State Code': 'GA',
+      'generated_internal_id': 'CONT_AWD_1',
+    })!;
+    expect((withState.rawPayload as Record<string, unknown>).__recipientState).toBe('GA');
+    expect(withState.stateCode).toBe('IL');
+    // The prime holds the work. That is the only role an award establishes.
+    expect(withState.parties[0].role).toBe('PRIME_CONTRACTOR');
+    // And the connector concludes nothing — the hypothesis is the playbook's.
+    expect(withState.inferredFacts).toEqual([]);
+  });
+
+  it('produces no route at all when the award cannot say where the prime is', () => {
+    const withoutState = toAwardEvent({
+      'Award ID': 'A-2',
+      'Recipient Name': 'Somebody Inc',
+      'Start Date': '2026-08-01',
+      'Place of Performance State Code': 'IL',
+      'generated_internal_id': 'CONT_AWD_2',
+    })!;
+    expect((withoutState.rawPayload as Record<string, unknown>).__recipientState).toBeNull();
   });
 
   it('is at most a strong trigger', () => {
@@ -515,10 +550,12 @@ describe('15. sources that only prove existence', () => {
     expect(allTypes.some((t) => /DIRECTORY|LISTING|CATEGORY/i.test(t))).toBe(false);
   });
 
-  it('fires no playbook for an event type nothing covers', () => {
-    // Contract awards are ingested as evidence of a prime. Nothing sells from
-    // one on its own, and the empty result is the correct answer.
-    expect(playbooksFor('CONTRACT_AWARD')).toHaveLength(0);
+  it('never turns a directory listing into any event type', () => {
+    // Contract awards do feed a playbook, but only one, and only through a
+    // prime. Nothing anywhere maps a category match to an event.
+    const awardPlaybooks = playbooksFor('CONTRACT_AWARD');
+    expect(awardPlaybooks).toHaveLength(1);
+    expect(awardPlaybooks[0].likelyBuyerRoles).toEqual(['PRIME_CONTRACTOR']);
   });
 });
 

@@ -24,6 +24,16 @@ import {
 import { playbooksFor, windowFor, type Playbook } from './playbooks';
 import { assessFriction, qualifiesForLowFrictionQueue, UNKNOWN_SIGNALS, type FrictionSignals } from './friction';
 import { chooseStructure, estimateEconomics, meetsEconomicFloor } from './economics';
+import { assessFulfilment, loadProviders, type FulfilmentAssessment, type ProviderCandidate } from './fulfilment';
+import {
+  assessCompliance,
+  assessCounterpartyRisk,
+  assessPaymentRisk,
+  assessWorkingCapital,
+  riskBlocksPursuit,
+} from './risk';
+import { buildThesis } from './thesis';
+import { recordOutcome, recordPipelineMilestones } from './performance';
 
 /**
  * The demand pipeline. One implementation, used by every entry point.
@@ -169,6 +179,14 @@ export async function ingestEvents(params: {
       outcome.created += 1;
       await createParties(created.id, raw.parties);
       await linkEvidence(raw.evidenceId, created.id);
+      // The top of the chain. Counted here so a source's record volume can
+      // always be compared against what it eventually produced.
+      await recordOutcome({
+        orgId: params.orgId,
+        connector: params.connector,
+        eventId: created.id,
+        stage: 'DEMAND_EVENT',
+      });
     }
   }
 
@@ -332,9 +350,15 @@ export async function resolveEventAccounts(params: { orgId: string }): Promise<{
     });
 
     let match: { id: string; confidence: number; method: string } | null = null;
+    let nameOnly: { id: string } | null = null;
 
     for (const candidate of candidates) {
       if (normalizeCompanyName(candidate.legalName) !== normalized) continue;
+      // Remembered separately: a name that matches with nothing corroborating
+      // it is still the same row as far as the database is concerned, and
+      // creating a second is impossible. What varies is how much we believe it.
+      nameOnly ??= { id: candidate.id };
+
       if (address && candidate.normalizedAddress && candidate.normalizedAddress === address) {
         match = { id: candidate.id, confidence: 0.95, method: 'name and address' };
         break;
@@ -351,35 +375,35 @@ export async function resolveEventAccounts(params: { orgId: string }): Promise<{
       }
     }
 
+    // The name matches and nothing corroborates it. Attaching at a confidence
+    // that says so is better than both alternatives: creating would violate
+    // the one-name-per-org constraint, and claiming a strong match would let
+    // an unverified identity through the risk model as verified.
+    if (!match && nameOnly) {
+      match = { id: nameOnly.id, confidence: 0.5, method: 'name only — location not corroborated' };
+    }
+
     if (!match) {
       // No existing company. Create one from the event, because the event is
       // the reason to care about it — this is an account discovered *by*
       // demand rather than a directory entry hoping for some.
-      const created = await prisma.company.create({
-        data: {
-          orgId: params.orgId,
-          legalName: party.sourceName.slice(0, 200),
-          origin: 'LIVE_DISCOVERY',
-          companyRole: companyRoleFor(party.role),
-          cityName: event.cityName,
-          stateCode: event.stateCode,
-          normalizedAddress: address,
-          accountStage: 'DISCOVERED',
-          locations: event.addressLine1
-            ? {
-                create: {
-                  label: 'From demand event',
-                  line1: event.addressLine1,
-                  city: event.cityName,
-                  state: event.stateCode,
-                  postalCode: event.postalCode,
-                  isHeadquarters: true,
-                },
-              }
-            : undefined,
-        },
+      const created = await createCompanyForEvent({
+        orgId: params.orgId,
+        legalName: party.sourceName.slice(0, 200),
+        role: companyRoleFor(party.role),
+        event,
+        address,
       });
+      if (!created) {
+        unresolved += 1;
+        continue;
+      }
       match = { id: created.id, confidence: 0.8, method: 'created from event' };
+    }
+
+    if (!match) {
+      unresolved += 1;
+      continue;
     }
 
     await prisma.demandEventParty.update({
@@ -404,6 +428,55 @@ export async function resolveEventAccounts(params: { orgId: string }): Promise<{
  * record says whether they also supply anything, so anything unclear stays
  * UNKNOWN rather than being filed on a side of the deal it may not be on.
  */
+/**
+ * Creates the account an event named, tolerating a concurrent creation.
+ *
+ * Two workers polling different sources can both discover the same business in
+ * the same second. One loses the unique-name constraint, and losing it is not
+ * an error — the row it wanted now exists, so it looks it up rather than
+ * failing the whole run over a race it does not care about.
+ */
+async function createCompanyForEvent(params: {
+  orgId: string;
+  legalName: string;
+  role: CompanyRole;
+  event: { cityName: string | null; stateCode: string | null; addressLine1: string | null; postalCode: string | null };
+  address: string | null;
+}): Promise<{ id: string } | null> {
+  try {
+    return await prisma.company.create({
+      data: {
+        orgId: params.orgId,
+        legalName: params.legalName,
+        origin: 'LIVE_DISCOVERY',
+        companyRole: params.role,
+        cityName: params.event.cityName,
+        stateCode: params.event.stateCode,
+        normalizedAddress: params.address,
+        accountStage: 'DISCOVERED',
+        locations: params.event.addressLine1
+          ? {
+              create: {
+                label: 'From demand event',
+                line1: params.event.addressLine1,
+                city: params.event.cityName,
+                state: params.event.stateCode,
+                postalCode: params.event.postalCode,
+                isHeadquarters: true,
+              },
+            }
+          : undefined,
+      },
+      select: { id: true },
+    });
+  } catch {
+    return prisma.company.findFirst({
+      where: { orgId: params.orgId, legalName: params.legalName },
+      select: { id: true },
+    });
+  }
+}
+
 function companyRoleFor(role: EventPartyRole): CompanyRole {
   switch (role) {
     case 'PRIME_CONTRACTOR':
@@ -459,7 +532,7 @@ export async function rebuildRoutes(params: { orgId: string; now?: Date }): Prom
     lowFrictionQueue: 0,
   };
 
-  const [events, paths, providerIndex, catalogue] = await Promise.all([
+  const [events, paths, providerIndex, catalogue, providers] = await Promise.all([
     prisma.demandEvent.findMany({
       where: { orgId: params.orgId, lifecycle: { in: ['VERIFIED', 'EXPIRED'] } },
       include: { parties: { include: { company: { include: { contacts: true } } } } },
@@ -467,9 +540,15 @@ export async function rebuildRoutes(params: { orgId: string; now?: Date }): Prom
     getActivePaths(params.orgId),
     buildProviderIndex(params.orgId),
     prisma.capability.findMany({ where: { orgId: params.orgId }, select: { name: true } }),
+    // Loaded once: a fulfilment check per route would be hundreds of round
+    // trips for a set that does not change during the run.
+    loadProviders(params.orgId),
   ]);
 
   const capabilityNames = catalogue.map((c) => c.name);
+  // Gathered as routes are written so the source-to-profit chain starts full
+  // rather than being reconstructed later, when attribution is impossible.
+  const milestones: Parameters<typeof recordPipelineMilestones>[0]['routes'] = [];
 
   for (const event of events) {
     outcome.eventsConsidered += 1;
@@ -528,28 +607,78 @@ export async function rebuildRoutes(params: { orgId: string; now?: Date }): Prom
         humanMinutes: playbook.typicalHumanMinutes,
       });
 
-      const capabilityMatch = matchCapability(playbook.requiredCapability, capabilityNames);
-      const providers = providersFor(providerIndex, playbook.requiredCapability, event.stateCode);
-      const fulfilment = describeFulfilment(providers, providerIndex, capabilityMatch.capability);
+      const window = windowFor(playbook, event.eventDate);
+
+      // Six checks rather than a count: capability, geography, capacity,
+      // credentials, pricing and timing are different questions, and a gap in
+      // one names itself instead of collapsing into "no provider".
+      const fulfilment = assessFulfilment({
+        requiredCapability: playbook.requiredCapability,
+        stateCode: event.stateCode,
+        cityName: event.cityName,
+        neededBy: window?.closesAt ?? event.deadlineAt ?? null,
+        providers,
+        now,
+      });
+      const providerCount = fulfilment.matched.length;
 
       const economics = estimateEconomics({
         playbook,
         scaleHint: decision.scaleHint,
-        availableProviders: providers,
+        availableProviders: providerCount,
         friction: friction.level,
+      });
+
+      const compliance = assessCompliance({
+        playbook,
+        satisfied: fulfilment.matched.some((m) => m.hasInsurance) ? ['insurance'] : [],
+        knownBlockers: [],
+        providerInsured: fulfilment.matched.length > 0 ? fulfilment.matched.some((m) => m.hasInsurance) : null,
       });
 
       const structure = chooseStructure({
         route: playbook.route,
-        primeHoldsWork: playbook.route === 'SUBCONTRACTING',
+        // Subcontracting means somebody else holds the customer contract. That
+        // is a fact about the event, not about which playbook fired.
+        primeHoldsWork: decision.primeHoldsWork,
         canContractWithBuyer: true,
         involvesGoods: playbook.route === 'DISTRIBUTION',
         friction: friction.level,
         grossProfit: economics.grossProfit,
-        blockingCompliance: null,
+        blockingCompliance: compliance.status === 'STRUCTURALLY_UNQUALIFIED' ? compliance.gaps[0] : null,
       });
 
-      const window = windowFor(playbook, event.eventDate);
+      const capital = assessWorkingCapital({
+        structure: structure.structure,
+        providerCost: economics.providerCost,
+        buyerPaymentDays: null,
+        supplierTermsDays: null,
+        depositPct: null,
+      });
+
+      const paymentRisk = assessPaymentRisk({
+        isPublicSector: decision.isPublicSector,
+        hasPaidBefore: null,
+        isNewlyEstablished: decision.isNewlyEstablished,
+        statedTermsDays: null,
+        exposure: capital.maxCashExposure,
+      });
+
+      const counterpartyRisk = assessCounterpartyRisk({
+        // Resolved against a licence, permit or award record, which is a
+        // public record naming them at this address.
+        identityVerified: decision.identityVerified,
+        scopeIsClear: decision.needIsConfirmed ? true : null,
+        knownDisputes: null,
+        reachable: decision.frictionSignals.buyerReachable,
+      });
+
+      const riskBlock = riskBlocksPursuit({
+        paymentRisk: paymentRisk.level,
+        counterpartyRisk: counterpartyRisk.level,
+        maxCashExposure: capital.maxCashExposure,
+      });
+
       const floor = meetsEconomicFloor({
         grossProfit: economics.grossProfit,
         humanMinutes: economics.humanMinutes,
@@ -562,9 +691,31 @@ export async function rebuildRoutes(params: { orgId: string; now?: Date }): Prom
         friction: friction.level,
         economicsPass: floor.passes,
         windowClosed: window ? window.closesAt.getTime() < now.getTime() : false,
+        complianceBlocks: compliance.blocksPursuit,
+        complianceReason: compliance.reason,
+        riskBlocks: riskBlock.blocks,
+        riskReason: riskBlock.reason,
       });
 
-      const missing = collectMissing({ event, playbook, account, fulfilment, friction: friction.level, tier });
+      const missing = collectMissing({
+        event,
+        playbook,
+        account,
+        fulfilment,
+        friction: friction.level,
+        tier,
+        paymentRisk: paymentRisk.level,
+        counterpartyRisk: counterpartyRisk.level,
+        compliance,
+      });
+
+      const nextAction = nextActionFor({
+        playbook,
+        fulfilment,
+        friction: friction.level,
+        missing,
+        status: status.status,
+      });
 
       const path = paths.find((p) => p.key.toUpperCase() === playbook.route) ?? null;
 
@@ -588,7 +739,9 @@ export async function rebuildRoutes(params: { orgId: string; now?: Date }): Prom
         windowOpensAt: window?.opensAt ?? null,
         windowClosesAt: window?.closesAt ?? null,
         fulfilmentStatus: fulfilment.status,
-        providerCount: providers,
+        fulfilmentReason: fulfilment.reason,
+        matchedProviderIds: fulfilment.matched.slice(0, 5).map((m) => m.id),
+        providerCount: providerCount,
         estimatedBuyerPrice: economics.buyerPrice,
         estimatedProviderCost: economics.providerCost,
         estimatedGrossProfit: economics.grossProfit,
@@ -599,8 +752,50 @@ export async function rebuildRoutes(params: { orgId: string; now?: Date }): Prom
         status: status.status,
         statusReason: status.reason,
         missingInfo: missing,
-        nextAction: nextActionFor({ playbook, fulfilment, friction: friction.level, missing, status: status.status }),
+        nextAction,
         nextActionBy: window?.closesAt ?? event.deadlineAt ?? null,
+
+        maxCashExposure: capital.maxCashExposure,
+        daysCapitalExposed: capital.daysExposed,
+        paymentRisk: paymentRisk.level,
+        counterpartyRisk: counterpartyRisk.level,
+        complianceStatus: compliance.status,
+        complianceGaps: compliance.gaps,
+        riskNotes: [
+          { kind: 'workingCapital', note: capital.reason },
+          { kind: 'paymentRisk', note: paymentRisk.reason, toResolve: paymentRisk.toResolve },
+          { kind: 'counterpartyRisk', note: counterpartyRisk.reason, toResolve: counterpartyRisk.toResolve },
+          { kind: 'compliance', note: compliance.reason },
+        ] as unknown as Prisma.InputJsonValue,
+
+        // Written for the person about to pick up the phone. Every tier A and
+        // B route carries one; the board reports any part that is missing.
+        thesis: buildThesis({
+          organisation: account.legalName,
+          location: [event.cityName, event.stateCode].filter(Boolean).join(', ') || null,
+          eventType: event.type,
+          eventDate: event.eventDate,
+          confirmedFacts: (event.confirmedFacts as unknown as string[]) ?? [],
+          playbook,
+          tier: tier.tier,
+          tierReason: tier.reason,
+          needIsConfirmed: decision.needIsConfirmed,
+          friction: friction.level,
+          frictionReason: friction.reason,
+          fulfilmentStatus: fulfilment.status,
+          fulfilmentReason: fulfilment.reason,
+          buyingWindow: window ? describeWindow(window, now) : 'UNKNOWN',
+          windowClosesAt: window?.closesAt ?? null,
+          grossProfit: economics.grossProfit,
+          humanMinutes: economics.humanMinutes,
+          economicsBasis: economics.basis,
+          paymentRisk: paymentRisk.level,
+          counterpartyRisk: counterpartyRisk.level,
+          complianceGaps: compliance.gaps,
+          missingInfo: missing,
+          nextAction,
+          now,
+        }) as unknown as Prisma.InputJsonValue,
       };
 
       const existing = await prisma.routeHypothesis.findUnique({
@@ -613,15 +808,21 @@ export async function rebuildRoutes(params: { orgId: string; now?: Date }): Prom
         },
       });
 
-      if (existing) {
-        await prisma.routeHypothesis.update({ where: { id: existing.id }, data: record });
-        outcome.routesUpdated += 1;
-      } else {
-        await prisma.routeHypothesis.create({
-          data: { ...record, eventId: event.id, companyId: account.id },
-        });
-        outcome.routesCreated += 1;
-      }
+      const saved = existing
+        ? await prisma.routeHypothesis.update({ where: { id: existing.id }, data: record })
+        : await prisma.routeHypothesis.create({ data: { ...record, eventId: event.id, companyId: account.id } });
+      if (existing) outcome.routesUpdated += 1;
+      else outcome.routesCreated += 1;
+
+      milestones.push({
+        id: saved.id,
+        eventId: event.id,
+        connector: event.connector,
+        playbookKey: playbook.key,
+        route: playbook.route,
+        tier: tier.tier,
+        status: status.status,
+      });
 
       outcome.byRoute[playbook.route] = (outcome.byRoute[playbook.route] ?? 0) + 1;
       outcome.byTier[tier.tier] = (outcome.byTier[tier.tier] ?? 0) + 1;
@@ -631,6 +832,8 @@ export async function rebuildRoutes(params: { orgId: string; now?: Date }): Prom
       }
     }
   }
+
+  await recordPipelineMilestones({ orgId: params.orgId, routes: milestones });
 
   return outcome;
 }
@@ -654,6 +857,14 @@ type PlaybookDecision =
       buyerRole: EventPartyRole;
       frictionSignals: FrictionSignals;
       scaleHint: number | null;
+      /** Somebody else holds the customer contract and we would work under them. */
+      primeHoldsWork: boolean;
+      /** Government body or public institution, where the event establishes it. */
+      isPublicSector: boolean | null;
+      /** Trading for under a year, per a licence or registration date. */
+      isNewlyEstablished: boolean | null;
+      /** Named on a public record at this address. */
+      identityVerified: boolean | null;
     };
 
 /**
@@ -700,13 +911,49 @@ export function evaluatePlaybook(input: {
       event.type === 'SUBCONTRACTOR_REQUEST' ||
       event.type === 'STAFFING_OR_CAPACITY_GAP' ||
       event.type === 'VENDOR_REQUEST' ||
-      event.type === 'INBOUND_REQUEST';
+      event.type === 'INBOUND_REQUEST' ||
+      // The award playbook is the one exception, and it earns it: its own
+      // required evidence — a geography mismatch between the prime and the
+      // place of performance — is checked immediately below and is stricter
+      // than this test. Without that exception, awards could never produce a
+      // subcontracting route at all, and automatic discovery of primes needing
+      // local crews would not exist.
+      playbook.key === 'cleaning.subcontracting.award_capacity_gap';
     if (!requestsCapacity) {
       return {
         applies: false,
         because:
           'the event names a prime but contains no request for local capacity — an award is not an open ' +
           'subcontracting job',
+      };
+    }
+  }
+
+  // The capacity-gap hypothesis, and the check that keeps it honest.
+  //
+  // An award is not an open subcontracting job. What it can support is
+  // narrower: work performed in a state where the winner has no presence needs
+  // crews on the ground there. That requires the geography to actually differ,
+  // and the award to say where the prime is based. Where it does not say, no
+  // hypothesis is available and the route does not fire.
+  if (playbook.key === 'cleaning.subcontracting.award_capacity_gap') {
+    const payload = event.rawPayload as Record<string, unknown>;
+    const primeState = typeof payload.__recipientState === 'string' ? payload.__recipientState : null;
+    if (!primeState) {
+      return {
+        applies: false,
+        because:
+          'the award does not say where the prime is based, so no local-capacity gap can be established — an ' +
+          'award alone is not an open subcontracting job',
+      };
+    }
+    if (!event.stateCode) {
+      return { applies: false, because: 'the award has no place of performance to compare the prime against' };
+    }
+    if (primeState.toUpperCase() === event.stateCode.toUpperCase()) {
+      return {
+        applies: false,
+        because: `the prime is already based in ${event.stateCode}, so there is no reason to think they need a local crew`,
       };
     }
   }
@@ -741,6 +988,27 @@ export function evaluatePlaybook(input: {
     buyerRole: buyingParty.role,
     frictionSignals: deriveFrictionSignals({ event, playbook, haystack, buyingParty }),
     scaleHint,
+    // A fact about the event: is there a prime holding the customer contract?
+    // Never inferred from which playbook happened to fire.
+    primeHoldsWork: event.parties.some((p) => p.role === 'PRIME_CONTRACTOR' && p.company?.id === buyingParty.company?.id),
+    isPublicSector: /\b(city|county|district|authority|department|agency|state of|public|municipal|school)\b/i.test(
+      buyingParty.sourceName,
+    )
+      ? true
+      : event.connector === 'municipal_solicitations' || event.connector === 'contract_awards'
+        ? true
+        : null,
+    // A licence issued within the last year says the business is new. The
+    // absence of one says nothing.
+    isNewlyEstablished:
+      (event.type === 'OCCUPANCY_OR_OPERATING_APPROVAL' || event.type === 'NEW_LOCATION') &&
+      event.eventDate !== null &&
+      event.eventDate.getTime() > Date.now() - 365 * 86_400_000
+        ? true
+        : null,
+    // Named on a licence, permit or award record at this address. That is a
+    // public record vouching for them, which is more than most leads have.
+    identityVerified: buyingParty.resolutionConfidence >= 0.8 ? true : null,
   };
 }
 
@@ -840,27 +1108,6 @@ function extractScale(payload: Record<string, unknown>): number | null {
   return null;
 }
 
-type Fulfilment = { status: string; note: string };
-
-function describeFulfilment(providers: number, index: ProviderIndex, matched: string | null): Fulfilment {
-  if (providers > 0) {
-    return {
-      status: 'AVAILABLE',
-      note: `${providers.toFixed(2).replace(/\.00$/, '')} provider(s) hold ${matched ?? 'this capability'} within reach.`,
-    };
-  }
-  if (index.total === 0) {
-    return {
-      status: 'UNKNOWN',
-      note: 'The provider network is empty, so fulfilment cannot be assessed at all yet.',
-    };
-  }
-  return {
-    status: 'UNAVAILABLE',
-    note: 'No provider in the network holds this capability in this state. The demand stands; the supply does not exist yet.',
-  };
-}
-
 /**
  * Where a route sits.
  *
@@ -870,10 +1117,14 @@ function describeFulfilment(providers: number, index: ProviderIndex, matched: st
  */
 function decideStatus(input: {
   tier: LeadTier;
-  fulfilment: Fulfilment;
+  fulfilment: FulfilmentAssessment;
   friction: FrictionLevel;
   economicsPass: boolean;
   windowClosed: boolean;
+  complianceBlocks: boolean;
+  complianceReason: string;
+  riskBlocks: boolean;
+  riskReason: string | null;
 }): { status: string; reason: string } {
   if (input.windowClosed) {
     return { status: 'EXPIRED', reason: 'The buying window for this route has closed.' };
@@ -881,11 +1132,19 @@ function decideStatus(input: {
   if (input.tier === 'DIRECTORY_PROSPECT' || input.tier === 'REJECTED') {
     return { status: 'COLD', reason: 'No dated demand evidence behind this route.' };
   }
-  if (input.fulfilment.status !== 'AVAILABLE') {
+  // Something we cannot legally or contractually perform is not worth an
+  // afternoon, however real the demand is.
+  if (input.complianceBlocks) {
+    return { status: 'REJECTED', reason: input.complianceReason };
+  }
+  if (input.fulfilment.blocksPursuit) {
     return {
       status: 'BLOCKED_ON_SUPPLY',
-      reason: `${input.fulfilment.note} Held out of serious pursuit until a provider exists, and kept until the window closes.`,
+      reason: `${input.fulfilment.reason} Held out of serious pursuit until a provider exists, and kept until the window closes.`,
     };
+  }
+  if (input.riskBlocks && input.riskReason) {
+    return { status: 'RESEARCH', reason: input.riskReason };
   }
   if (input.friction === 'UNKNOWN_RESEARCH_REQUIRED') {
     return {
@@ -903,14 +1162,25 @@ function collectMissing(input: {
   event: EventWithParties;
   playbook: Playbook;
   account: { id: string; legalName: string };
-  fulfilment: Fulfilment;
+  fulfilment: FulfilmentAssessment;
   friction: FrictionLevel;
   tier: { tier: LeadTier; blockedBy: string | null };
+  paymentRisk: string;
+  counterpartyRisk: string;
+  compliance: { gaps: string[] };
 }): string[] {
   const missing: string[] = [];
   if (input.tier.blockedBy) missing.push(input.tier.blockedBy);
   if (input.friction === 'UNKNOWN_RESEARCH_REQUIRED') missing.push('relationship friction is unassessed');
-  if (input.fulfilment.status !== 'AVAILABLE') missing.push('a provider who can deliver this');
+  if (input.fulfilment.status !== 'AVAILABLE') {
+    // Names the specific check rather than "no provider", so the gap is
+    // actionable: a missing certificate and an empty network are different jobs.
+    const failed = input.fulfilment.checks.filter((c) => c.passed === false).map((c) => c.name);
+    missing.push(failed.length > 0 ? `fulfilment: ${failed.join(', ')}` : 'a provider who can deliver this');
+  }
+  if (input.paymentRisk === 'UNKNOWN') missing.push('any idea whether this buyer pays');
+  if (input.counterpartyRisk === 'UNKNOWN') missing.push('a counterparty assessment');
+  for (const gap of input.compliance.gaps.slice(0, 2)) missing.push(gap);
   const party = input.event.parties.find((p) => p.company?.id === input.account.id);
   if (!party?.company?.contacts.some((c) => c.phone || c.email)) missing.push('any contact route to the buyer');
   if (!party?.company?.contacts.some((c) => c.isDecisionMaker)) missing.push('a named decision-maker');
@@ -919,15 +1189,13 @@ function collectMissing(input: {
 
 function nextActionFor(input: {
   playbook: Playbook;
-  fulfilment: Fulfilment;
+  fulfilment: FulfilmentAssessment;
   friction: FrictionLevel;
   missing: string[];
   status: string;
 }): string {
   if (input.status === 'EXPIRED') return 'Close this route — the window has passed.';
-  if (input.fulfilment.status !== 'AVAILABLE') {
-    return `Source a provider for ${input.playbook.requiredCapability.toLowerCase()} in this market before approaching the buyer.`;
-  }
+  if (input.fulfilment.sourcingTask) return input.fulfilment.sourcingTask;
   if (input.missing.includes('any contact route to the buyer')) {
     return 'Find a contact route to the buying organisation. Nothing can be worked until somebody can be reached.';
   }
