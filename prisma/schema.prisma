@@ -602,6 +602,8 @@ model Organization {
   routeHypotheses        RouteHypothesis[]
   sourceRuns             SourceRun[]
   demandOutcomes         DemandOutcome[]
+  outreachStates         OutreachState[]
+  outreachAttempts       OutreachAttempt[]
   jobs                   Job[]
   dailyPlans             DailyPlan[]
   scriptTemplates        ScriptTemplate[]
@@ -674,6 +676,8 @@ model User {
   metrics            PerformanceMetric[]
   auditEvents        AuditEvent[]
   messagesSent       Message[]
+
+  outreachAttempts OutreachAttempt[]
 
   @@unique([orgId, email])
   @@index([orgId])
@@ -2770,6 +2774,9 @@ model RouteHypothesis {
   company Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
   path    BusinessPath? @relation(fields: [pathId], references: [id], onDelete: SetNull)
 
+  outreach         OutreachState?
+  outreachAttempts OutreachAttempt[]
+
   @@unique([eventId, companyId, playbookKey])
   @@index([orgId, tier, friction])
   @@index([orgId, route, status])
@@ -2870,4 +2877,111 @@ model DemandOutcome {
   @@unique([routeId, stage])
   @@index([orgId, connector, stage])
   @@index([orgId, occurredAt])
+}
+
+// ===========================================================================
+// Outreach: what happened when somebody actually worked the opportunity
+// ===========================================================================
+
+/// Where a route sits in the calling workflow.
+///
+/// Distinct from `RouteHypothesis.status`, which is the engine's judgement
+/// about the opportunity. This is the operator's: the engine can say PURSUE
+/// while the operator has left three voicemails, and neither fact should
+/// overwrite the other.
+enum OutreachStatus {
+  /// Never worked.
+  NEW
+  /// Called, nobody reached.
+  ATTEMPTED
+  /// Spoke to somebody who is not the decision-maker.
+  IN_CONVERSATION
+  /// Parked until a date. Out of the calling queue until then.
+  FOLLOW_UP
+  /// Worth real pursuit. Out of cold calling, into the pipeline.
+  QUALIFIED
+  /// Somebody already has this. Not a loss, not work.
+  CLOSED_HANDLED
+  CLOSED_NOT_INTERESTED
+  CLOSED_BAD_FIT
+  /// They asked not to be contacted. Never returned by any queue.
+  DO_NOT_CONTACT
+}
+
+/// The outcome of one attempt, recorded once per attempt and never edited.
+enum CallDisposition {
+  NO_ANSWER
+  LEFT_VOICEMAIL
+  GATEKEEPER
+  WRONG_NUMBER
+  REACHED_DECISION_MAKER
+  INTERESTED
+  NEEDS_INFORMATION
+  FOLLOW_UP
+  QUALIFIED_OPPORTUNITY
+  ALREADY_HANDLED
+  NOT_INTERESTED
+  BAD_FIT
+  DO_NOT_CONTACT
+}
+
+/// Current calling state for one route. One row, updated in place.
+model OutreachState {
+  id      String @id @default(cuid())
+  orgId   String
+  routeId String @unique
+
+  status          OutreachStatus   @default(NEW)
+  /// Out of the calling queue until this passes. The single field that makes
+  /// "follow up on Tuesday" mean anything.
+  snoozeUntil     DateTime?
+  attempts        Int              @default(0)
+  lastAttemptAt   DateTime?
+  lastDisposition CallDisposition?
+
+  /// Corrections and facts learned on a call. Kept apart from the event's own
+  /// evidence, which is the source's and is never rewritten by an operator.
+  contactName      String?
+  contactRole      String?
+  correctedPhone   String?
+  correctedEmail   String?
+  confirmedNeed    String?
+  confirmedTiming  String?
+  budgetNote       String?
+  incumbentStatus  String?
+  preferredRoute   SignalCategory?
+  disqualifyReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org   Organization    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  route RouteHypothesis @relation(fields: [routeId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, status, snoozeUntil])
+}
+
+/// One attempt. Append-only: rows are inserted and never updated or deleted,
+/// so the history of what was tried survives every later correction.
+model OutreachAttempt {
+  id      String  @id @default(cuid())
+  orgId   String
+  routeId String
+  /// Null when the operator could not be identified, rather than guessed at.
+  userId  String?
+
+  disposition     CallDisposition
+  notes           String?
+  /// What the operator saw at the time, so a later engine change cannot make
+  /// the record of the call disagree with the call.
+  contextSnapshot Json            @default("{}")
+
+  occurredAt DateTime @default(now())
+
+  org   Organization    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  route RouteHypothesis @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  user  User?           @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, occurredAt])
+  @@index([routeId, occurredAt])
 }
