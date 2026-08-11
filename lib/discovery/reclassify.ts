@@ -2,7 +2,8 @@ import type { Contact, CompanyLocation, DiscoverySignal, LeadRole, LeadStage } f
 import { prisma } from '@/lib/db';
 import { audit } from '@/lib/audit';
 import { getActivePaths } from '@/lib/paths';
-import { buildIdentity, normalizeAddress, normalizePhone, sameCompany, type IdentityKeys } from './identity';
+import { assessIdentity, buildIdentity, normalizeAddress, normalizePhone, sameCompany, type IdentityKeys } from './identity';
+import { diagnose, type RunDiagnostics } from './diagnostics';
 import {
   decideStage,
   describeRelevance,
@@ -41,6 +42,9 @@ export type BeforeAfterRow = {
   /** One row per hypothesis, so the path each account was included for is visible. */
   path: string;
   leadRole: string;
+  /** Held out of ranking because its identity cannot be trusted. */
+  quarantined: boolean;
+  quarantineReason: string | null;
   after: {
     companyId: string;
     mergedFrom: number;
@@ -71,8 +75,15 @@ export type ReclassifyResult = {
   stageCounts: Record<string, number>;
   /** The same tally collapsed to one entry per account, by its best stage. */
   accountStageCounts: Record<string, number>;
+  quarantinedAccounts: number;
+  /** The run's assessment of its own output. */
+  diagnostics: RunDiagnostics;
   rows: BeforeAfterRow[];
 };
+
+function emptyDiagnostics(): RunDiagnostics {
+  return { distributions: [], warnings: [], dataQuality: [], verdict: 'CREDIBLE', verdictReason: 'Nothing to assess.' };
+}
 
 /** Company roles that supply rather than buy. */
 const SUPPLY_ROLES: LeadRole[] = ['PROVIDER', 'SUPPLIER', 'SUBCONTRACTOR', 'PARTNER'];
@@ -106,6 +117,8 @@ export async function reclassify(params: { orgId: string; userId: string; dryRun
     intentEventsFound: 0,
     stageCounts: {},
     accountStageCounts: {},
+    quarantinedAccounts: 0,
+    diagnostics: emptyDiagnostics(),
     rows: [],
   };
   if (signals.length === 0) return result;
@@ -123,6 +136,10 @@ export async function reclassify(params: { orgId: string; userId: string; dryRun
   const catalogue = new Set(
     (await prisma.capability.findMany({ where: { orgId }, select: { name: true } })).map((c) => c.name.toLowerCase()),
   );
+
+  // Supply-side companies indexed by capability and state, so fulfilment can
+  // be answered per lead rather than assumed.
+  const providerIndex = await buildProviderIndex(orgId);
 
   const clusters: Cluster[] = [];
 
@@ -165,6 +182,9 @@ export async function reclassify(params: { orgId: string; userId: string; dryRun
     const company = cluster.primary;
     const contacts = company.contacts ?? [];
     const location = company.locations?.[0];
+
+    const quarantine = assessIdentity(cluster.identity);
+    if (quarantine.quarantined) result.quarantinedAccounts += 1;
 
     const beforeScores = cluster.signals.map((s) => Math.round(s.strength * 100));
     const before = {
@@ -258,8 +278,12 @@ export async function reclassify(params: { orgId: string; userId: string; dryRun
         decisionMakerVerified: contacts.some((c) => c.isDecisionMaker && c.verificationStatus !== 'UNVERIFIED'),
       });
 
+      // Real capacity, not a placeholder. The first version hardcoded zero,
+      // which made fulfilment exactly 0 for every buyer and exactly 1 for
+      // every supply-side lead — the same class of defect as a fit score that
+      // could not be unticked.
       const fulfil = scoreFulfilmentReadiness({
-        availableProviders: 0,
+        availableProviders: providersFor(providerIndex, lead.requiredService, cluster.identity.stateCode),
         minimumProviders: 3,
         requiresSupply: !SUPPLY_ROLES.includes(role),
       });
@@ -344,6 +368,8 @@ export async function reclassify(params: { orgId: string; userId: string; dryRun
         cityState: [cluster.identity.cityName, cluster.identity.stateCode].filter(Boolean).join(', ') || 'unknown',
         path: path.name,
         leadRole: role,
+        quarantined: quarantine.quarantined,
+        quarantineReason: quarantine.reason,
         before: { ...before },
         after: {
           companyId: company.id,
@@ -375,6 +401,26 @@ export async function reclassify(params: { orgId: string; userId: string; dryRun
     result.accountStageCounts[rowStage] = (result.accountStageCounts[rowStage] ?? 0) + 1;
   }
 
+  // Quarantined records are excluded from the distribution check: they are
+  // held out of ranking, so including them would describe a population the
+  // operator is not being asked to act on.
+  const ranked = result.rows.filter((r) => !r.quarantined);
+  result.diagnostics = diagnose({
+    fit: ranked.map((r) => r.after.accountFit),
+    intent: ranked.map((r) => r.after.intent),
+    contactability: ranked.map((r) => r.after.contactability),
+    fulfilment: ranked.map((r) => r.after.fulfilment),
+    priority: ranked.map((r) => r.after.priority),
+    records: result.rows.map((r) => ({
+      company: r.company,
+      cityState: r.cityState,
+      quarantined: r.quarantined,
+      quarantineReason: r.quarantineReason,
+      contactability: r.after.contactability,
+      intent: r.after.intent,
+    })),
+  });
+
   if (!params.dryRun) {
     await audit({
       orgId,
@@ -387,11 +433,81 @@ export async function reclassify(params: { orgId: string; userId: string; dryRun
         merged: result.companiesMerged,
         hypotheses: result.hypothesesCreated,
         stages: result.stageCounts,
+        quarantined: result.quarantinedAccounts,
+        verdict: result.diagnostics.verdict,
+        warnings: result.diagnostics.warnings.map((w) => `${w.severity} ${w.dimension}: ${w.finding}`),
       },
     });
   }
 
   return result;
+}
+
+export type ProviderIndex = {
+  /** Lowercased capability name -> set of state codes where a provider holds it. */
+  byCapability: Map<string, Map<string, number>>;
+  /** Providers with no stated capability, counted per state as a weak fallback. */
+  byStateOnly: Map<string, number>;
+  total: number;
+};
+
+/**
+ * Counts supply-side companies by capability and state.
+ *
+ * Built once per run rather than queried per lead: a reclassification touches
+ * every record and a per-lead query would multiply into hundreds of round
+ * trips for a number that does not change during the run.
+ */
+export async function buildProviderIndex(orgId: string): Promise<ProviderIndex> {
+  const providers = await prisma.company.findMany({
+    where: { orgId, companyRole: { in: ['SUPPLIER', 'DISTRIBUTOR', 'SUBCONTRACTOR', 'CARRIER', 'MANUFACTURER'] } },
+    select: {
+      stateCode: true,
+      locations: { select: { state: true }, take: 1 },
+      capabilities: { select: { capability: { select: { name: true } } } },
+    },
+  });
+
+  const byCapability = new Map<string, Map<string, number>>();
+  const byStateOnly = new Map<string, number>();
+
+  for (const provider of providers) {
+    const state = (provider.stateCode ?? provider.locations[0]?.state ?? '').toUpperCase() || 'UNKNOWN';
+    if (provider.capabilities.length === 0) {
+      byStateOnly.set(state, (byStateOnly.get(state) ?? 0) + 1);
+      continue;
+    }
+    for (const link of provider.capabilities) {
+      const key = link.capability.name.toLowerCase();
+      const states = byCapability.get(key) ?? new Map<string, number>();
+      states.set(state, (states.get(state) ?? 0) + 1);
+      byCapability.set(key, states);
+    }
+  }
+
+  return { byCapability, byStateOnly, total: providers.length };
+}
+
+/**
+ * Providers able to serve this lead.
+ *
+ * Same state counts fully; other states count as a fraction, because a crew
+ * three states away is not nothing but is not local coverage either. A lead
+ * with no known state falls back to the national total for the capability.
+ */
+export function providersFor(index: ProviderIndex, service: string | null, stateCode: string | null): number {
+  if (!service) return 0;
+  const states = index.byCapability.get(service.toLowerCase());
+  if (!states) return 0;
+
+  if (!stateCode) {
+    return [...states.values()].reduce((sum, n) => sum + n, 0);
+  }
+  const local = states.get(stateCode.toUpperCase()) ?? 0;
+  const elsewhere = [...states.entries()]
+    .filter(([state]) => state !== stateCode.toUpperCase())
+    .reduce((sum, [, n]) => sum + n, 0);
+  return local + elsewhere * 0.25;
 }
 
 /**

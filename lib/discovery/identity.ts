@@ -138,6 +138,39 @@ export function buildIdentity(input: {
   };
 }
 
+export type QuarantineVerdict = { quarantined: boolean; reason: string | null };
+
+/**
+ * Whether an identity is complete enough to rank and act on.
+ *
+ * Quarantine rather than delete or merge. A record with a name and nothing
+ * else may be perfectly real — the source was just thin — and destroying it
+ * loses information. Merging it is worse: with no distinguishing key, any
+ * merge is a guess, and a wrong merge silently fuses two real businesses.
+ * Holding it aside keeps it inspectable and keeps it out of the ranking.
+ */
+export function assessIdentity(keys: IdentityKeys): QuarantineVerdict {
+  const hasStrongKey = Boolean(keys.externalPlaceId || keys.normalizedPhone || keys.normalizedAddress);
+  const hasLocation = Boolean(keys.cityName || keys.stateCode);
+
+  if (!keys.normalizedName || keys.normalizedName.length < 2) {
+    return { quarantined: true, reason: 'no usable organisation name' };
+  }
+  if (!hasStrongKey && !hasLocation) {
+    return {
+      quarantined: true,
+      reason: 'only a name — no place ID, phone, address, city or state, so it cannot be matched or located',
+    };
+  }
+  if (!hasStrongKey) {
+    return {
+      quarantined: true,
+      reason: 'no place ID, phone or address, so any deduplication against it would be a guess',
+    };
+  }
+  return { quarantined: false, reason: null };
+}
+
 export type IdentityMatch = {
   matched: boolean;
   /** Which key established it, for the audit trail. */

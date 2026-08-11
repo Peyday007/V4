@@ -32,11 +32,21 @@ type AuditResult = {
   intentEventsFound: number;
   stageCounts: Record<string, number>;
   accountStageCounts: Record<string, number>;
+  quarantinedAccounts: number;
+  diagnostics: {
+    verdict: 'CREDIBLE' | 'SUSPECT' | 'NOT_CREDIBLE';
+    verdictReason: string;
+    distributions: Array<{ dimension: string; count: number; distinctValues: number; min: number; max: number; modeValue: number; modeShare: number }>;
+    warnings: Array<{ dimension: string; severity: string; finding: string; likelyCause: string }>;
+    dataQuality: Array<{ kind: string; severity: string; count: number; finding: string; examples: string[] }>;
+  };
   rows: Array<{
     company: string;
     cityState: string;
     path: string;
     leadRole: string;
+    quarantined: boolean;
+    quarantineReason: string | null;
     before: { duplicateCards: number; score: number };
     after: { stage: string; accountFit: number; intent: number; contactability: number; priority: number; paths: string[]; missing: string[] };
   }>;
@@ -165,6 +175,46 @@ export function DiscoveryStatus({ sources, liveLeads }: { sources: SourceStatus[
           <strong>Re-audit:</strong> {audit.signalsExamined} record(s) examined · {audit.companiesBefore} company rows →{' '}
           {audit.companiesAfter} accounts ({audit.companiesMerged} merged) · {audit.hypothesesCreated} path hypothesis(es) ·{' '}
           {audit.intentEventsFound} intent event(s) found.
+          {audit.diagnostics && (
+            <div
+              className={`alert ${audit.diagnostics.verdict === 'NOT_CREDIBLE' ? 'danger' : audit.diagnostics.verdict === 'SUSPECT' ? 'warning' : 'success'} small`}
+              style={{ marginTop: '0.5rem' }}
+            >
+              <strong>{audit.diagnostics.verdict.replace('_', ' ')}:</strong> {audit.diagnostics.verdictReason}
+              {audit.diagnostics.warnings.map((w) => (
+                <div key={w.dimension + w.finding} className="tiny mt">
+                  <strong>{w.severity} · {w.dimension}:</strong> {w.finding} <em>{w.likelyCause}</em>
+                </div>
+              ))}
+              {audit.diagnostics.dataQuality.map((q) => (
+                <div key={q.kind} className="tiny mt">
+                  <strong>{q.severity} · {q.kind}:</strong> {q.finding}
+                  {q.examples.length > 0 && <div className="dim">e.g. {q.examples.join(' · ')}</div>}
+                </div>
+              ))}
+              <div className="table-wrap mt">
+                <table>
+                  <thead>
+                    <tr><th>Dimension</th><th>n</th><th>distinct</th><th>min–max</th><th>most common</th></tr>
+                  </thead>
+                  <tbody>
+                    {audit.diagnostics.distributions.map((d) => (
+                      <tr key={d.dimension}>
+                        <td className="tiny">{d.dimension}</td>
+                        <td className="tiny">{d.count}</td>
+                        <td className="tiny" style={{ color: d.distinctValues <= 1 ? 'var(--danger)' : undefined }}>
+                          {d.distinctValues}
+                        </td>
+                        <td className="tiny">{d.min}–{d.max}</td>
+                        <td className="tiny">{d.modeValue} ({Math.round(d.modeShare * 100)}%)</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
           <div className="tiny mt">
             By account: {Object.entries(audit.accountStageCounts ?? {}).map(([k, v]) => `${humanStage(k)} ${v}`).join(' · ')}
           </div>
@@ -188,6 +238,7 @@ export function DiscoveryStatus({ sources, liveLeads }: { sources: SourceStatus[
                   <th>Contact</th>
                   <th>Priority</th>
                   <th>Missing to qualify</th>
+                  <th>Held</th>
                 </tr>
               </thead>
               <tbody>
@@ -206,6 +257,13 @@ export function DiscoveryStatus({ sources, liveLeads }: { sources: SourceStatus[
                     <td className="tiny">{row.after.contactability}</td>
                     <td className="tiny">{row.after.priority}</td>
                     <td className="tiny dim">{row.after.missing.join('; ') || '—'}</td>
+                    <td className="tiny">
+                      {row.quarantined ? (
+                        <span className="badge warning" title={row.quarantineReason ?? ''}>quarantined</span>
+                      ) : (
+                        '—'
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
