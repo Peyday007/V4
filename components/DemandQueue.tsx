@@ -48,6 +48,34 @@ type Row = {
   lastDisposition: string | null;
   routesForAccount: number;
   routesForEvent: number;
+  enrichmentState: string;
+  enrichmentBlocker: string | null;
+  enrichmentSources: string[];
+  enrichmentLastAttemptAt: string | null;
+  enrichmentNextAttemptAt: string | null;
+  enrichmentAttempts: number;
+  enrichmentFix: string | null;
+};
+
+/**
+ * The seven states contact resolution can be in, in the operator's words.
+ *
+ * The distinction that earns its place on the row is the last two against the
+ * middle one: "we searched everywhere and this business publishes no number"
+ * is a finished job, while "the provider was down" and "nobody set the key" are
+ * both our fault and both fixable. Showing all three as an empty phone column
+ * is what made a hundred and fifty records look like manual research.
+ */
+const ENRICHMENT: Record<string, { label: string; tone: string; hint: string }> = {
+  READY: { label: 'Contact ready', tone: 'success', hint: 'A contact route was found and checked. This is callable.' },
+  ENRICHING: { label: 'Enriching', tone: 'accent', hint: 'Being looked up right now.' },
+  WAITING: { label: 'Queued', tone: '', hint: 'Scheduled. The worker has not reached it yet.' },
+  RETRY_SCHEDULED: { label: 'Retry scheduled', tone: 'warning', hint: 'An earlier attempt did not settle it. It will be tried again automatically.' },
+  AMBIGUOUS: { label: 'Ambiguous match', tone: 'warning', hint: 'More than one business fits. Needs a person to choose — retrying returns the same candidates.' },
+  NONE_FOUND: { label: 'No contact found', tone: '', hint: 'Every available source was searched and none publishes a contact.' },
+  FAILED: { label: 'Provider failure', tone: 'danger', hint: 'The lookup itself failed. This is not a finding about the business.' },
+  STALE: { label: 'Stale contact', tone: 'warning', hint: 'The number is past the age its source can be relied on for. Being re-checked.' },
+  NOT_SCHEDULED: { label: 'Not scheduled', tone: 'danger', hint: 'Not in the contact-resolution workflow. Retry to put it there.' },
 };
 
 type Summary = Record<string, number>;
@@ -148,6 +176,9 @@ export function DemandQueue({
   const [connector, setConnector] = useState('');
   const [urgency, setUrgency] = useState('');
   const [contactable, setContactable] = useState('');
+  const [enrichment, setEnrichment] = useState('');
+  const [retrying, setRetrying] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const query = useMemo(() => {
     const params = new URLSearchParams({ view });
@@ -161,8 +192,9 @@ export function DemandQueue({
     if (connector) params.set('connector', connector);
     if (urgency) params.set('urgency', urgency);
     if (contactable) params.set('contactable', contactable);
+    if (enrichment) params.set('enrichment', enrichment);
     return params;
-  }, [view, search, tier, route, eventType, friction, fulfilment, state, connector, urgency, contactable]);
+  }, [view, search, tier, route, eventType, friction, fulfilment, state, connector, urgency, contactable, enrichment]);
 
   const load = useCallback(
     async (append: boolean, offset: number) => {
@@ -195,6 +227,40 @@ export function DemandQueue({
     }, 200);
     return () => clearTimeout(timer);
   }, [load]);
+
+  /**
+   * Ask for one record, or everything blocked, to be tried again now.
+   *
+   * A recovery tool. The normal path needs nobody to press anything — this is
+   * for the minute after somebody sets a missing key and wants to see it work.
+   */
+  const retry = useCallback(
+    async (body: { routeId?: string; allBlocked?: boolean }, key: string) => {
+      setRetrying(key);
+      setNotice(null);
+      try {
+        const response = await fetch('/api/demand/enrichment', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result?.error ?? `Request failed (${response.status})`);
+        setNotice(
+          `Tried ${result.attempted} organisation(s): ${result.resolved} resolved, ${result.ambiguous} ambiguous, ` +
+            `${result.unresolved} with no contact published, ${result.failed} failed. ` +
+            `${result.released} route(s) became callable.` +
+            (result.remaining > 0 ? ` ${result.remaining} still queued — the worker continues on its own.` : ''),
+        );
+        await load(false, 0);
+      } catch (caught) {
+        setNotice(caught instanceof Error ? caught.message : String(caught));
+      } finally {
+        setRetrying(null);
+      }
+    },
+    [load],
+  );
 
   async function openEvidence(routeId: string) {
     if (expanded === routeId) {
@@ -286,6 +352,12 @@ export function DemandQueue({
           <Select value={contactable} onChange={setContactable} label="Any contactability" options={[
             ['yes', 'Has a phone'], ['no', 'No phone'],
           ]} />
+          <Select value={enrichment} onChange={setEnrichment} label="Any contact status" options={[
+            ['READY', 'Contact ready'], ['ENRICHING', 'Enriching'], ['WAITING', 'Queued'],
+            ['RETRY_SCHEDULED', 'Retry scheduled'], ['AMBIGUOUS', 'Ambiguous match'],
+            ['NONE_FOUND', 'No contact found'], ['FAILED', 'Provider failure'],
+            ['STALE', 'Stale contact'],
+          ]} />
           <Select value={urgency} onChange={setUrgency} label="Any urgency" options={[
             ['overdue', 'Window closed'], ['today', 'Closes today'],
             ['week', 'Within 7 days'], ['month', 'Within 30 days'],
@@ -301,6 +373,29 @@ export function DemandQueue({
       </div>
 
       {error && <div className="alert danger small">{error}</div>}
+      {notice && <div className="alert small">{notice}</div>}
+
+      {/* Recovery, not workflow. Everything below happens automatically; this
+          is here for the minute after somebody fixes a configuration problem
+          and wants to see whether it worked. */}
+      {(view === 'research' || enrichment) && (
+        <div className="card">
+          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap' }}>
+            <p className="tiny dim" style={{ margin: 0, maxWidth: '48rem' }}>
+              Contact resolution runs on its own — every organisation with live demand is scheduled automatically, worked
+              in priority order, and retried on a schedule that matches why it failed. Anything sitting here is waiting
+              for its turn, waiting for a person to choose between candidates, or blocked on something named in the row.
+            </p>
+            <button
+              className="btn secondary"
+              disabled={retrying !== null}
+              onClick={() => retry({ allBlocked: true }, 'all')}
+            >
+              {retrying === 'all' ? 'Working…' : 'Retry everything blocked'}
+            </button>
+          </div>
+        </div>
+      )}
 
       {!loading && rows.length === 0 && (
         <div className="card">
@@ -362,12 +457,13 @@ export function DemandQueue({
                       </div>
                     </td>
                     <td><Badge tone={FRICTION_TONE[row.friction]}>{FRICTION_SHORT[row.friction]}</Badge></td>
-                    <td>
-                      {row.phone ? (
-                        <a href={`tel:${row.phone.replace(/[^\d+]/g, '')}`}>{row.phone}</a>
-                      ) : (
-                        <span className="dim">no contact route</span>
+                    <td style={{ maxWidth: '15rem' }}>
+                      {row.phone && (
+                        <div>
+                          <a href={`tel:${row.phone.replace(/[^\d+]/g, '')}`}>{row.phone}</a>
+                        </div>
                       )}
+                      <ContactStatus row={row} onRetry={() => retry({ routeId: row.routeId }, row.routeId)} busy={retrying === row.routeId} />
                     </td>
                     <td>
                       {row.fulfilmentStatus === 'AVAILABLE' ? (
@@ -416,6 +512,59 @@ export function DemandQueue({
         </div>
       )}
     </>
+  );
+}
+
+/**
+ * What the system has already done about this account's contact.
+ *
+ * Written so that nobody has to open a job record or a database table to find
+ * out. Where the record is not callable it names the blocker, the sources
+ * already consulted and when the next automatic attempt is — so an operator can
+ * see the difference between work in progress, a job genuinely finished with no
+ * result, and something broken that they can fix.
+ */
+function ContactStatus({ row, onRetry, busy }: { row: Row; onRetry: () => void; busy: boolean }) {
+  const state = ENRICHMENT[row.enrichmentState] ?? ENRICHMENT.NOT_SCHEDULED;
+  const settled = row.enrichmentState === 'READY';
+
+  return (
+    <div>
+      <Badge tone={state.tone}>{state.label}</Badge>
+
+      {!settled && (
+        <>
+          {row.enrichmentBlocker && (
+            <div className="dim" style={{ marginTop: '0.2rem', lineHeight: 1.4 }}>{row.enrichmentBlocker}</div>
+          )}
+          {!row.enrichmentBlocker && <div className="dim" style={{ marginTop: '0.2rem' }}>{state.hint}</div>}
+
+          {/* What was already attempted, so nobody repeats it by hand. */}
+          {row.enrichmentSources.length > 0 && (
+            <div className="dim" style={{ marginTop: '0.2rem' }}>
+              searched: {row.enrichmentSources.map((s) => humanise(s)).join(', ')}
+              {row.enrichmentAttempts > 0 && ` · ${row.enrichmentAttempts} attempt(s)`}
+            </div>
+          )}
+
+          {row.enrichmentNextAttemptAt && (
+            <div className="dim">next automatic attempt {dayOnly(row.enrichmentNextAttemptAt)}</div>
+          )}
+          {row.enrichmentState === 'AMBIGUOUS' && (
+            <div className="dim">no automatic retry — trying again returns the same candidates</div>
+          )}
+          {row.enrichmentFix && <div className="dim" style={{ lineHeight: 1.4 }}>fix: {row.enrichmentFix}</div>}
+
+          <button className="btn secondary tiny mt" disabled={busy} onClick={onRetry}>
+            {busy ? 'Trying…' : 'Try again now'}
+          </button>
+        </>
+      )}
+
+      {settled && row.enrichmentSources.length > 0 && (
+        <div className="dim" style={{ marginTop: '0.2rem' }}>from {humanise(row.enrichmentSources[0])}</div>
+      )}
+    </div>
   );
 }
 

@@ -103,3 +103,44 @@ Retention fields exist and are populated: `CallRecording.retentionUntil` (one ye
 **An opportunity has no next action.** Filter the board by *No next action*, then use *Re-run AI loop* on the workspace. If it persists, the escalation rule fired and the reason is on the opportunity.
 
 **A deal will not configure.** The workspace lists the exact missing terms. This is intended: the system reports what is unknown rather than assuming it. The next-action engine will have created the calls to obtain them.
+
+## Contact resolution
+
+Demand sources publish licences, permits and solicitations; almost none of them publish a phone number. Contact resolution is the step that turns a routed opportunity into one somebody can ring, and it runs on its own.
+
+**How it is triggered.** Two entry points, one implementation (`lib/enrichment/schedule.ts` → `resolveCompanyContact`):
+
+- **Immediately after routing.** `runDemandPipeline` schedules every organisation behind a live route and enqueues `enrichment.resolve_contacts`. This runs whenever a source run creates or updates events, so a licence found at nine is callable by nine-fifteen rather than tomorrow.
+- **Every cron tick.** `/api/cron?mode=tick` enqueues the same job. It schedules anything missed, and works records whose retry has come round, whose contact has gone stale, or whose account gained information since the last attempt.
+
+Scheduling is keyed by organisation, not by route: four routes off one gym opening share one phone number and one attempt to find it. Claims are conditional updates with `FOR UPDATE SKIP LOCKED`, so several workers — or a redeploy mid-run — produce one attempt rather than duplicates.
+
+**Where it looks.** In order, stopping as soon as the answer is settled:
+
+1. **Records we already hold** — other company rows that are the same business reached by a different route, their contacts, and the contact hints discovery connectors stored beside their signals. Free, and it includes what our own callers have confirmed.
+2. **Google Places** — one text-search lookup per organisation, by name and street address. Needs `GOOGLE_PLACES_API_KEY`. Without it the workflow still runs on held data and says so on every affected record.
+
+**What the states mean.** Six outcomes, counted separately on **Demand → Source health → Contact resolution**, because they call for different responses:
+
+| State | Meaning | What happens next |
+| --- | --- | --- |
+| Resolved | A defensible contact was found and written | Re-checked at the source's freshness horizon (30 days for Places) |
+| Ambiguous | Competing candidates the evidence cannot separate | **No automatic retry** — it needs a person; retrying returns the same candidates |
+| Nothing published | Every available source searched, no contact exists to find | Re-checked in 14 days |
+| Failed | Our lookup broke: outage, timeout, or missing configuration | Widening backoff from 5 minutes, then daily; configuration re-checked every 6 hours with the fix named |
+| Waiting / In progress | Scheduled, or being worked now | The next worker pass |
+| Stale | Past the age its source can be relied on | Re-resolved automatically |
+
+A failure is never presented as "this business has no phone number". That distinction is the point of the enum.
+
+**Running the backlog by hand.** `npm run enrich:backfill` calls the same sweep the cron calls, with progress output. Safe to stop, restart, and run alongside the cron.
+
+**Verifying it.** `npm run audit:enrichment` drives the production path against Postgres. `node scripts/browserEnrichmentCheck.mjs` drives the same flow through a browser against a built server.
+
+### Troubleshooting contact resolution
+
+**Research needed is still full.** Open **Demand → Source health → Contact resolution**. Every record has a stored result; the panel groups them by blocker and names any configuration that is narrowing the search. If *Not scheduled* is above zero, scheduling is not reaching those accounts — that should never happen and is a bug.
+
+**A number turned out to be wrong.** Save the call with *Wrong number*. The value comes off the account, is recorded as rejected so no later attempt proposes it again, and the route leaves Call now until another route is found.
+
+**Nothing overwrites a caller's correction.** Operator-entered values outrank every source, permanently. A provider outage cannot downgrade or erase a verified contact — failed attempts write a failure, never a deletion.

@@ -53,6 +53,16 @@ export type FulfilmentAssessment = {
   checks: FulfilmentCheck[];
   /** Providers that cleared capability and geography, best first. */
   matched: ProviderCandidate[];
+  /**
+   * Providers we have actually checked recently — insurance on file and a
+   * verification inside the freshness horizon.
+   *
+   * Kept apart from `matched` because they answer different questions. A
+   * candidate found in a directory is a lead on the supply side; a provider we
+   * have verified is someone we can commit to a buyer. Telling a caller the
+   * first is the second is how a promise gets made that cannot be kept.
+   */
+  verified: ProviderCandidate[];
   /** What to go and do when nobody clears. */
   sourcingTask: string | null;
   /** Blocks promotion to serious pursuit. */
@@ -129,6 +139,7 @@ export function assessFulfilment(input: {
         'a verdict on this opportunity.',
       checks: [{ name: 'network', passed: null, detail: 'No providers on file.' }],
       matched: [],
+      verified: [],
       sourcingTask: `Recruit at least one provider for ${input.requiredCapability.toLowerCase()} before working demand in this trade.`,
       blocksPursuit: true,
     };
@@ -153,6 +164,7 @@ export function assessFulfilment(input: {
       reason: `No provider holds ${input.requiredCapability.toLowerCase()}. The demand stands; the supply does not exist yet.`,
       checks,
       matched: [],
+      verified: [],
       sourcingTask: `Find a provider for ${input.requiredCapability.toLowerCase()}${input.stateCode ? ` in ${input.stateCode}` : ''}.`,
       blocksPursuit: true,
     };
@@ -186,6 +198,7 @@ export function assessFulfilment(input: {
       reason: `Providers exist for this trade but none covers ${input.stateCode}.`,
       checks,
       matched: [],
+      verified: [],
       sourcingTask: `Recruit a ${input.requiredCapability.toLowerCase()} provider covering ${input.stateCode}.`,
       blocksPursuit: true,
     };
@@ -245,6 +258,17 @@ export function assessFulfilment(input: {
   });
 
   const matched = [...local].sort((a, b) => score(b) - score(a));
+
+  // Verified means somebody checked, recently. Insurance on file plus a
+  // verification inside the freshness horizon is the least that can honestly
+  // be called "we can deliver this"; anything short of it is a candidate.
+  const verified = matched.filter(
+    (p) =>
+      p.hasInsurance &&
+      p.lastVerifiedAt !== null &&
+      now.getTime() - p.lastVerifiedAt.getTime() < CAPACITY_FRESH_DAYS * 86_400_000,
+  );
+
   const failed = checks.filter((c) => c.passed === false);
   const unknown = checks.filter((c) => c.passed === null);
 
@@ -254,6 +278,7 @@ export function assessFulfilment(input: {
       reason: `A provider exists but ${failed.map((c) => c.name).join(' and ')} did not clear. ${failed.map((c) => c.detail).join(' ')}`,
       checks,
       matched,
+      verified,
       sourcingTask: failed.some((c) => c.name === 'credentials')
         ? `Collect a certificate of insurance from ${matched[0]?.name ?? 'a provider'} before quoting.`
         : null,
@@ -263,13 +288,34 @@ export function assessFulfilment(input: {
     };
   }
 
+  // A candidate found is not a provider secured. AVAILABLE is reserved for the
+  // case where somebody has actually been verified — otherwise the board would
+  // tell a caller supply is in place on the strength of a directory entry.
+  if (verified.length === 0) {
+    return {
+      status: 'PARTIAL',
+      reason:
+        `${matched.length} candidate provider(s) can do this work in ${input.stateCode ?? 'this area'}, but none has ` +
+        'been verified. Treat them as leads on the supply side, not as capacity you can commit.',
+      checks,
+      matched,
+      verified,
+      sourcingTask: `Verify ${matched[0]?.name ?? 'a candidate provider'} — insurance and current capacity — before quoting this work.`,
+      // A candidate we have not verified is still a route to delivery. It does
+      // not stop the conversation, it changes what may be promised in it.
+      blocksPursuit: false,
+    };
+  }
+
   return {
     status: unknown.length >= 3 ? 'PARTIAL' : 'AVAILABLE',
     reason:
-      `${matched.length} provider(s) can do this work in ${input.stateCode ?? 'this area'}. ` +
+      `${verified.length} verified provider(s) of ${matched.length} candidate(s) can do this work in ` +
+      `${input.stateCode ?? 'this area'}. ` +
       (unknown.length > 0 ? `Still unknown: ${unknown.map((c) => c.name).join(', ')}.` : 'All checks cleared.'),
     checks,
     matched,
+    verified,
     sourcingTask: null,
     blocksPursuit: false,
   };

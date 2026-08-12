@@ -48,6 +48,8 @@ export type QueueFilters = {
   /** 'overdue' | 'today' | 'week' | 'month' */
   urgency?: string;
   contactable?: 'yes' | 'no';
+  /** Where automatic contact resolution has got to. */
+  enrichment?: EnrichmentState[];
   search?: string;
   cursor?: number;
   limit?: number;
@@ -98,7 +100,44 @@ export type QueueRow = {
   routesForAccount: number;
   /** Rows sharing this event, so multiple routes from one event are visible. */
   routesForEvent: number;
+
+  /**
+   * Where automatic contact resolution has got to for this account.
+   *
+   * On the row rather than behind a click, because the difference between "we
+   * are still looking", "we looked and found nothing" and "the provider was
+   * down" is what decides whether an operator should do anything about it.
+   */
+  enrichmentState: EnrichmentState;
+  /** The remaining blocker, in the operator's words. Null when resolved. */
+  enrichmentBlocker: string | null;
+  /** Sources already consulted, so nobody repeats work the system has done. */
+  enrichmentSources: string[];
+  enrichmentLastAttemptAt: Date | null;
+  enrichmentNextAttemptAt: Date | null;
+  enrichmentAttempts: number;
+  /** How to fix a configuration failure. Null unless there is one. */
+  enrichmentFix: string | null;
 };
+
+/**
+ * The seven states the operator asked to see on the board.
+ *
+ * Each is a different situation with a different remedy, which is the whole
+ * reason they are not one "no contact" flag: `FAILED` means our system did not
+ * manage to look, and presenting that as though the business has no phone
+ * number is the specific mistake this replaces.
+ */
+export type EnrichmentState =
+  | 'READY'
+  | 'ENRICHING'
+  | 'RETRY_SCHEDULED'
+  | 'AMBIGUOUS'
+  | 'NONE_FOUND'
+  | 'FAILED'
+  | 'STALE'
+  | 'WAITING'
+  | 'NOT_SCHEDULED';
 
 /** Rows per page. Small enough that the page renders instantly at 5,000 rows. */
 export const DEFAULT_PAGE_SIZE = 50;
@@ -213,6 +252,9 @@ function filterClauses(filters: QueueFilters): Prisma.Sql[] {
   }
   if (filters.contactable === 'yes') clauses.push(Prisma.sql`${PHONE_EXPR} IS NOT NULL`);
   if (filters.contactable === 'no') clauses.push(Prisma.sql`${PHONE_EXPR} IS NULL`);
+  if (filters.enrichment?.length) {
+    clauses.push(Prisma.sql`(${ENRICHMENT_STATE}) IN (${Prisma.join(filters.enrichment)})`);
+  }
 
   if (filters.urgency) {
     // Measured against the route's own window close, which comes from the
@@ -278,6 +320,48 @@ const BASE_FROM = Prisma.sql`
     ORDER BY "isDecisionMaker" DESC, "createdAt" ASC
     LIMIT 1
   ) ct ON TRUE
+  -- Contact resolution is per organisation, not per route: four routes off one
+  -- gym opening share one phone number and one attempt to find it.
+  LEFT JOIN "ContactResolution" cr ON cr."companyId" = c."id"
+`;
+
+/**
+ * Which of the seven states this row is in, decided in SQL.
+ *
+ * Here rather than in the component because the board pages through the
+ * database — a state computed after the page was chosen would be wrong for
+ * every row the page did not fetch, and could not be filtered on.
+ *
+ * A resolved contact past its next-attempt time is stale rather than ready: for
+ * a licensed directory that horizon is also when its terms stop letting us rely
+ * on the cached value, so the two reasons coincide.
+ */
+const ENRICHMENT_STATE = Prisma.sql`
+  CASE
+    WHEN ${PHONE_EXPR} IS NOT NULL
+      AND cr."status" = 'RESOLVED'
+      AND cr."nextAttemptAt" IS NOT NULL
+      AND cr."nextAttemptAt" <= NOW()               THEN 'STALE'
+    WHEN ${PHONE_EXPR} IS NOT NULL                   THEN 'READY'
+    WHEN cr."status" = 'IN_PROGRESS'                 THEN 'ENRICHING'
+    WHEN cr."status" = 'AMBIGUOUS'                   THEN 'AMBIGUOUS'
+    WHEN cr."status" = 'FAILED'                      THEN 'FAILED'
+    WHEN cr."status" = 'UNRESOLVED'                  THEN 'NONE_FOUND'
+    WHEN cr."status" = 'QUEUED' AND cr."attempts" > 0 THEN 'RETRY_SCHEDULED'
+    WHEN cr."status" = 'QUEUED'                      THEN 'WAITING'
+    ELSE 'NOT_SCHEDULED'
+  END
+`;
+
+/** The enrichment columns, written once and used by both row queries. */
+const ENRICHMENT_COLUMNS = Prisma.sql`
+  ${ENRICHMENT_STATE}                       AS "enrichmentState",
+  cr."blocker"                              AS "enrichmentBlocker",
+  COALESCE(cr."sourcesAttempted", '{}')     AS "enrichmentSources",
+  cr."lastAttemptAt"                        AS "enrichmentLastAttemptAt",
+  cr."nextAttemptAt"                        AS "enrichmentNextAttemptAt",
+  COALESCE(cr."attempts", 0)                AS "enrichmentAttempts",
+  cr."fixInstruction"                       AS "enrichmentFix"
 `;
 
 export async function queryQueue(params: {
@@ -331,7 +415,8 @@ export async function queryQueue(params: {
       os."lastDisposition"    AS "lastDisposition",
       os."contactName"        AS "contactName",
       0 AS "routesForAccount",
-      0 AS "routesForEvent"
+      0 AS "routesForEvent",
+      ${ENRICHMENT_COLUMNS}
     ${BASE_FROM}
     ${where}
     ${ORDER_BY}
@@ -472,7 +557,8 @@ export async function nextCallable(params: {
       COALESCE(os."status", 'NEW') AS "outreachStatus", os."snoozeUntil" AS "snoozeUntil",
       COALESCE(os."attempts", 0) AS "attempts", os."lastAttemptAt" AS "lastAttemptAt",
       os."lastDisposition" AS "lastDisposition", os."contactName" AS "contactName",
-      0 AS "routesForAccount", 0 AS "routesForEvent"
+      0 AS "routesForAccount", 0 AS "routesForEvent",
+      ${ENRICHMENT_COLUMNS}
     ${BASE_FROM}
     WHERE r."orgId" = ${params.orgId}
       AND (${viewClause('call_now')})
@@ -520,6 +606,24 @@ export async function isCallable(orgId: string, routeId: string): Promise<{ call
     return { callable: false, reason: `The opportunity itself is ${row.routeStatus.toLowerCase()}.` };
   }
   return { callable: false, reason: 'Not currently in the calling queue.' };
+}
+
+/**
+ * How many of one account's routes are callable right now.
+ *
+ * The same clause as the Call now view, asked of one company. Contact
+ * resolution uses it to report what it actually released rather than what it
+ * hoped to: eligibility is more than having a phone number — a do-not-contact
+ * record, a closed route or a follow-up scheduled for Thursday all still fail
+ * it, and only the queue's own definition knows that.
+ */
+export async function callableRouteCount(orgId: string, companyId: string): Promise<number> {
+  const [row] = await prisma.$queryRaw<Array<{ count: bigint }>>`
+    SELECT COUNT(*)::bigint AS count
+    ${BASE_FROM}
+    WHERE r."orgId" = ${orgId} AND r."companyId" = ${companyId} AND (${viewClause('call_now')})
+  `;
+  return Number(row?.count ?? 0);
 }
 
 /** Distinct values for the filter controls, so they only offer what exists. */

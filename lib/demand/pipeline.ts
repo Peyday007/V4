@@ -34,6 +34,8 @@ import {
 } from './risk';
 import { buildThesis } from './thesis';
 import { recordOutcome, recordPipelineMilestones } from './performance';
+import { scheduleContactResolution } from '@/lib/enrichment/schedule';
+import { enqueue } from '@/lib/jobs/queue';
 
 /**
  * The demand pipeline. One implementation, used by every entry point.
@@ -1224,13 +1226,23 @@ export type PipelineResult = {
   verification: VerificationOutcome;
   resolution: { resolved: number; unresolved: number };
   routes: RouteBuildOutcome;
+  /** Organisations newly put into the contact-resolution workflow. */
+  contactResolution: { scheduled: number; alreadyTracked: number };
 };
 
 /**
- * Verify, resolve, route. The steps after ingestion, in order.
+ * Verify, resolve, route, then find a way to ring them.
  *
  * Called by the recurring worker, by a manual refresh and by the re-audit, so
  * there is exactly one definition of what the pipeline does.
+ *
+ * The last step is the bridge the board was missing. Routing an event produced
+ * an opportunity nobody could contact, and finding the contact was left to a
+ * person — so almost everything landed in Research needed and stayed there.
+ * Scheduling happens here because this is the first moment the organisation
+ * behind an event is actually known: `resolveEventAccounts` has just attached
+ * it. The work itself is queued rather than done inline, so a slow provider
+ * cannot hold up routing.
  */
 export async function runDemandPipeline(params: {
   orgId: string;
@@ -1240,6 +1252,16 @@ export async function runDemandPipeline(params: {
   const verification = await verifyEvents({ orgId: params.orgId, now: params.now });
   const resolution = await resolveEventAccounts({ orgId: params.orgId });
   const routes = await rebuildRoutes({ orgId: params.orgId, now: params.now });
+
+  const contactResolution = await scheduleContactResolution({ orgId: params.orgId });
+  await enqueue({
+    orgId: params.orgId,
+    kind: 'enrichment.resolve_contacts',
+    priority: 35,
+    // One in flight. Routing several sources in a row must not stack a worker
+    // per source when they would all claim from the same table anyway.
+    idempotencyKey: 'enrichment.resolve_contacts:pipeline',
+  });
 
   if (params.userId) {
     await audit({
@@ -1259,11 +1281,12 @@ export async function runDemandPipeline(params: {
         byTier: routes.byTier,
         byFriction: routes.byFriction,
         lowFriction: routes.lowFrictionQueue,
+        contactResolutionScheduled: contactResolution.scheduled,
       },
     });
   }
 
-  return { verification, resolution, routes };
+  return { verification, resolution, routes, contactResolution };
 }
 
 export { normalizePhone };

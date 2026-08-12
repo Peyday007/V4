@@ -608,6 +608,8 @@ model Organization {
   dailyPlans             DailyPlan[]
   scriptTemplates        ScriptTemplate[]
   qualificationQuestions QualificationQuestion[]
+  contactResolutions     ContactResolution[]
+  contactProvenance      ContactProvenance[]
 }
 
 model Permission {
@@ -1170,6 +1172,9 @@ model Company {
   quotes             Quote[]
   evidence           SourceEvidence[]
   messages           Message[]
+
+  contactResolution ContactResolution?
+  contactProvenance ContactProvenance[]
 
   @@unique([orgId, legalName])
   @@index([orgId, companyRole])
@@ -2984,4 +2989,174 @@ model OutreachAttempt {
 
   @@index([orgId, occurredAt])
   @@index([routeId, occurredAt])
+}
+
+// ---------------------------------------------------------------------------
+// Contact resolution
+// ---------------------------------------------------------------------------
+
+/// Where one organisation's contact resolution has got to.
+///
+/// Deliberately more than a boolean. "We have not looked yet", "we looked and
+/// found nothing", "we found two businesses and cannot tell them apart" and
+/// "the provider was down" are four different situations with four different
+/// remedies, and a single `enriched` flag would present all of them to the
+/// operator as the same empty phone column.
+enum ContactResolutionStatus {
+  /// Scheduled, not yet attempted, or waiting for its next attempt.
+  QUEUED
+  /// Claimed by a worker right now.
+  IN_PROGRESS
+  /// A defensible contact route was found and written.
+  RESOLVED
+  /// Competing candidates that the evidence cannot separate. Needs a person.
+  AMBIGUOUS
+  /// Every available source was searched and none published a contact.
+  UNRESOLVED
+  /// The attempt itself failed: outage, timeout, or missing configuration.
+  /// Never to be shown as "no contact exists".
+  FAILED
+}
+
+/// How much the contact we hold can be relied on.
+enum ContactConfidence {
+  /// The organisation and the location both corroborate, or a person confirmed it.
+  VERIFIED
+  /// The organisation matches and the location is consistent, but not proven
+  /// to the street address.
+  PROBABLE
+  /// More than one business fits and the evidence cannot choose.
+  AMBIGUOUS
+  /// Searched, nothing defensible found.
+  UNRESOLVED
+  /// The search could not be completed.
+  FAILED
+}
+
+/// What a contact value actually reaches.
+///
+/// The distinction that stops a franchisor's head office number being dialled
+/// as though it were the branch that just took occupancy.
+enum ContactScope {
+  /// This site.
+  LOCATION
+  /// A parent, franchisor or central switchboard. Real, and not this branch.
+  PARENT_OR_CENTRAL
+  UNKNOWN
+}
+
+/// One organisation's place in the contact-resolution workflow.
+///
+/// Keyed by company, not by route. A gym opening produces four commercial
+/// routes and there is still only one phone number to find, so resolution is
+/// shared and the four routes are released together.
+model ContactResolution {
+  id        String @id @default(cuid())
+  orgId     String
+  companyId String @unique
+
+  status     ContactResolutionStatus @default(QUEUED)
+  confidence ContactConfidence?
+
+  /// The remaining blocker in the operator's words. Non-null whenever the
+  /// status is not RESOLVED, so "Research needed" can always say why.
+  blocker String?
+
+  /// Every source consulted, cumulative, so the interface can say what has
+  /// already been tried without anybody opening a job record.
+  sourcesAttempted String[] @default([])
+  /// The sources consulted on the most recent attempt only.
+  lastSources      String[] @default([])
+
+  attempts          Int @default(0)
+  /// Transient failures since the last success. Drives the backoff, and is
+  /// reset by any completed attempt so an outage does not permanently
+  /// exhaust a record's retries.
+  transientFailures Int @default(0)
+
+  lastAttemptAt DateTime?
+  resolvedAt    DateTime?
+  nextAttemptAt DateTime?
+
+  /// Claim fields. Two workers cannot process the same organisation because
+  /// the claim is a conditional update, the same pattern the job queue uses.
+  lockedAt DateTime?
+  lockedBy String?
+
+  /// Competing candidates when the status is AMBIGUOUS, so a person can pick
+  /// one instead of starting the search again.
+  candidates      Json    @default("[]")
+  ambiguityReason String?
+
+  /// Why the attempt failed, kept apart from "no contact found".
+  failureKind    String?
+  failureDetail  String?
+  /// Exactly what to change to make the source work. Null when there is
+  /// nothing an operator could do.
+  fixInstruction String?
+
+  /// Contact values already established as wrong — a caller reached them and
+  /// said so. The next attempt must not propose them again.
+  rejectedValues String[] @default([])
+
+  /// What the inputs looked like when this was last attempted. When the
+  /// company or its events gain new information the fingerprint changes and
+  /// the record is retried even though nothing else did.
+  sourceFingerprint String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  company Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, status, nextAttemptAt])
+  @@index([orgId, status, lockedAt])
+}
+
+/// Where one contact value came from.
+///
+/// Append-only in practice: a value that is superseded is stamped rather than
+/// deleted, so a provider outage or a weaker later source can never quietly
+/// erase what a caller confirmed. Every field the workflow writes gets a row,
+/// which is what makes "do not overwrite stronger verified data with weaker
+/// scraped data" a check rather than an intention.
+model ContactProvenance {
+  id        String @id @default(cuid())
+  orgId     String
+  companyId String
+
+  /// phone | website | email | contactName | contactRole | location
+  field String
+  value String
+
+  /// The adapter or person that produced it.
+  source     String
+  sourceUrl  String?
+  externalId String?
+
+  retrievedAt DateTime          @default(now())
+  confidence  ContactConfidence
+  scope       ContactScope      @default(UNKNOWN)
+
+  /// True only when the value was checked, not merely found. A generated
+  /// email pattern is never verified.
+  verified          Boolean @default(false)
+  enteredByOperator Boolean @default(false)
+
+  /// How this value was arrived at, for the caller card.
+  matchMethod String?
+
+  /// Set when a stronger value replaced it, or a caller established it was
+  /// wrong. The row itself is kept.
+  supersededAt     DateTime?
+  supersededReason String?
+
+  createdAt DateTime @default(now())
+
+  org     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  company Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, field, value])
+  @@index([orgId, companyId, field])
 }

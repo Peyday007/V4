@@ -282,6 +282,63 @@ export class GooglePlacesConnector implements DiscoveryConnector {
   }
 }
 
+/** One place as the API returns it, narrowed to the field mask above. */
+export type PlaceResult = NonNullable<PlacesResponse['places']>[number];
+
+/**
+ * Looks up one named business at one address.
+ *
+ * The same endpoint, credential, field mask and rate-limit bucket as the sweep
+ * above — this is a different question, not a second client. The sweep asks
+ * "what businesses of this kind are near this point"; this asks "is this
+ * particular business listed, and what does the listing say". Contact
+ * resolution needs the second, and issuing it through the connector's own
+ * module keeps the retention rules in one place: the place ID is durable, the
+ * phone number and address are a lead to confirm with a short shelf life.
+ *
+ * Deliberately unbiased by radius. A licence record already carries the street
+ * address, so the address is the query, and biasing toward a metro centre would
+ * quietly prefer a same-name business downtown over the one at the address we
+ * were given.
+ */
+export async function lookupPlace(input: {
+  name: string;
+  addressLine1?: string | null;
+  cityName?: string | null;
+  stateCode?: string | null;
+  postalCode?: string | null;
+  maxResults?: number;
+  rateLimitPerMin?: number;
+}): Promise<PlaceResult[]> {
+  const apiKey = readCredential('GOOGLE_PLACES_API_KEY', 'Google Places');
+  const textQuery = [input.name, input.addressLine1, input.cityName, input.stateCode, input.postalCode]
+    .filter(Boolean)
+    .join(', ');
+  if (!textQuery.trim()) return [];
+
+  const response = await httpJson<PlacesResponse>({
+    url: ENDPOINT,
+    method: 'POST',
+    headers: { 'X-Goog-Api-Key': apiKey, 'X-Goog-FieldMask': FIELD_MASK },
+    body: {
+      textQuery,
+      // Several, not one. Two branches of the same chain both coming back is
+      // the signal that the answer is ambiguous, and asking for a single
+      // result would hide exactly that.
+      maxResultCount: Math.min(Math.max(input.maxResults ?? 5, 1), 10),
+      languageCode: 'en',
+    },
+    timeoutMs: 20_000,
+    rateLimitKey: 'google_places',
+    rateLimitPerMin: input.rateLimitPerMin ?? 60,
+  });
+
+  // Closed businesses are not contact routes, and calling one wastes the slot.
+  return (response.places ?? []).filter(
+    (place) => place.id && place.displayName?.text && (!place.businessStatus || place.businessStatus === 'OPERATIONAL'),
+  );
+}
+
 export function toPlaceRecord(
   place: NonNullable<PlacesResponse['places']>[number],
   query: PlaceQuery,

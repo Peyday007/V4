@@ -56,6 +56,23 @@ export async function GET(request: Request) {
       });
       if (pollQueued) queued += 1;
 
+      // Contact resolution runs on every tick too, and for the same reason.
+      // An opportunity the engine created at nine with nobody to ring is worth
+      // nothing until somebody can ring it, so the gap between "discovered"
+      // and "callable" is measured in minutes rather than in days. The worker
+      // schedules what is missing and works a bounded batch, so asking often
+      // costs two queries when there is nothing to do.
+      const enrichQueued = await enqueue({
+        orgId: org.id,
+        kind: 'enrichment.resolve_contacts',
+        priority: 35,
+        // One in flight. A slow provider must not stack workers that would all
+        // claim from the same table.
+        idempotencyKey: 'cron:enrichment.resolve_contacts',
+        skipIfCompleted: false,
+      });
+      if (enrichQueued) queued += 1;
+
       if (mode === 'daily') {
         // Idempotency keys are date-stamped so a retried cron on the same day
         // does not stack duplicate sweeps.
@@ -65,6 +82,11 @@ export async function GET(request: Request) {
           // Revalidation: re-checks every live event's window so a deadline
           // that passed overnight stops being presented as work.
           { kind: 'demand.run_pipeline' as const, priority: 30 },
+          // Supply is re-matched daily rather than per tick: recruiting a
+          // provider is a slower thing than discovering an event, and a route
+          // blocked on supply should stop being blocked the day somebody who
+          // can do the work is added to the catalogue.
+          { kind: 'supply.match_routes' as const, priority: 38 },
           { kind: 'followup.generate' as const, priority: 40 },
           { kind: 'planning.daily' as const, priority: 90 },
           { kind: 'analytics.snapshot' as const, priority: 95 },

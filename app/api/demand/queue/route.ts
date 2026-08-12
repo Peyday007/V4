@@ -28,6 +28,7 @@ export async function GET(request: Request) {
       connector: list('connector'),
       urgency: url.searchParams.get('urgency') ?? undefined,
       contactable: (url.searchParams.get('contactable') as 'yes' | 'no' | null) ?? undefined,
+      enrichment: list('enrichment') as QueueFilters['enrichment'],
       search: url.searchParams.get('q') ?? undefined,
       cursor: Number(url.searchParams.get('cursor') ?? 0) || 0,
       limit: Number(url.searchParams.get('limit') ?? 0) || undefined,

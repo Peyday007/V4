@@ -44,6 +44,67 @@ function humanise(value: string): string {
   return value.toLowerCase().replace(/_/g, ' ');
 }
 
+/**
+ * Where this number came from, on the card, before the call.
+ *
+ * A caller who opens with "is that the Ironside Strength on West Adams?" when
+ * the match was made on name and city, rather than assuming it, is the whole
+ * value of showing this. Confidence and provenance are stated in the same
+ * breath so neither can be read without the other, and a number belonging to a
+ * head office rather than this site says so outright.
+ */
+function ContactSource({ card }: { card: CallCard }) {
+  const provenance = card.contactProvenance;
+  if (!provenance) return null;
+
+  const phone = provenance.fields.find((f) => f.field === 'phone' && !f.superseded && f.value === card.phone);
+  const central = provenance.fields.filter((f) => f.scope === 'PARENT_OR_CENTRAL' && !f.superseded);
+
+  return (
+    <div className="tiny dim mt" style={{ lineHeight: 1.6, textAlign: 'right' }}>
+      {phone ? (
+        <>
+          <Badge tone={phone.enteredByOperator || phone.verified ? 'success' : 'warning'}>
+            {phone.enteredByOperator
+              ? 'confirmed by a caller'
+              : phone.verified
+                ? 'verified'
+                : humanise(provenance.confidence ?? 'unverified')}
+          </Badge>
+          <div>
+            {phone.matchMethod ?? 'source not recorded'} · {humanise(phone.source)} · retrieved {day(phone.retrievedAt)}
+          </div>
+          {phone.sourceUrl && (
+            <a href={phone.sourceUrl} target="_blank" rel="noreferrer noopener">check the listing ↗</a>
+          )}
+        </>
+      ) : (
+        <>
+          {/* Not callable, and the reason is the system's own words rather
+              than an empty field the caller has to interpret. */}
+          {provenance.blocker && <div>{provenance.blocker}</div>}
+          {provenance.sourcesAttempted.length > 0 && (
+            <div>already searched: {provenance.sourcesAttempted.map(humanise).join(', ')}</div>
+          )}
+        </>
+      )}
+
+      {central.length > 0 && (
+        <div style={{ marginTop: '0.2rem' }}>
+          A central or parent line was also found ({central[0].value}) at {central[0].matchMethod ?? 'another address'} —
+          not this site.
+        </div>
+      )}
+
+      {provenance.candidates.length > 1 && (
+        <div style={{ marginTop: '0.2rem' }}>
+          {provenance.candidates.length} competing listings: {provenance.candidates.map((c) => c.phone ?? c.name).join(' / ')}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function day(iso: string | null): string {
   return iso ? iso.slice(0, 10) : '—';
 }
@@ -228,6 +289,7 @@ export function CallerWorkspace({ initial, message }: Props) {
               )}
               {card.email && <> · {card.email}</>}
             </div>
+            <ContactSource card={card} />
           </div>
         </div>
 

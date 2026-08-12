@@ -4,6 +4,8 @@ import { prisma } from '@/lib/db';
 import { demandSourceHealth } from '@/lib/demand/run';
 import { funnelTotals, sourceScorecards } from '@/lib/demand/performance';
 import { DemandControls } from '@/components/DemandControls';
+import { EnrichmentPanel } from '@/components/EnrichmentPanel';
+import { enrichmentOverview } from '@/lib/enrichment/report';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,7 +20,7 @@ export const dynamic = 'force-dynamic';
 export default async function SourcesPage() {
   const user = await requirePagePermission('discovery.read');
 
-  const [health, funnel, scorecards, events, actionable] = await Promise.all([
+  const [health, funnel, scorecards, events, actionable, enrichment] = await Promise.all([
     demandSourceHealth(user.orgId),
     funnelTotals(user.orgId),
     sourceScorecards(user.orgId),
@@ -26,6 +28,7 @@ export default async function SourcesPage() {
     prisma.routeHypothesis.count({
       where: { orgId: user.orgId, tier: { in: ['ACTIVE_DEMAND', 'STRONG_TRIGGER'] }, status: { not: 'EXPIRED' } },
     }),
+    enrichmentOverview(user.orgId),
   ]);
 
   return (
@@ -37,6 +40,8 @@ export default async function SourcesPage() {
         </div>
         <Link href="/demand" className="btn secondary">Back to the queue</Link>
       </div>
+
+      <EnrichmentPanel overview={enrichment} />
 
       <DemandControls
         health={health}

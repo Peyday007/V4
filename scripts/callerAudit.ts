@@ -34,6 +34,30 @@ async function main() {
   await prisma.outreachAttempt.deleteMany({ where: { orgId } });
   await prisma.outreachState.deleteMany({ where: { orgId } });
 
+  // Enough contactable records for the consecutive-calling check further down,
+  // provisioned here rather than assumed. Contact resolution can now empty and
+  // refill the phone column on its own, so a calling test that depended on
+  // whatever the last run happened to leave behind was measuring the previous
+  // script's side effects rather than the calling workflow.
+  const needContact = await prisma.$queryRaw<Array<{ companyId: string }>>`
+    SELECT DISTINCT r."companyId" AS "companyId"
+    FROM "RouteHypothesis" r
+    JOIN "Company" c ON c."id" = r."companyId"
+    WHERE r."orgId" = ${orgId}
+      AND r."status" NOT IN ('EXPIRED','REJECTED')
+      AND r."tier" IN ('ACTIVE_DEMAND','STRONG_TRIGGER')
+      AND c."phone" IS NULL
+    LIMIT 8
+  `;
+  for (const [index, row] of needContact.entries()) {
+    // The 555-01xx range is reserved for fiction and cannot reach anybody.
+    await prisma.company.update({
+      where: { id: row.companyId },
+      data: { phone: `312-555-01${String(20 + index).padStart(2, '0')}` },
+    });
+  }
+  if (needContact.length > 0) console.log(`(provisioned ${needContact.length} test contact(s) for this run)`);
+
   console.log('--- the board loads compactly ---------------------------------');
   const summary = await queueSummary(orgId);
   const page = await queryQueue({ orgId, filters: { view: 'call_now', limit: 5 } });

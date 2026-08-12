@@ -1,6 +1,7 @@
 import type { CallDisposition, OutreachStatus, Prisma, SignalCategory } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { recordOutcome } from './performance';
+import { recordOperatorContact, rejectContactValue } from '@/lib/enrichment/schedule';
 
 /**
  * Saving what happened on a call.
@@ -176,7 +177,20 @@ export async function saveDisposition(params: {
   // trusted from the request, because the route id arrives from a browser.
   const route = await prisma.routeHypothesis.findFirst({
     where: { id: input.routeId, orgId },
-    select: { id: true, playbookKey: true, route: true, eventId: true, event: { select: { connector: true } } },
+    select: {
+      id: true,
+      playbookKey: true,
+      route: true,
+      eventId: true,
+      companyId: true,
+      event: { select: { connector: true } },
+      company: {
+        select: {
+          phone: true,
+          contacts: { select: { phone: true, mobile: true }, orderBy: { createdAt: 'asc' }, take: 1 },
+        },
+      },
+    },
   });
   if (!route) throw new Error('That opportunity does not exist in your organisation.');
 
@@ -257,6 +271,44 @@ export async function saveDisposition(params: {
       stage,
       occurredAt: now,
     });
+  }
+
+  // What the caller learned feeds straight back into contact resolution, in
+  // both directions.
+  //
+  // A number reported wrong is taken off the account and added to the rejected
+  // list, so the queue drops the route out of Call now on the next read and the
+  // resolver looks for another route without re-proposing the one that failed.
+  // A number the caller typed is the strongest evidence there is — somebody
+  // spoke to the business — and nothing a provider finds later displaces it.
+  if (input.disposition === 'WRONG_NUMBER') {
+    const dialled =
+      existing?.correctedPhone ??
+      route.company.phone ??
+      route.company.contacts[0]?.phone ??
+      route.company.contacts[0]?.mobile ??
+      null;
+    // A corrected number saved in the same breath is the replacement, not a
+    // rejection of itself.
+    if (dialled && dialled !== input.correctedPhone) {
+      await rejectContactValue({
+        orgId,
+        companyId: route.companyId,
+        value: dialled,
+        reason: `A caller dialled this number on ${now.toISOString().slice(0, 10)} and it was not the business.`,
+      });
+    }
+  }
+
+  for (const [field, value] of [
+    ['phone', input.correctedPhone],
+    ['email', input.correctedEmail],
+    ['contactName', input.contactName],
+    ['contactRole', input.contactRole],
+  ] as const) {
+    if (value) {
+      await recordOperatorContact({ orgId, companyId: route.companyId, field, value });
+    }
   }
 
   return {

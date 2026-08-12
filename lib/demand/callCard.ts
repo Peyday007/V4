@@ -2,6 +2,7 @@ import { prisma } from '@/lib/db';
 import { buildCallBrief, type CallBrief } from './callBrief';
 import { humaniseEvent } from './events';
 import { attemptHistory } from './outreach';
+import { contactProvenanceFor, type ContactProvenanceView } from '@/lib/enrichment/report';
 import { isCallable } from './queue';
 import type { Thesis } from './thesis';
 
@@ -56,6 +57,16 @@ export type CallCard = {
   /** Other routes on the same account, so one business reads as one business. */
   siblingRoutes: Array<{ routeId: string; route: string; headline: string; sameEvent: boolean }>;
 
+  /**
+   * Where this number came from, and how much it can be relied on.
+   *
+   * A caller who knows the number was matched on business name and street
+   * address from a directory listing retrieved on a stated date opens the call
+   * differently from one who has been told it is confirmed. Null when no
+   * resolution has been recorded for the account.
+   */
+  contactProvenance: ContactProvenanceView | null;
+
   outreach: {
     status: string;
     attempts: number;
@@ -93,7 +104,7 @@ export async function loadCallCard(params: { orgId: string; routeId: string }): 
   });
   if (!route) return null;
 
-  const [callable, history, siblings] = await Promise.all([
+  const [callable, history, siblings, contactProvenance] = await Promise.all([
     isCallable(params.orgId, params.routeId),
     attemptHistory(params.orgId, params.routeId),
     prisma.routeHypothesis.findMany({
@@ -101,6 +112,7 @@ export async function loadCallCard(params: { orgId: string; routeId: string }): 
       select: { id: true, route: true, headline: true, eventId: true },
       take: 8,
     }),
+    contactProvenanceFor(params.orgId, route.companyId),
   ]);
 
   const contact = route.company.contacts[0];
@@ -172,6 +184,8 @@ export async function loadCallCard(params: { orgId: string; routeId: string }): 
     supplySecured: route.fulfilmentStatus === 'AVAILABLE',
 
     brief,
+
+    contactProvenance,
 
     siblingRoutes: siblings.map((s) => ({
       routeId: s.id,

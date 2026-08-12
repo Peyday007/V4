@@ -15,6 +15,9 @@ import { assessAllCompanies } from '@/lib/ai/vulnerability';
 import { assignOpportunitiesToLanes, evaluateAllLanes } from '@/lib/ai/lanes';
 import { snapshotCallerMetrics } from '@/lib/ai/analytics';
 import { getTranscription } from '@/lib/providers/transcription';
+import { resolveCompanyContact } from '@/lib/enrichment/resolve';
+import { sweepContactResolution } from '@/lib/enrichment/schedule';
+import { resolveSupply } from '@/lib/enrichment/supply';
 import { enqueue } from './queue';
 
 export type JobHandler = (job: Job) => Promise<unknown>;
@@ -219,18 +222,73 @@ export const HANDLERS: Record<string, JobHandler> = {
     });
   },
 
+  /**
+   * One organisation, on demand.
+   *
+   * Ordinary lead enrichment and demand opportunities go through the same
+   * implementation — this handler is a thin call into it rather than a second
+   * enrichment path, which is what stops the two drifting apart and stops the
+   * same organisation being enriched twice under two names.
+   */
   'enrichment.company': async (job) => {
-    const companyId = requireString(job.payload as Payload, 'companyId');
-    const company = await prisma.company.findFirstOrThrow({ where: { id: companyId, orgId: job.orgId } });
-    // Live deployments call an enrichment provider here. With no provider
-    // configured we mark the record as needing human research rather than
-    // inventing firmographics.
-    await prisma.company.update({
-      where: { id: companyId },
-      data: { lastVerifiedAt: company.lastVerifiedAt ?? null },
+    const payload = job.payload as Payload;
+    const companyId = requireString(payload, 'companyId');
+    const result = await resolveCompanyContact({
+      orgId: job.orgId,
+      companyId,
+      force: payload.force === true,
     });
-    return { companyId, note: 'No enrichment provider configured; routed to Research Reviewer instead of inferring data.' };
+    return {
+      companyId,
+      status: result.status,
+      confidence: result.confidence,
+      sources: result.sources,
+      blocker: result.blocker,
+      callableRoutes: result.callableRoutes,
+      nextAttemptAt: result.nextAttemptAt?.toISOString() ?? null,
+    };
   },
+
+  /**
+   * The recurring contact-resolution worker.
+   *
+   * Schedules any organisation with live demand that is not yet in the
+   * workflow, then works the next batch in priority order. Running it twice
+   * concurrently is safe — claims are conditional updates — and running it when
+   * there is nothing to do costs two queries.
+   *
+   * The same function the immediate trigger and the backfill call. There is no
+   * separate backfill code path, because one that behaved differently would
+   * eventually enrich the same organisation twice.
+   */
+  'enrichment.resolve_contacts': async (job) => {
+    const payload = job.payload as Payload;
+    const limit = typeof payload.limit === 'number' ? payload.limit : undefined;
+    const outcome = await sweepContactResolution({ orgId: job.orgId, limit });
+
+    // More waiting than one batch could take. Queue the next one rather than
+    // holding the worker, so a backlog drains across ticks instead of timing
+    // out a single invocation.
+    if (outcome.remaining > 0 && outcome.attempted > 0) {
+      await enqueue({
+        orgId: job.orgId,
+        kind: 'enrichment.resolve_contacts',
+        priority: 35,
+        idempotencyKey: `enrichment.resolve_contacts:continue`,
+      });
+    }
+    return outcome;
+  },
+
+  /**
+   * Re-checks supply against the current provider catalogue.
+   *
+   * Separate from the demand pipeline because the two change for different
+   * reasons: an event arriving is not the same as a provider being recruited,
+   * and a route blocked on supply should stop being blocked the day somebody
+   * who can do the work is added.
+   */
+  'supply.match_routes': async (job) => resolveSupply({ orgId: job.orgId }),
 
   'notification.send': async (job) => {
     const payload = job.payload as Payload;
