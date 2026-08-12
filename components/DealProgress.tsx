@@ -39,6 +39,7 @@ export function DealProgress({ record, canSeeMargin }: { record: DealRecord; can
         <QuotePanel record={record} canSeeMargin={canSeeMargin} />
         <MoneyPanel record={record} canSeeMargin={canSeeMargin} />
       </div>
+      <RoomPanel record={record} />
       <TrailPanel record={record} />
     </>
   );
@@ -356,6 +357,83 @@ function MoneyPanel({ record, canSeeMargin }: { record: DealRecord; canSeeMargin
           )}
         </>
       )}
+    </div>
+  );
+}
+
+/**
+ * The prospect-facing page, and what they did with it.
+ *
+ * The token is not on this screen and is not in the data behind it. It is
+ * returned once, to the person who creates the room, and an owner page carrying
+ * it is one screenshot away from being a public one.
+ */
+function RoomPanel({ record }: { record: DealRecord }) {
+  const { room } = record;
+
+  return (
+    <div className="card" data-testid="room-panel">
+      <h2 style={{ marginTop: 0 }}>Deal room</h2>
+      <p className="tiny dim">{room.headline}</p>
+
+      {!room.exists ? (
+        <p className="small muted">
+          Nothing has been put in front of this prospect. A room is built from the dated event, what they have told
+          us, and the smallest reversible step we could actually deliver — so it can only be created once there is
+          something real to say.
+        </p>
+      ) : (
+        <>
+          <table className="table tiny">
+            <tbody>
+              <tr><td><strong>State</strong></td><td>{room.state?.toLowerCase()}</td></tr>
+              <tr><td><strong>Offering</strong></td><td>{room.proofStep?.toLowerCase().replace(/_/g, ' ')}</td></tr>
+              <tr>
+                <td><strong>Sent</strong></td>
+                <td>{room.sentAt ? day(room.sentAt) : <span className="dim">not sent</span>}</td>
+              </tr>
+              <tr>
+                <td><strong>Opened</strong></td>
+                <td>
+                  {room.firstOpenAt
+                    ? <>{day(room.firstOpenAt)} · {room.openCount} time{room.openCount === 1 ? '' : 's'}</>
+                    : <span className="dim">not opened</span>}
+                  <div className="tiny dim">Automated fetches are recorded separately and never counted here.</div>
+                </td>
+              </tr>
+              <tr><td><strong>Expires</strong></td><td>{day(room.expiresAt)}</td></tr>
+            </tbody>
+          </table>
+
+          {room.responseNote && (
+            <>
+              <h3>What they wrote back</h3>
+              <p className="small muted">{room.responseNote}</p>
+            </>
+          )}
+
+          {room.engagement.length > 0 && (
+            <>
+              <h3>Engagement</h3>
+              <table className="table tiny">
+                <tbody>
+                  {room.engagement.map((e, index) => (
+                    <tr key={`${e.kind}-${index}`}>
+                      <td style={{ whiteSpace: 'nowrap' }} className="dim">{day(e.occurredAt)}</td>
+                      <td><code>{e.kind.toLowerCase()}</code>{e.agent && e.agent !== 'human' && <span className="dim"> ({e.agent})</span>}</td>
+                      <td>{e.detail ?? ''}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
+        </>
+      )}
+
+      <p className="tiny dim mt">
+        <Link href={`/demand/opportunity/${record.routeId}/room`}>Preview exactly what they see →</Link>
+      </p>
     </div>
   );
 }

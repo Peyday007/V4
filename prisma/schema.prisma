@@ -624,6 +624,8 @@ model Organization {
   routeDeals             RouteDeal[]
   dealPayments           DealPayment[]
   dealEvents             DealEvent[]
+  dealRooms              DealRoom[]
+  dealRoomEvents         DealRoomEvent[]
 }
 
 model Permission {
@@ -698,6 +700,7 @@ model User {
   incidents        WorkIncident[]    @relation("IncidentCaller")
 
   requirementsCaptured BuyerRequirement[] @relation("RequirementCapturedBy")
+  roomsCreated         DealRoom[]         @relation("RoomCreatedBy")
   quotesCreated        RouteQuote[]       @relation("QuoteCreatedBy")
   dealsCreated         RouteDeal[]        @relation("DealCreatedBy")
   paymentsRecorded     DealPayment[]      @relation("PaymentRecordedBy")
@@ -1336,6 +1339,7 @@ model Contact {
   decisionMakerFor PathHypothesis[]   @relation("HypothesisDecisionMaker")
   requirementsDecided BuyerRequirement[] @relation("RequirementDecisionMaker")
   dealsCommitted      RouteDeal[]        @relation("DealBuyerContact")
+  dealRooms           DealRoom[]
 
   @@index([orgId, companyId])
   @@index([orgId, lastName])
@@ -2286,6 +2290,10 @@ model Message {
   id                String          @id @default(cuid())
   orgId             String
   opportunityId     String?
+  /// Set for outreach on the live route path. Nullable because the older
+  /// signal-promotion path attaches messages to the legacy Opportunity, and
+  /// both belong in one history for a company.
+  routeId           String?
   contactId         String?
   companyId         String?
   senderId          String?
@@ -2311,13 +2319,15 @@ model Message {
   costCents         Float           @default(0)
   createdAt         DateTime        @default(now())
 
-  opportunity Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
-  contact     Contact?     @relation(fields: [contactId], references: [id], onDelete: SetNull)
-  company     Company?     @relation(fields: [companyId], references: [id], onDelete: Cascade)
-  sender      User?        @relation(fields: [senderId], references: [id], onDelete: SetNull)
+  opportunity Opportunity?     @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  route       RouteHypothesis? @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  contact     Contact?         @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  company     Company?         @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  sender      User?            @relation(fields: [senderId], references: [id], onDelete: SetNull)
 
   @@index([orgId, status])
   @@index([orgId, channel, purpose])
+  @@index([routeId, createdAt])
 }
 
 model Notification {
@@ -2841,6 +2851,8 @@ model RouteHypothesis {
   dealEvents         DealEvent[]
   tasks              Task[]
   approvals          Approval[]
+  rooms              DealRoom[]
+  messages           Message[]
 
   @@unique([eventId, companyId, playbookKey])
   @@index([orgId, tier, friction])
@@ -3520,6 +3532,7 @@ model BuyerRequirement {
   supersededBy   BuyerRequirement? @relation("RequirementVersions", fields: [supersededById], references: [id], onDelete: SetNull)
   supersedes     BuyerRequirement? @relation("RequirementVersions")
   quotes         RouteQuote[]
+  rooms          DealRoom[]
 
   @@unique([routeId, version])
   @@index([orgId, state])
@@ -3703,6 +3716,7 @@ model RouteQuote {
   supersedes        RouteQuote?        @relation("QuoteVersions")
   approvals         Approval[]
   deal              RouteDeal?
+  rooms             DealRoom[]
 
   @@unique([routeId, version])
   @@index([orgId, state])
@@ -3882,4 +3896,161 @@ model DealEvent {
   @@index([orgId, occurredAt])
   @@index([routeId, occurredAt])
   @@index([subjectType, subjectId])
+}
+
+// ---------------------------------------------------------------------------
+// Deal Room: a prospect-specific page, and what the prospect did with it
+//
+// The mechanic the previous system got right, with the parts it got wrong left
+// out. What survives is the secure per-prospect link and the engagement ladder.
+// What does not is the AI-receptionist framing and the "business audit" copy —
+// language that promised an analysis nobody had performed.
+//
+// The test this section is written against: the page has to be worth reading
+// with every button removed. If the only reason a prospect stays on it is the
+// call to action, there was nothing on it worth sending.
+// ---------------------------------------------------------------------------
+
+/// How far a room has got with the prospect.
+///
+/// A ladder rather than a boolean, for the same reason the provider workstream
+/// is one: "we sent it" and "they asked for a price" are six rungs apart and a
+/// single `engaged` flag reports them identically.
+enum RoomState {
+  DRAFT
+  SENT
+  /// The channel confirmed delivery. Not every channel can, which is why this
+  /// is distinct from SENT rather than assumed from it.
+  DELIVERED
+  OPENED
+  RESPONDED
+  DECLINED
+  EXPIRED
+}
+
+enum RoomEventKind {
+  CREATED
+  SENT
+  DELIVERED
+  OPENED
+  RESPONDED
+  INFORMATION_SUPPLIED
+  NEXT_STEP_REQUESTED
+  QUOTE_REQUESTED
+  PROOF_STEP_REQUESTED
+  DECLINED
+  EXPIRED
+}
+
+/// The reversible first step being offered, if any.
+///
+/// Deliberately a list rather than one universal trial. A seven-day pilot is
+/// the right ask for a service route and meaningless for a distribution one,
+/// and offering the wrong step reads as a form letter — which it is.
+enum ProofStepKind {
+  SAMPLE_ORDER
+  SMALL_INITIAL_SHIPMENT
+  SINGLE_LOCATION_PILOT
+  ONE_TIME_SERVICE
+  SITE_WALKTHROUGH
+  PRELIMINARY_QUOTE
+  LIMITED_SCOPE_SUBCONTRACT
+  VENDOR_CAPABILITY_REVIEW
+  PAID_DIAGNOSTIC
+  /// Nothing can honestly be offered yet. A real answer, and the common one
+  /// early on.
+  NONE
+}
+
+model DealRoom {
+  id      String @id @default(cuid())
+  orgId   String
+  routeId String
+
+  /// The address. Long and random: the only thing standing between this page
+  /// and the open internet, so it is generated from a CSPRNG and never derived
+  /// from anything about the prospect.
+  token String @unique
+
+  state RoomState @default(DRAFT)
+
+  /// What the room said when it was sent.
+  ///
+  /// Snapshotted rather than rendered live from current records. A prospect
+  /// who opens the link three weeks later must see what we sent them, not what
+  /// the engine believes today — otherwise the page silently rewrites itself
+  /// and a conversation about it becomes unwinnable.
+  content Json @default("{}")
+  /// Which requirement version and quote the snapshot was built from.
+  requirementId String?
+  quoteId       String?
+
+  proofStep       ProofStepKind @default(NONE)
+  proofStepReason String?
+
+  /// Who it was sent to, and how. Null until it is sent.
+  contactId String?
+  channel   String?
+
+  sentAt      DateTime?
+  deliveredAt DateTime?
+  firstOpenAt DateTime?
+  lastOpenAt  DateTime?
+  openCount   Int       @default(0)
+  respondedAt DateTime?
+  declinedAt  DateTime?
+  /// After this the link stops working. A room with no expiry is a public page
+  /// about a named company that stays up forever.
+  expiresAt   DateTime
+
+  /// What the prospect typed back, kept exactly as they wrote it.
+  responseNote String?
+
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  org         Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  route       RouteHypothesis   @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  requirement BuyerRequirement? @relation(fields: [requirementId], references: [id], onDelete: SetNull)
+  quote       RouteQuote?       @relation(fields: [quoteId], references: [id], onDelete: SetNull)
+  contact     Contact?          @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  createdBy   User?             @relation("RoomCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  events DealRoomEvent[]
+
+  @@index([orgId, state])
+  @@index([routeId, createdAt])
+  @@index([expiresAt])
+}
+
+/// One thing that happened to a room. Append-only.
+///
+/// `dedupeKey` is what makes the ladder idempotent. A prospect who refreshes
+/// four times has opened it once as far as anyone should care, and an email
+/// client that prefetches links must not manufacture engagement that never
+/// happened.
+model DealRoomEvent {
+  id     String @id @default(cuid())
+  orgId  String
+  roomId String
+
+  kind RoomEventKind
+  /// Whatever the prospect supplied with it, in their words.
+  detail String?
+  /// Coarse and deliberately not identifying: enough to tell a prefetch from a
+  /// person, not enough to track anybody.
+  userAgentClass String?
+
+  /// Collapses repeats of the same event inside the same window.
+  dedupeKey String
+
+  occurredAt DateTime @default(now())
+
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  room DealRoom     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@unique([roomId, kind, dedupeKey])
+  @@index([orgId, occurredAt])
+  @@index([roomId, occurredAt])
 }

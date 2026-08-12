@@ -64,6 +64,25 @@ export type OrgConfig = {
     maxSmsPerContactPerWeek: number;
     /** Below this many attempts, channel comparisons stay advisory. */
     minimumSampleForChannelRecommendation: number;
+    /**
+     * Whether a Deal Room may be emailed to info@ and friends.
+     *
+     * Off by default. A general inbox is a room with nobody's name on the
+     * door: sometimes it is the only address there is, and it is always a
+     * worse send than a named one — so turning it on is a decision somebody
+     * makes rather than a default they inherit.
+     */
+    allowGenericInboxFallback: boolean;
+    /**
+     * Whether anything may go out without a person pressing send.
+     *
+     * Off by default and checked at the send, not at the screen. Autonomous
+     * outreach is the single fastest way for this system to damage a real
+     * relationship at scale.
+     */
+    autonomousSendingEnabled: boolean;
+    /** A ceiling that applies even when autonomous sending is on. */
+    maxAutonomousSendsPerDay: number;
   };
 };
 
@@ -142,6 +161,9 @@ export const DEFAULT_CONFIG: OrgConfig = {
     smsLatestHourLocal: 20,
     maxSmsPerContactPerWeek: 3,
     minimumSampleForChannelRecommendation: 20,
+    allowGenericInboxFallback: false,
+    autonomousSendingEnabled: false,
+    maxAutonomousSendsPerDay: 0,
   },
 };
 

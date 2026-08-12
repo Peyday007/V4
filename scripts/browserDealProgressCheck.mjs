@@ -31,6 +31,28 @@ const check = (label, ok, detail = '') => {
   console.log(`${ok ? '  ok  ' : ' FAIL '} ${label}${detail ? ` — ${detail}` : ''}`);
 };
 
+/**
+ * Sign in, and say plainly when it did not work.
+ *
+ * The login route rate-limits by address, which is right and which makes this
+ * script's failure mode opaque: a 429 renders as a page that never navigates,
+ * and Playwright reports a twenty-second timeout with no cause. Running the
+ * request first turns that into one line naming the status.
+ */
+async function signIn(page, base, email, password) {
+  const response = await page.request.post(`${base}/api/auth/login`, {
+    data: { email, password },
+    failOnStatusCode: false,
+  });
+  if (!response.ok()) {
+    const hint = response.status() === 429
+      ? 'rate-limited — the login route allows 10 attempts a minute per address, and the HTTP audits use most of them. Wait a minute and re-run.'
+      : await response.text();
+    throw new Error(`Sign-in failed for ${email}: HTTP ${response.status()} — ${hint}`);
+  }
+  return response;
+}
+
 const scratch = mkdtempSync(join('scripts', '.deal-check-'));
 function server(body) {
   const file = join(scratch, `step-${Date.now()}.ts`);
@@ -128,11 +150,8 @@ try {
 
   // -------------------------------------------------------------------------
   console.log('\n--- log in and open the opportunity ----------------------------');
-  await page.goto(`${BASE}/login`);
-  await page.fill('input[type=email]', process.env.DEMO_EMAIL ?? 'owner@dealdispatch.test');
-  await page.fill('input[type=password]', process.env.DEMO_PASSWORD ?? 'demo-password-123');
-  await page.click('button[type=submit]');
-  await page.waitForURL(/dashboard|demand|board/, { timeout: 20000 });
+  await signIn(page, BASE, process.env.DEMO_EMAIL ?? 'owner@dealdispatch.test',
+    process.env.DEMO_PASSWORD ?? 'demo-password-123');
 
   await page.goto(`${BASE}/demand/opportunity/${staged.routeId}`);
   // Waiting for the panel itself, not for the URL: the URL is already right
@@ -266,11 +285,7 @@ try {
   // -------------------------------------------------------------------------
   console.log('\n--- a caller cannot see any of this ---------------------------');
   const callerPage = await browser.newPage();
-  await callerPage.goto(`${BASE}/login`);
-  await callerPage.fill('input[type=email]', 'dana@dealdispatch.test');
-  await callerPage.fill('input[type=password]', process.env.DEMO_PASSWORD ?? 'demo-password-123');
-  await callerPage.click('button[type=submit]');
-  await callerPage.waitForURL(/work|calls|dashboard|no-access/, { timeout: 20000 });
+  await signIn(callerPage, BASE, 'dana@dealdispatch.test', process.env.DEMO_PASSWORD ?? 'demo-password-123');
   await callerPage.goto(`${BASE}/demand/opportunity/${staged.routeId}`);
   const callerBody = await callerPage.locator('body').innerText();
   check(

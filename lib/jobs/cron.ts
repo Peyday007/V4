@@ -7,6 +7,7 @@ import { processJobs } from './runner';
 import { drainContactResolution } from '@/lib/enrichment/schedule';
 import { resolveSupplyIfCatalogueChanged } from '@/lib/enrichment/supply';
 import { expireQuotes } from '@/lib/deal/quote';
+import { expireRooms } from '@/lib/room/rooms';
 import { handleRouteError, json } from '@/lib/api';
 
 export type CronMode = 'tick' | 'daily';
@@ -63,6 +64,7 @@ export async function runCron(request: Request, mode: CronMode) {
       /** Routes whose supply status moved because the catalogue changed. */
       supplyRematched?: number;
       quotesExpired?: number;
+      roomsExpired?: number;
     }> = [];
 
     for (const org of orgs) {
@@ -129,6 +131,12 @@ export async function runCron(request: Request, mode: CronMode) {
       // which the mistake gets made.
       const expired = await expireQuotes({ orgId: org.id });
       if (expired > 0) enrichment[enrichment.length - 1].quotesExpired = expired;
+
+      // Same reasoning for deal rooms. A room that has expired in the database
+      // but still renders is the worst of both: the prospect sees a live page
+      // about their company and the owner sees a dead one.
+      const roomsClosed = await expireRooms({ orgId: org.id });
+      if (roomsClosed > 0) enrichment[enrichment.length - 1].roomsExpired = roomsClosed;
 
       if (mode === 'daily') {
         // Idempotency keys are date-stamped so a retried cron on the same day

@@ -1,0 +1,164 @@
+/*
+ * The Deal Room's own styling.
+ *
+ * Deliberately separate from the application's. This page is opened from an
+ * email by somebody who has never seen this product, often on a phone, and it
+ * should read like a letter rather than a dashboard. Plain type, generous
+ * measure, no colour used to carry meaning — a prospect on a bad screen must
+ * not lose the difference between a fact and an assumption because a grey went
+ * missing.
+ */
+
+.room {
+  max-width: 44rem;
+  margin: 0 auto;
+  padding: 2.5rem 1.25rem 4rem;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 1rem;
+  line-height: 1.65;
+  color: #16181d;
+  background: #fff;
+}
+
+.room h1 {
+  font-size: 1.65rem;
+  line-height: 1.25;
+  margin: 0 0 0.25rem;
+  font-weight: 620;
+}
+
+.room h2 {
+  font-size: 1.05rem;
+  font-weight: 620;
+  margin: 2.25rem 0 0.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid #e6e8ec;
+}
+
+.room section:first-of-type h2 { border-top: 0; padding-top: 0; }
+
+.room-meta { margin: 0 0 1.5rem; color: #5c6270; }
+
+.room-lede { font-size: 1.08rem; margin: 0 0 0.5rem; }
+
+/*
+ * Provenance. Every claim on this page carries where it came from, and this is
+ * how that reads: quieter than the claim, never hidden. A prospect who can see
+ * we read their permit filing and did not read their mind can trust the rest.
+ */
+.room-source {
+  color: #5c6270;
+  font-size: 0.875rem;
+}
+
+.room-facts { margin: 0.75rem 0 0; }
+.room-facts > div { margin-bottom: 0.9rem; }
+.room-facts dt {
+  font-weight: 600;
+  font-size: 0.875rem;
+  color: #3b414d;
+}
+.room-facts dd { margin: 0.1rem 0 0; }
+
+/*
+ * Our reading of things, marked out structurally rather than by colour alone.
+ * The left rule survives a printout, a high-contrast mode and a screenshot
+ * pasted into an email, which a background tint does not.
+ */
+.room-ours,
+.room-questions {
+  margin: 0.9rem 0 0;
+  padding-left: 0.9rem;
+  border-left: 3px solid #d8dbe1;
+}
+
+.room-ours ul,
+.room-questions ul {
+  margin: 0.35rem 0 0;
+  padding-left: 1.1rem;
+}
+
+.room-ours li,
+.room-questions li { margin-bottom: 0.3rem; }
+
+.room-actions { margin-top: 1.5rem; }
+
+.room-actions label {
+  display: block;
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin-bottom: 1rem;
+}
+
+.room-actions textarea {
+  display: block;
+  width: 100%;
+  margin-top: 0.35rem;
+  padding: 0.6rem 0.7rem;
+  font: inherit;
+  font-weight: 400;
+  color: inherit;
+  border: 1px solid #c8ccd4;
+  border-radius: 6px;
+  background: #fff;
+  resize: vertical;
+}
+
+.room-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.room-buttons button {
+  font: inherit;
+  font-weight: 560;
+  padding: 0.6rem 1rem;
+  border-radius: 6px;
+  border: 1px solid #16181d;
+  background: #16181d;
+  color: #fff;
+  cursor: pointer;
+}
+
+/*
+ * Declining is a secondary button and not a hidden link. A page where saying no
+ * is harder than saying yes collects false interest, and false interest costs
+ * a caller an hour and a prospect their patience.
+ */
+.room-buttons button.secondary {
+  background: #fff;
+  color: #16181d;
+  border-color: #c8ccd4;
+}
+
+.room-buttons button:hover { opacity: 0.88; }
+
+.room-footer {
+  margin-top: 2.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid #e6e8ec;
+}
+
+.room .alert {
+  padding: 0.75rem 0.9rem;
+  border: 1px solid #c8ccd4;
+  border-radius: 6px;
+  margin-bottom: 1.5rem;
+  font-size: 0.9rem;
+}
+
+.room .alert ul { margin: 0.4rem 0 0; padding-left: 1.1rem; }
+
+@media (prefers-color-scheme: dark) {
+  .room { background: #14161a; color: #e8eaee; }
+  .room h2 { border-color: #2a2e36; }
+  .room-meta, .room-source { color: #a0a6b2; }
+  .room-facts dt { color: #c3c8d2; }
+  .room-ours, .room-questions { border-left-color: #3a3f49; }
+  .room-actions textarea { background: #1b1e24; border-color: #3a3f49; color: inherit; }
+  .room-buttons button { background: #e8eaee; color: #14161a; border-color: #e8eaee; }
+  .room-buttons button.secondary { background: transparent; color: #e8eaee; border-color: #3a3f49; }
+  .room .alert { border-color: #3a3f49; }
+  .room-footer { border-color: #2a2e36; }
+}
