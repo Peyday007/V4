@@ -233,6 +233,14 @@ describe('every job kind is either reachable or declared dormant', () => {
     'scripts/tick.ts',
     'lib/calling.ts',
     'app/api/discovery/run/route.ts',
+    // Call transcription is enqueued from the route that ends a call, because
+    // that is the moment it becomes known whether there is any audio to work
+    // from. Queuing it earlier would fill the queue with work that can only
+    // fail. This list is the whole reason the guard below can be trusted, so a
+    // new enqueue site outside lib/ has to be added here — the alternative,
+    // scanning everything, would let `kind:` on an unrelated record count as a
+    // job and quietly make every handler look wired.
+    'app/api/calls/session/route.ts',
   ]
     .map((path) => {
       let src: string;

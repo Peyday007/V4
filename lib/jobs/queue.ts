@@ -23,6 +23,11 @@ export type JobKind =
   | 'supply.match_routes'
   | 'transcription.process'
   | 'transcript.analyze'
+  /// The live call path. Named apart from the two above, which belong to the
+  /// older Call/Opportunity layer and operate on different rows.
+  | 'call.transcribe'
+  | 'call.analyse'
+  | 'call.expire_recordings'
   | 'matching.run'
   | 'scoring.run'
   | 'scoring.run_all'

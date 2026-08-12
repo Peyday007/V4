@@ -6,6 +6,9 @@ import { dueConnectors, runDemandSource } from '@/lib/demand/run';
 import { runDemandPipeline } from '@/lib/demand/pipeline';
 import { generateDocument } from '@/lib/ai/documents';
 import { configureDeal } from '@/lib/ai/dealConfig';
+import { transcribeSession, analyseSession } from '@/lib/calls/analysis';
+import { openReviewIfNeeded } from '@/lib/calls/review';
+import { expireRecordings } from '@/lib/calls/recording';
 import { findMatches } from '@/lib/ai/matching';
 import { determineNextAction, refreshAllNextActions } from '@/lib/ai/nextAction';
 import { generateDailyPlan } from '@/lib/ai/planner';
@@ -186,6 +189,70 @@ export const HANDLERS: Record<string, JobHandler> = {
     const assigned = await assignOpportunitiesToLanes(job.orgId);
     const evaluated = await evaluateAllLanes(job.orgId);
     return { assigned, evaluated };
+  },
+
+  // --- the live call path ---------------------------------------------------
+  //
+  // Transcription and analysis are separate jobs rather than one, because they
+  // fail for different reasons and at different costs. A transcription that
+  // failed should be retried; an analysis that failed should not re-run the
+  // transcription to find out.
+  'call.transcribe': async (job) => {
+    const sessionId = String((job.payload as { sessionId?: string }).sessionId ?? '');
+    if (!sessionId) return { skipped: 'no session id' };
+
+    const result = await transcribeSession({ orgId: job.orgId, sessionId });
+    if (!result.ok) return { transcribed: false, reason: result.message };
+
+    // Analysis is queued only once there is something to analyse.
+    await enqueue({
+      orgId: job.orgId,
+      kind: 'call.analyse',
+      payload: { sessionId },
+      priority: 60,
+      idempotencyKey: `call.analyse:${sessionId}`,
+      skipIfCompleted: true,
+    });
+    return { transcribed: true };
+  },
+
+  'call.analyse': async (job) => {
+    const sessionId = String((job.payload as { sessionId?: string }).sessionId ?? '');
+    if (!sessionId) return { skipped: 'no session id' };
+
+    const session = await prisma.callSession.findFirst({
+      where: { id: sessionId, orgId: job.orgId },
+      select: { attempt: { select: { disposition: true } } },
+    });
+
+    const analysis = await analyseSession({
+      orgId: job.orgId,
+      sessionId,
+      callerDisposition: session?.attempt?.disposition ?? null,
+    });
+    if (!analysis.ok) return { analysed: false, reason: analysis.message };
+
+    const review = await openReviewIfNeeded({
+      orgId: job.orgId,
+      sessionId,
+      callerDisposition: session?.attempt?.disposition ?? null,
+    });
+
+    return {
+      analysed: true,
+      insights: analysis.insights,
+      autoApplied: analysis.autoApplied,
+      reviewOpened: review.opened,
+      reviewReason: review.reason,
+    };
+  },
+
+  'call.expire_recordings': async (job) => {
+    // No storage remover passed: deleting the object is the storage layer's
+    // job and is wired where a real bucket exists. Without one the sweep still
+    // clears the key and marks the row expired, which is the part that stops a
+    // screen offering audio nobody should still have.
+    return expireRecordings({ orgId: job.orgId });
   },
 
   'analytics.snapshot': async (job) => {

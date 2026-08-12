@@ -155,6 +155,11 @@ export async function runCron(request: Request, mode: CronMode) {
           { kind: 'followup.generate' as const, priority: 40 },
           { kind: 'planning.daily' as const, priority: 90 },
           { kind: 'analytics.snapshot' as const, priority: 95 },
+          // Recordings of named people are deleted on schedule rather than
+          // when somebody remembers. Daily is the right cadence: retention is
+          // measured in months, and a sweep that runs every ten minutes would
+          // scan the same rows a hundred and forty times a day to find nothing.
+          { kind: 'call.expire_recordings' as const, priority: 85 },
         ];
         for (const job of jobs) {
           const created = await enqueue({

@@ -629,6 +629,10 @@ model Organization {
   experiments            Experiment[]
   experimentAssignments  ExperimentAssignment[]
   processVersions        ProcessVersion[]
+  callSessions           CallSession[]
+  callTranscripts        CallTranscript[]
+  callInsights           CallInsight[]
+  callReviews            CallReview[]
 }
 
 model Permission {
@@ -706,6 +710,10 @@ model User {
   roomsCreated         DealRoom[]         @relation("RoomCreatedBy")
   experimentsCreated   Experiment[]       @relation("ExperimentCreatedBy")
   processVersions      ProcessVersion[]   @relation("ProcessVersionCreatedBy")
+  callSessions         CallSession[]      @relation("SessionCaller")
+  insightsReviewed     CallInsight[]      @relation("InsightReviewer")
+  reviewsAssigned      CallReview[]       @relation("ReviewAssignee")
+  reviewsCompleted     CallReview[]       @relation("ReviewCompletedBy")
   quotesCreated        RouteQuote[]       @relation("QuoteCreatedBy")
   dealsCreated         RouteDeal[]        @relation("DealCreatedBy")
   paymentsRecorded     DealPayment[]      @relation("PaymentRecordedBy")
@@ -1345,6 +1353,7 @@ model Contact {
   requirementsDecided BuyerRequirement[] @relation("RequirementDecisionMaker")
   dealsCommitted      RouteDeal[]        @relation("DealBuyerContact")
   dealRooms           DealRoom[]
+  callSessions        CallSession[]
 
   @@index([orgId, companyId])
   @@index([orgId, lastName])
@@ -2858,6 +2867,7 @@ model RouteHypothesis {
   approvals          Approval[]
   rooms              DealRoom[]
   messages           Message[]
+  callSessions       CallSession[]
 
   @@unique([eventId, companyId, playbookKey])
   @@index([orgId, tier, friction])
@@ -3102,6 +3112,7 @@ model OutreachAttempt {
   /// Requirement versions this call produced. A requirement traces back to the
   /// conversation it came from, or it is ours rather than theirs.
   requirements BuyerRequirement[]
+  callSession  CallSession?
 
   @@index([orgId, occurredAt])
   @@index([routeId, occurredAt])
@@ -4267,4 +4278,272 @@ model ProcessVersion {
 
   @@unique([orgId, kind, key, version])
   @@index([orgId, kind, isActive])
+}
+
+// ---------------------------------------------------------------------------
+// Call intelligence: what happened on the call, and what we can prove
+//
+// Built on the live path — OutreachAttempt and RouteHypothesis — rather than
+// the older Call/Transcript layer, which hangs off the legacy Opportunity.
+//
+// One rule shapes the whole section, and it is the one the directive states
+// outright: never manufacture a recording row that implies audio exists. A row
+// here describes a call whether or not anything was captured, and the state
+// says which. The database refuses a storage key without stored audio, so a
+// screen cannot offer a play button for a file nobody has.
+// ---------------------------------------------------------------------------
+
+/// How the audio was captured, if it was.
+enum CaptureMode {
+  /// The telephony provider recorded the leg, with the channels separated.
+  /// The only mode whose output is worth calling evidence of who said what.
+  PROVIDER_RECORDING
+  /// A browser microphone next to a phone speaker. One mixed channel, room
+  /// noise, and no speaker separation. Kept as an explicitly labelled interim
+  /// mode because it is better than nothing, and never presented as more.
+  INTERIM_ROOM_AUDIO
+  /// No audio. The ordinary case for a caller dialling from their own handset,
+  /// and not a failure.
+  NONE
+}
+
+enum RecordingState {
+  /// Nobody tried. The normal state for a manually dialled call.
+  NOT_ATTEMPTED
+  /// The law where one of them was standing said no.
+  BLOCKED_BY_JURISDICTION
+  /// They were asked, and said no.
+  CONSENT_REFUSED
+  CAPTURING
+  STORED
+  /// Something broke. The reason is kept, and no storage key is written.
+  FAILED
+  /// Retention reached. The audio is gone and the row says so rather than
+  /// disappearing, because "we deleted it on schedule" and "it was never
+  /// recorded" are different answers.
+  RETENTION_EXPIRED
+  DELETED_ON_REQUEST
+}
+
+enum ConsentState {
+  UNKNOWN
+  /// One-party jurisdiction and we are a party to the call.
+  NOT_REQUIRED
+  /// The announcement was played and nobody objected.
+  ANNOUNCED
+  /// They said yes in words.
+  GRANTED
+  REFUSED
+}
+
+enum TranscriptState {
+  NOT_ATTEMPTED
+  QUEUED
+  PROCESSING
+  READY
+  FAILED
+  /// Nothing to transcribe. Distinct from failure, and by far the commonest.
+  NO_AUDIO
+}
+
+/// One call, as a thing that can be examined afterwards.
+model CallSession {
+  id      String  @id @default(cuid())
+  orgId   String
+  routeId String
+  callerId String?
+  contactId String?
+  /// The append-only attempt this call produced, once it has been saved.
+  attemptId String? @unique
+
+  provider       String  @default("manual")
+  providerCallId String?
+  providerStatus String?
+
+  startedAt   DateTime  @default(now())
+  endedAt     DateTime?
+  durationSec Int?
+
+  captureMode    CaptureMode    @default(NONE)
+  recordingState RecordingState @default(NOT_ATTEMPTED)
+  /// Written only when `recordingState` is STORED, enforced by a check
+  /// constraint in both directions. This is the field that would otherwise
+  /// let a row imply audio nobody has.
+  storageKey String?
+  mimeType   String?
+  sizeBytes  Int?
+
+  consentState     ConsentState @default(UNKNOWN)
+  /// Why recording was or was not allowed, in words, at the time.
+  consentBasis     String?
+  announcementText String?
+  /// Both sides. A two-party rule can come from either end of the call, and
+  /// checking only the prospect's state is how a caller in Illinois records a
+  /// prospect in Texas illegally.
+  callerJurisdiction   String?
+  prospectJurisdiction String?
+
+  retentionUntil DateTime?
+  failureReason  String?
+
+  transcriptState TranscriptState @default(NOT_ATTEMPTED)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org     Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  route   RouteHypothesis  @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  caller  User?            @relation("SessionCaller", fields: [callerId], references: [id], onDelete: SetNull)
+  contact Contact?         @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  attempt OutreachAttempt? @relation(fields: [attemptId], references: [id], onDelete: SetNull)
+
+  transcript CallTranscript?
+  insights   CallInsight[]
+  review     CallReview?
+
+  @@index([orgId, recordingState])
+  @@index([routeId, startedAt])
+  @@index([retentionUntil])
+}
+
+model CallTranscript {
+  id        String @id @default(cuid())
+  orgId     String
+  sessionId String @unique
+
+  state           TranscriptState @default(QUEUED)
+  provider        String?
+  modelName       String?
+  language        String          @default("en")
+  text            String?
+  segments        Json            @default("[]")
+  /// What was removed before storage — card numbers, bank details, anything
+  /// the redactor recognised. Kept as a list of what was taken out, never the
+  /// values themselves.
+  redactions      Json            @default("[]")
+  /// False for interim room audio, whatever the provider claims. A single
+  /// mixed channel cannot tell two voices apart, and a transcript that labels
+  /// speakers from one is guessing.
+  speakerSeparated Boolean        @default(false)
+
+  failureReason String?
+  processedAt   DateTime?
+  createdAt     DateTime @default(now())
+
+  org     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  session CallSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+}
+
+/// What the analysis concluded, one conclusion at a time.
+enum InsightKind {
+  PERSON_REACHED
+  CONFIRMED_NEED
+  SCOPE
+  TIMING
+  PROCESS
+  OBJECTION
+  INCUMBENT
+  BUYER_PROMISE
+  PROVIDER_PROMISE
+  NEXT_ACTION
+  QUALIFICATION_FIELD
+  ROUTE_FIT
+  SCRIPT_OBSERVATION
+  DISPOSITION_SUGGESTION
+}
+
+enum InsightState {
+  /// Confident and routine, so it was applied without waiting for a person.
+  /// Reviewing hundreds of calls by hand is not a plan; sampling these is.
+  AUTO_APPLIED
+  NEEDS_REVIEW
+  CONFIRMED
+  CORRECTED
+  REJECTED
+}
+
+model CallInsight {
+  id        String @id @default(cuid())
+  orgId     String
+  sessionId String
+
+  kind      InsightKind
+  value     String
+  valueJson Json        @default("{}")
+
+  confidence Float
+  /// The words in the transcript this came from.
+  ///
+  /// An insight without one is an assertion rather than evidence, and the
+  /// difference is the whole reason a person can check this work.
+  evidenceQuote    String?
+  evidenceStartSec Int?
+
+  state        InsightState @default(NEEDS_REVIEW)
+  reviewReason String?
+
+  /// Who concluded it: `ai:<model>@<promptVersion>`, or a person's id.
+  /// Never blank — an unattributed conclusion cannot be argued with.
+  actor String
+
+  reviewedById   String?
+  reviewedAt     DateTime?
+  correctedValue String?
+  correctionNote String?
+
+  createdAt DateTime @default(now())
+
+  org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  session    CallSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  reviewedBy User?        @relation("InsightReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  @@index([orgId, state])
+  @@index([sessionId, kind])
+}
+
+enum ReviewReason {
+  LOW_CONFIDENCE
+  /// A conclusion the AI is never allowed the last word on.
+  HIGH_IMPACT
+  /// Confident cases sampled so auto-fill accuracy is measured, not assumed.
+  RANDOM_SAMPLE
+  OPERATOR_FLAGGED
+  /// The analysis disagreed with the caller's own disposition.
+  DISAGREEMENT
+}
+
+enum ReviewState {
+  OPEN
+  DONE
+  /// Closed without a judgement — the audio was gone, or the call was not ours.
+  ABANDONED
+}
+
+model CallReview {
+  id        String @id @default(cuid())
+  orgId     String
+  sessionId String @unique
+
+  reason ReviewReason
+  state  ReviewState  @default(OPEN)
+  /// Why this one, in words, for the reviewer opening it cold.
+  because String
+
+  assignedToId String?
+  openedAt     DateTime  @default(now())
+  completedAt  DateTime?
+  reviewerId   String?
+  notes        String?
+
+  /// How many of the analysis's conclusions the reviewer had to change.
+  /// The number that says whether auto-fill is earning its place.
+  correctionsMade Int      @default(0)
+  agreed          Boolean?
+
+  org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  session    CallSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  assignedTo User?        @relation("ReviewAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  reviewer   User?        @relation("ReviewCompletedBy", fields: [reviewerId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, state, reason])
 }
