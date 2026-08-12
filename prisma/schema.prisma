@@ -633,6 +633,11 @@ model Organization {
   callTranscripts        CallTranscript[]
   callInsights           CallInsight[]
   callReviews            CallReview[]
+  interventions          Intervention[]
+  circuitBreakers        CircuitBreaker[]
+  consistencyCases       ConsistencyCase[]
+  shiftReadiness         ShiftReadiness[]
+  managerBriefs          ManagerBrief[]
 }
 
 model Permission {
@@ -717,6 +722,14 @@ model User {
   quotesCreated        RouteQuote[]       @relation("QuoteCreatedBy")
   dealsCreated         RouteDeal[]        @relation("DealCreatedBy")
   paymentsRecorded     DealPayment[]      @relation("PaymentRecordedBy")
+
+  interventions           Intervention[]    @relation("InterventionCaller")
+  interventionsLifted     Intervention[]    @relation("InterventionLiftedBy")
+  interventionsOverridden Intervention[]    @relation("InterventionOverriddenBy")
+  consistencyCases        ConsistencyCase[] @relation("CaseCaller")
+  casesResolved           ConsistencyCase[] @relation("CaseResolvedBy")
+  breakersClosed          CircuitBreaker[]  @relation("BreakerClosedBy")
+  readinessChecks         ShiftReadiness[]  @relation("ReadinessCaller")
 
   @@unique([orgId, email])
   @@index([orgId])
@@ -1202,27 +1215,27 @@ model Company {
   relationshipsFrom Relationship[] @relation("RelationshipFrom")
   relationshipsTo   Relationship[] @relation("RelationshipTo")
 
-  projects           Project[]
-  awardsWon          ContractAward[]         @relation("AwardWinner")
-  awardsIssued       ContractAward[]         @relation("AwardIssuer")
-  hypotheses         PathHypothesis[]
-  intentEvents       IntentEvent[]
-  buyerNeeds         BuyerNeed[]
-  supplyOffers       SupplierAvailability[]
-  subCapacity        SubcontractorCapacity[]
-  signals            DiscoverySignal[]
-  eventParties       DemandEventParty[]
-  routeHypotheses    RouteHypothesis[]
-  opportunityParties OpportunityParty[]
-  matchesAsCandidate Match[]                 @relation("MatchCandidate")
-  providerCandidacies ProviderCandidate[]    @relation("ProviderCandidateCompany")
-  callAssignments    CallAssignment[]
-  facts              ExtractedFact[]
-  documents          Document[]
-  activityEvents     ActivityEvent[]
-  quotes             Quote[]
-  evidence           SourceEvidence[]
-  messages           Message[]
+  projects            Project[]
+  awardsWon           ContractAward[]         @relation("AwardWinner")
+  awardsIssued        ContractAward[]         @relation("AwardIssuer")
+  hypotheses          PathHypothesis[]
+  intentEvents        IntentEvent[]
+  buyerNeeds          BuyerNeed[]
+  supplyOffers        SupplierAvailability[]
+  subCapacity         SubcontractorCapacity[]
+  signals             DiscoverySignal[]
+  eventParties        DemandEventParty[]
+  routeHypotheses     RouteHypothesis[]
+  opportunityParties  OpportunityParty[]
+  matchesAsCandidate  Match[]                 @relation("MatchCandidate")
+  providerCandidacies ProviderCandidate[]     @relation("ProviderCandidateCompany")
+  callAssignments     CallAssignment[]
+  facts               ExtractedFact[]
+  documents           Document[]
+  activityEvents      ActivityEvent[]
+  quotes              Quote[]
+  evidence            SourceEvidence[]
+  messages            Message[]
 
   contactResolution ContactResolution?
   contactProvenance ContactProvenance[]
@@ -1341,15 +1354,15 @@ model Contact {
   org     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   company Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
 
-  callAssignments  CallAssignment[]
-  calls            Call[]
-  commitments      Commitment[]
-  objections       Objection[]
-  facts            ExtractedFact[]
-  messages         Message[]
-  suppressions     SuppressionEntry[]
-  activityEvents   ActivityEvent[]
-  decisionMakerFor PathHypothesis[]   @relation("HypothesisDecisionMaker")
+  callAssignments     CallAssignment[]
+  calls               Call[]
+  commitments         Commitment[]
+  objections          Objection[]
+  facts               ExtractedFact[]
+  messages            Message[]
+  suppressions        SuppressionEntry[]
+  activityEvents      ActivityEvent[]
+  decisionMakerFor    PathHypothesis[]   @relation("HypothesisDecisionMaker")
   requirementsDecided BuyerRequirement[] @relation("RequirementDecisionMaker")
   dealsCommitted      RouteDeal[]        @relation("DealBuyerContact")
   dealRooms           DealRoom[]
@@ -2868,6 +2881,8 @@ model RouteHypothesis {
   rooms              DealRoom[]
   messages           Message[]
   callSessions       CallSession[]
+  interventions      Intervention[]
+  consistencyCases   ConsistencyCase[]
 
   @@unique([eventId, companyId, playbookKey])
   @@index([orgId, tier, friction])
@@ -3699,13 +3714,13 @@ model RouteQuote {
   contingency  Decimal? @db.Decimal(14, 2)
   buyerPrice   Decimal? @db.Decimal(14, 2)
 
-  grossProfit    Decimal?            @db.Decimal(14, 2)
-  grossMarginPct Float?
-  basis          EconomicsBasis      @default(ESTIMATE)
-  confidence     EconomicsConfidence @default(UNKNOWN)
+  grossProfit     Decimal?            @db.Decimal(14, 2)
+  grossMarginPct  Float?
+  basis           EconomicsBasis      @default(ESTIMATE)
+  confidence      EconomicsConfidence @default(UNKNOWN)
   /// True when no real provider cost backs this. Ranking must exclude these
   /// rather than treat a missing cost as a zero cost.
-  costSideMissing Boolean            @default(true)
+  costSideMissing Boolean             @default(true)
 
   workingCapitalAmount Decimal? @db.Decimal(14, 2)
   workingCapitalDays   Int?
@@ -3905,13 +3920,13 @@ model DealEvent {
   subjectType String
   subjectId   String?
 
-  summary String
-  before  Json    @default("{}")
-  after   Json    @default("{}")
+  summary       String
+  before        Json    @default("{}")
+  after         Json    @default("{}")
   /// What backs the change — a call, a document, an email, a payment reference.
-  evidence String?
+  evidence      String?
   /// The confidence claimed at the time, so a later revision cannot rewrite it.
-  confidence String?
+  confidence    String?
   /// Groups the events produced by one operator action.
   correlationId String?
 
@@ -4007,7 +4022,7 @@ model DealRoom {
   /// who opens the link three weeks later must see what we sent them, not what
   /// the engine believes today — otherwise the page silently rewrites itself
   /// and a conversation about it becomes unwinnable.
-  content Json @default("{}")
+  content       Json    @default("{}")
   /// Which requirement version and quote the snapshot was built from.
   requirementId String?
   quoteId       String?
@@ -4062,9 +4077,9 @@ model DealRoomEvent {
   orgId  String
   roomId String
 
-  kind RoomEventKind
+  kind           RoomEventKind
   /// Whatever the prospect supplied with it, in their words.
-  detail String?
+  detail         String?
   /// Coarse and deliberately not identifying: enough to tell a prefetch from a
   /// person, not enough to track anybody.
   userAgentClass String?
@@ -4154,12 +4169,12 @@ model Experiment {
   routes  SignalCategory[] @default([])
   markets String[]         @default([])
 
-  startedAt   DateTime?
-  concludedAt DateTime?
+  startedAt    DateTime?
+  concludedAt  DateTime?
   /// Why it ended. Always written, including when it simply finished.
-  conclusion  String?
+  conclusion   String?
   /// The arm that won, when one did. Null is a legitimate result.
-  winningArmId String?  @unique
+  winningArmId String?   @unique
 
   createdById String?
   createdAt   DateTime @default(now())
@@ -4178,20 +4193,20 @@ model ExperimentArm {
   id           String @id @default(cuid())
   experimentId String
 
-  key   String
-  label String
+  key              String
+  label            String
   /// True for the arm that represents current behaviour.
-  isControl Boolean @default(false)
+  isControl        Boolean @default(false)
   /// The version of the thing this arm uses. Null for the control where the
   /// control is "whatever is shipped".
   processVersionId String?
   /// Share of traffic, 0–1. Summed across arms this must be 1.
-  weight Float @default(0.5)
+  weight           Float   @default(0.5)
 
   createdAt DateTime @default(now())
 
-  experiment  Experiment      @relation(fields: [experimentId], references: [id], onDelete: Cascade)
-  version     ProcessVersion? @relation(fields: [processVersionId], references: [id], onDelete: SetNull)
+  experiment  Experiment             @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+  version     ProcessVersion?        @relation(fields: [processVersionId], references: [id], onDelete: SetNull)
   assignments ExperimentAssignment[]
 
   @@unique([experimentId, key])
@@ -4250,15 +4265,15 @@ model ProcessVersion {
   key     String
   version Int
 
-  label String
-  body  String
+  label             String
+  body              String
   /// Variables the body is allowed to reference. An unknown one is rejected at
   /// save time rather than rendering as an empty string in front of a buyer.
   declaredVariables String[] @default([])
   notes             String?
 
   /// Exactly one live version per (kind, key), enforced by a partial index.
-  isActive Boolean @default(false)
+  isActive   Boolean @default(false)
   /// True for the version shipped with the product. Never deleted, so there is
   /// always something safe to fall back to.
   isFallback Boolean @default(false)
@@ -4348,10 +4363,10 @@ enum TranscriptState {
 
 /// One call, as a thing that can be examined afterwards.
 model CallSession {
-  id      String  @id @default(cuid())
-  orgId   String
-  routeId String
-  callerId String?
+  id        String  @id @default(cuid())
+  orgId     String
+  routeId   String
+  callerId  String?
   contactId String?
   /// The append-only attempt this call produced, once it has been saved.
   attemptId String? @unique
@@ -4369,14 +4384,14 @@ model CallSession {
   /// Written only when `recordingState` is STORED, enforced by a check
   /// constraint in both directions. This is the field that would otherwise
   /// let a row imply audio nobody has.
-  storageKey String?
-  mimeType   String?
-  sizeBytes  Int?
+  storageKey     String?
+  mimeType       String?
+  sizeBytes      Int?
 
-  consentState     ConsentState @default(UNKNOWN)
+  consentState         ConsentState @default(UNKNOWN)
   /// Why recording was or was not allowed, in words, at the time.
-  consentBasis     String?
-  announcementText String?
+  consentBasis         String?
+  announcementText     String?
   /// Both sides. A two-party rule can come from either end of the call, and
   /// checking only the prospect's state is how a caller in Illinois records a
   /// prospect in Texas illegally.
@@ -4411,24 +4426,24 @@ model CallTranscript {
   orgId     String
   sessionId String @unique
 
-  state           TranscriptState @default(QUEUED)
-  provider        String?
-  modelName       String?
-  language        String          @default("en")
-  text            String?
-  segments        Json            @default("[]")
+  state            TranscriptState @default(QUEUED)
+  provider         String?
+  modelName        String?
+  language         String          @default("en")
+  text             String?
+  segments         Json            @default("[]")
   /// What was removed before storage — card numbers, bank details, anything
   /// the redactor recognised. Kept as a list of what was taken out, never the
   /// values themselves.
-  redactions      Json            @default("[]")
+  redactions       Json            @default("[]")
   /// False for interim room audio, whatever the provider claims. A single
   /// mixed channel cannot tell two voices apart, and a transcript that labels
   /// speakers from one is guessing.
-  speakerSeparated Boolean        @default(false)
+  speakerSeparated Boolean         @default(false)
 
   failureReason String?
   processedAt   DateTime?
-  createdAt     DateTime @default(now())
+  createdAt     DateTime  @default(now())
 
   org     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   session CallSession  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
@@ -4471,7 +4486,7 @@ model CallInsight {
   value     String
   valueJson Json        @default("{}")
 
-  confidence Float
+  confidence       Float
   /// The words in the transcript this came from.
   ///
   /// An insight without one is an assertion rather than evidence, and the
@@ -4524,8 +4539,8 @@ model CallReview {
   orgId     String
   sessionId String @unique
 
-  reason ReviewReason
-  state  ReviewState  @default(OPEN)
+  reason  ReviewReason
+  state   ReviewState  @default(OPEN)
   /// Why this one, in words, for the reviewer opening it cold.
   because String
 
@@ -4546,4 +4561,352 @@ model CallReview {
   reviewer   User?        @relation("ReviewCompletedBy", fields: [reviewerId], references: [id], onDelete: SetNull)
 
   @@index([orgId, state, reason])
+}
+
+// ---------------------------------------------------------------------------
+// The AI System Manager
+//
+// An operational control plane. Not a chat widget, and emphatically not an
+// autonomous employer: everything here either reports, asks a question, or
+// applies the smallest restriction that stops a specific harm — and the rungs
+// that touch a person's ability to work stay in shadow, recorded and unenforced,
+// until somebody has read enough of them to trust them.
+//
+// Three rules are held by the database rather than by application code, because
+// each of them is a rule an ordinary bug could otherwise break quietly:
+//
+//   A system failure can never name a caller. When the application, an
+//   integration or the data broke, the row is structurally incapable of
+//   carrying a person's id. This is the difference between an outage and an
+//   accusation, and code that has to remember it will one day forget.
+//
+//   A restriction cannot exist without the conditions for lifting it. Written
+//   at the moment it is applied, before anybody is invested in it staying.
+//
+//   A case cannot be opened without an innocent explanation for the same
+//   observation. The mismatch is the finding; the intent is not ours to infer.
+// ---------------------------------------------------------------------------
+
+/// The narrowest unit of work that can be stopped.
+///
+/// Deliberately fine-grained. "Use the smallest sufficient intervention" is
+/// unimplementable if the only lever is the account, so the levers are the
+/// individual acts: a caller who mis-priced a quote loses quoting, not calling.
+enum WorkCapability {
+  CALL_PLACING
+  CALL_RECORDING
+  REQUIREMENT_CAPTURE
+  QUOTE_DRAFTING
+  DEAL_ROOM_SENDING
+  PROVIDER_COMMITMENT
+  AUTONOMOUS_SENDING
+}
+
+/// The eight rungs, in order. The order is the meaning.
+enum InterventionRung {
+  INLINE_GUIDANCE
+  REQUIRED_CORRECTION
+  MICRO_COACHING
+  WARNING
+  RESTRICTED_MODE
+  CAPABILITY_PAUSE
+  SECURITY_RESTRICTION
+  OWNER_ESCALATION
+}
+
+enum InterventionState {
+  /// Decided and recorded, deliberately not enforced. This is how a rung earns
+  /// the right to act: by being right about real work, on paper, first.
+  SHADOW
+  /// Enforcement needs a person's authority, and is waiting for it.
+  PROPOSED
+  ACTIVE
+  /// The restoration conditions were met and evidenced.
+  LIFTED
+  /// It should never have been applied. Kept, and marked as wrong.
+  WITHDRAWN
+  DECLINED
+}
+
+/// Whose problem it was. Established before anything else is decided.
+enum FaultAttribution {
+  /// The application, an integration or the data broke.
+  SYSTEM_FAULT
+  OPERATOR
+  /// Not established. Produces a question, never a sanction.
+  UNDETERMINED
+}
+
+/// Something recorded and something observed that do not line up.
+enum ConsistencyKind {
+  ATTEMPT_WITHOUT_EVIDENCE
+  PROMISE_NOT_SCHEDULED
+  DISPOSITION_CONTRADICTS_TRANSCRIPT
+  QUALIFIED_WITHOUT_FACTS
+  DUPLICATE_ATTEMPT
+  ATTEMPT_OUTSIDE_CALLING_HOURS
+  FACTS_RECORDED_WITHOUT_CONTACT
+  FOLLOW_UP_PROMISE_MISSED
+}
+
+enum CaseState {
+  OPEN
+  /// One of the ordinary explanations turned out to be the right one.
+  EXPLAINED
+  /// Ours. Recorded against the system and never against the person.
+  SYSTEM_FAULT
+  /// A real gap in the work, agreed by a person looking at the evidence.
+  CONFIRMED
+  DISMISSED
+}
+
+enum ReadinessState {
+  READY
+  READY_WITH_WARNINGS
+  /// Something on our side is broken. Not the caller's fault and not their fix.
+  BLOCKED_BY_SYSTEM
+  BLOCKED_BY_RESTRICTION
+  /// No work is waiting. Not a problem, and not readiness either.
+  NOTHING_TO_DO
+}
+
+enum BreakerState {
+  CLOSED
+  OPEN
+}
+
+enum BriefPeriod {
+  DAILY
+  WEEKLY
+}
+
+/// One decision by the manager about one person or one capability.
+///
+/// Every field the directive asks to be recorded for an AI output is here:
+/// what produced it, which rules, what evidence, how confident, what it did,
+/// who overrode it and what happened afterwards.
+model Intervention {
+  id       String  @id @default(cuid())
+  orgId    String
+  /// Null whenever the fault was the system's. The check constraint below is
+  /// what makes that a guarantee rather than an intention.
+  callerId String?
+  routeId  String?
+  caseId   String?
+
+  rung       InterventionRung
+  state      InterventionState @default(SHADOW)
+  /// Set for every rung that stops work, so the stop is as small as it can be.
+  capability WorkCapability?
+
+  /// Why, in words a person can argue with.
+  reason   String
+  /// The records this was read from. Never empty above coaching.
+  evidence Json   @default("[]")
+
+  attribution FaultAttribution
+
+  /// What has to be true for this to end, written before it begins.
+  restorationRule     String?
+  restorationEvidence Json    @default("[]")
+
+  /// Provenance. `rules:manager@3`, `ai:claude-x@7`, never blank.
+  producedBy  String
+  ruleVersion String
+  confidence  Float?
+
+  /// Recorded but not applied. The default, and the point.
+  shadow     Boolean   @default(true)
+  enforcedAt DateTime?
+
+  liftedAt      DateTime?
+  liftedById    String?
+  liftedBecause String?
+
+  /// A person disagreeing with the machine, kept as data rather than as a
+  /// silent deletion — an override rate is the cheapest measure of whether
+  /// these rules are worth enforcing at all.
+  overriddenById String?
+  overriddenAt   DateTime?
+  overrideReason String?
+
+  /// What happened after. Filled in later, so the ladder can be judged.
+  outcome String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org          Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  caller       User?            @relation("InterventionCaller", fields: [callerId], references: [id], onDelete: SetNull)
+  route        RouteHypothesis? @relation(fields: [routeId], references: [id], onDelete: SetNull)
+  case         ConsistencyCase? @relation(fields: [caseId], references: [id], onDelete: SetNull)
+  liftedBy     User?            @relation("InterventionLiftedBy", fields: [liftedById], references: [id], onDelete: SetNull)
+  overriddenBy User?            @relation("InterventionOverriddenBy", fields: [overriddenById], references: [id], onDelete: SetNull)
+
+  @@index([orgId, state, rung])
+  @@index([callerId, state])
+}
+
+/// A capability stopped because the machinery behind it is failing.
+///
+/// Separate from an intervention on purpose. A breaker is about the system's
+/// own health and belongs to nobody: it stops work safely and names the outage,
+/// and no caller's record is touched by it.
+model CircuitBreaker {
+  id         String         @id @default(cuid())
+  orgId      String
+  capability WorkCapability
+
+  state BreakerState @default(CLOSED)
+
+  openedAt      DateTime?
+  openedBecause String?
+  evidence      Json      @default("[]")
+  failureCount  Int       @default(0)
+  observedCount Int       @default(0)
+  windowMinutes Int       @default(60)
+
+  /// When a single probe is allowed through to see if it recovered.
+  retryAt DateTime?
+
+  closedAt      DateTime?
+  closedById    String?
+  closedBecause String?
+
+  /// The incident raised for the humans, so the outage has one home.
+  incidentId String?
+
+  producedBy  String
+  ruleVersion String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  closedBy User?        @relation("BreakerClosedBy", fields: [closedById], references: [id], onDelete: SetNull)
+
+  @@index([orgId, state, capability])
+}
+
+/// A mismatch between what was recorded and what the evidence shows.
+///
+/// The case states the two things and stops. What it may never do is decide
+/// which of them is a lie: the same observation is produced by a dropped save,
+/// a phone that rang out after the notes were typed, and somebody padding their
+/// numbers, and only a person with the records in front of them can tell.
+model ConsistencyCase {
+  id        String  @id @default(cuid())
+  orgId     String
+  callerId  String?
+  routeId   String?
+  attemptId String?
+  sessionId String?
+
+  kind  ConsistencyKind
+  state CaseState       @default(OPEN)
+
+  /// So a re-run of the sweep does not stack a second copy of the same case.
+  dedupeKey String
+
+  /// What was found, and what it was compared against.
+  observed String
+  expected String
+  evidence Json   @default("[]")
+
+  /// Ordinary reasons this happens that are nobody's fault. Never empty: a
+  /// case that cannot name one has not been thought about hard enough to put
+  /// in front of the person it is about.
+  benignAlternatives Json @default("[]")
+
+  attribution FaultAttribution @default(UNDETERMINED)
+
+  producedBy  String
+  ruleVersion String
+  confidence  Float
+
+  /// The question actually put to the caller, and what they said.
+  question   String?
+  askedAt    DateTime?
+  answer     String?
+  answeredAt DateTime?
+
+  resolvedById String?
+  resolvedAt   DateTime?
+  resolution   String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org        Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  caller     User?            @relation("CaseCaller", fields: [callerId], references: [id], onDelete: SetNull)
+  route      RouteHypothesis? @relation(fields: [routeId], references: [id], onDelete: SetNull)
+  resolvedBy User?            @relation("CaseResolvedBy", fields: [resolvedById], references: [id], onDelete: SetNull)
+
+  interventions Intervention[]
+
+  @@unique([orgId, kind, dedupeKey])
+  @@index([orgId, state, kind])
+  @@index([callerId, state])
+}
+
+/// What a caller needs to know before they start, and what we owe them.
+model ShiftReadiness {
+  id       String @id @default(cuid())
+  orgId    String
+  callerId String
+
+  shiftDate DateTime       @db.Date
+  state     ReadinessState
+
+  /// Things that stop work. Each one names whose problem it is.
+  blockers Json @default("[]")
+  warnings Json @default("[]")
+
+  /// What is actually waiting, so the check is worth opening.
+  workReady   Int @default(0)
+  duePromises Int @default(0)
+  openCases   Int @default(0)
+
+  checkedAt      DateTime  @default(now())
+  acknowledgedAt DateTime?
+
+  producedBy  String
+  ruleVersion String
+
+  org    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  caller User         @relation("ReadinessCaller", fields: [callerId], references: [id], onDelete: Cascade)
+
+  @@unique([callerId, shiftDate])
+  @@index([orgId, shiftDate])
+}
+
+/// The brief an owner reads instead of eleven screens.
+model ManagerBrief {
+  id     String      @id @default(cuid())
+  orgId  String
+  period BriefPeriod
+
+  periodStart DateTime
+  periodEnd   DateTime
+
+  /// The first broken stage, in one line.
+  headline String
+  sections Json   @default("[]")
+
+  /// Things only the owner may decide.
+  ownerDecisions Json @default("[]")
+  /// Excellence worth copying. Looking only for problems finds only problems.
+  strengths      Json @default("[]")
+  /// Claims the evidence could not support, named rather than omitted — the
+  /// absence of a number is not the same as a number nobody produced.
+  withheld       Json @default("[]")
+
+  producedBy  String
+  ruleVersion String
+  generatedAt DateTime @default(now())
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, period, periodStart])
+  @@index([orgId, generatedAt])
 }

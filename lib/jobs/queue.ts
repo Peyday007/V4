@@ -28,6 +28,13 @@ export type JobKind =
   | 'call.transcribe'
   | 'call.analyse'
   | 'call.expire_recordings'
+  /// The System Manager. `sweep` reads records against each other for
+  /// mismatches; `brief` writes the owner's brief. Circuit breakers are not
+  /// here on purpose: they are evaluated inline on every tick, because a
+  /// breaker that waits its turn in a queue is a breaker that lets another
+  /// hundred calls fail into a dialer that is already down.
+  | 'manager.sweep'
+  | 'manager.brief'
   | 'matching.run'
   | 'scoring.run'
   | 'scoring.run_all'

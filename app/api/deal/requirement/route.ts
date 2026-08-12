@@ -3,6 +3,7 @@ import { requirePermission } from '@/lib/auth/session';
 import { handleRouteError, json, rateLimit } from '@/lib/api';
 import { captureRequirement, withdrawRequirement } from '@/lib/deal/requirement';
 import { audit } from '@/lib/audit';
+import { capabilityGate } from '@/lib/manager/gate';
 
 export const dynamic = 'force-dynamic';
 
@@ -57,6 +58,14 @@ export async function POST(request: Request) {
   try {
     const user = await requirePermission('deal.write');
     await rateLimit(`deal.requirement:${user.id}`, 120, 60_000);
+
+    const gate = await capabilityGate({
+      orgId: user.orgId, userId: user.id, capability: 'REQUIREMENT_CAPTURE',
+    });
+    if (!gate.allowed) {
+      return json({ error: gate.message, kind: gate.kind, restorationRule: gate.restorationRule }, 423);
+    }
+
     const body = Schema.parse(await request.json());
 
     if (body.action === 'withdraw') {

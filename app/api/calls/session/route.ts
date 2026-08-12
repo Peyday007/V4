@@ -5,6 +5,7 @@ import { handleRouteError, json, rateLimit } from '@/lib/api';
 import { startSession, finishSession, refuseRecording, deleteRecording } from '@/lib/calls/recording';
 import { enqueue } from '@/lib/jobs/queue';
 import { audit } from '@/lib/audit';
+import { capabilityGate } from '@/lib/manager/gate';
 
 export const dynamic = 'force-dynamic';
 
@@ -76,6 +77,34 @@ export async function POST(request: Request) {
     await rateLimit(`calls.session:${user.id}`, 240, 60_000);
 
     if (body.action === 'start') {
+      // Checked at the start of the call, not at the end of it. A caller who is
+      // told after the conversation that their account was paused has already
+      // made the call, and the record of it is now in an awkward half-state.
+      //
+      // Only starting is gated: finishing a call that is already under way
+      // always goes through, because losing what somebody typed to enforce a
+      // restriction would punish the buyer as well as the caller.
+      const gate = await capabilityGate({
+        orgId: user.orgId, userId: user.id, capability: 'CALL_PLACING',
+      });
+      if (!gate.allowed) {
+        return json({ error: gate.message, kind: gate.kind, restorationRule: gate.restorationRule }, 423);
+      }
+
+      // Recording is a separate capability, and losing it must not cost
+      // somebody the call. The session opens either way, with capture off.
+      let intendedCapture = body.intendedCapture;
+      let captureRefusal: string | null = null;
+      if (intendedCapture && intendedCapture !== 'NONE') {
+        const recording = await capabilityGate({
+          orgId: user.orgId, userId: user.id, capability: 'CALL_RECORDING',
+        });
+        if (!recording.allowed) {
+          intendedCapture = 'NONE';
+          captureRefusal = recording.message;
+        }
+      }
+
       const result = await startSession({
         orgId: user.orgId,
         routeId: body.routeId,
@@ -83,7 +112,7 @@ export async function POST(request: Request) {
         contactId: body.contactId,
         provider: body.provider,
         providerCallId: body.providerCallId,
-        intendedCapture: body.intendedCapture,
+        intendedCapture,
         callerState: body.callerState,
       });
       if (!result) return json({ error: 'That route is not on this account.' }, 404);
@@ -98,6 +127,9 @@ export async function POST(request: Request) {
         ok: true,
         sessionId: result.session.id,
         mayRecord: result.mayRecord,
+        // Present when capture was turned off by a restriction or an outage
+        // rather than by the consent rules. Different reason, different words.
+        captureRefusal,
         // Returned so the caller reads the right words rather than improvising.
         announcement: result.announcement,
         consent: {

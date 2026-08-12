@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { requirePermission, requireUser } from '@/lib/auth/session';
 import { handleRouteError, json, rateLimit } from '@/lib/api';
 import { draftQuote, sendQuote, declineQuote } from '@/lib/deal/quote';
+import { capabilityGate } from '@/lib/manager/gate';
 import { audit } from '@/lib/audit';
 
 export const dynamic = 'force-dynamic';
@@ -64,6 +65,22 @@ export async function POST(request: Request) {
       ? await requirePermission('document.send')
       : await requirePermission('deal.write');
     await rateLimit(`deal.quote:${user.id}`, 60, 60_000);
+
+    // A permission says what this role may do; the gate says what this person
+    // may do today. They are different questions, and a restriction that only
+    // showed up on a manager's screen would not be a restriction at all.
+    //
+    // Scoped to drafting. Declining a quote is how a mistake gets withdrawn,
+    // and a restriction that stopped somebody undoing their own bad price would
+    // leave the price in front of the buyer.
+    if (body.action === 'draft') {
+      const gate = await capabilityGate({
+        orgId: user.orgId, userId: user.id, capability: 'QUOTE_DRAFTING',
+      });
+      if (!gate.allowed) {
+        return json({ error: gate.message, kind: gate.kind, restorationRule: gate.restorationRule }, 423);
+      }
+    }
 
     if (body.action === 'draft') {
       const { action, routeId, validUntil, reason, ...inputs } = body;

@@ -21,6 +21,8 @@ import { getTranscription } from '@/lib/providers/transcription';
 import { resolveCompanyContact } from '@/lib/enrichment/resolve';
 import { sweepContactResolution } from '@/lib/enrichment/schedule';
 import { resolveSupply } from '@/lib/enrichment/supply';
+import { sweepConsistency } from '@/lib/manager/cases';
+import { generateBrief } from '@/lib/manager/brief';
 import { enqueue } from './queue';
 
 export type JobHandler = (job: Job) => Promise<unknown>;
@@ -253,6 +255,19 @@ export const HANDLERS: Record<string, JobHandler> = {
     // clears the key and marks the row expired, which is the part that stops a
     // screen offering audio nobody should still have.
     return expireRecordings({ orgId: job.orgId });
+  },
+
+  'manager.sweep': async (job) => {
+    // Reads records against each other and opens questions. It cannot conclude
+    // anything about a person: everything it writes is either a question or,
+    // where our own logs explain it, a case already closed against the system.
+    return sweepConsistency({ orgId: job.orgId });
+  },
+
+  'manager.brief': async (job) => {
+    const period = (job.payload as { period?: 'DAILY' | 'WEEKLY' })?.period ?? 'DAILY';
+    const brief = await generateBrief({ orgId: job.orgId, period });
+    return { briefId: brief.id, headline: brief.headline };
   },
 
   'analytics.snapshot': async (job) => {

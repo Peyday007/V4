@@ -146,6 +146,8 @@ export async function chainHealth(orgId: string): Promise<ChainHealth> {
     }),
   ]);
 
+  const money = await moneyCounts(orgId);
+
   const events = new Map(eventCounts.map((r) => [r.lifecycle, Number(r.n)]));
   const eventTotal = [...events.values()].reduce((a, b) => a + b, 0);
   const verified = events.get('VERIFIED') ?? 0;
@@ -429,30 +431,18 @@ export async function chainHealth(orgId: string): Promise<ChainHealth> {
     href: '/demand?view=supply_needed',
   });
 
-  // --- 9 onward: not built yet ------------------------------------------
+  // --- 9 onward: the money track ----------------------------------------
   //
-  // Reported rather than omitted. A chain that stops at "a caller spoke to
-  // somebody" and calls itself healthy is the reason the previous system could
-  // not tell which sources produced money — it had no stage where money was
-  // recorded, so nothing could ever be attributed to one.
-  for (const [key, label, expectation] of [
-    ['requirements', 'Buyer requirement captured', 'The buyer\'s scope, quantity, timing and authority are recorded as structured facts.'],
-    ['quote', 'Quote and economics', 'A provider cost and a buyer price exist, with the gross profit that follows from them.'],
-    ['commitment', 'Commitment and delivery', 'The buyer and provider commit, the work is delivered, and completion is evidenced.'],
-    ['payment', 'Payment and collected profit', 'An invoice is raised, paid, and the gross profit is realised rather than estimated.'],
-  ] as const) {
-    stages.push({
-      key,
-      track: 'money',
-      label,
-      expectation,
-      status: 'NOT_BUILT',
-      detail: 'Not implemented. No opportunity can complete a transaction through this system yet.',
-      measures: [],
-      remedy: 'Phase 2 of the delivery plan. Until it exists, no source, route or caller can be credited with profit.',
-      href: null,
-    });
-  }
+  // These four stages read the deal-progression tables directly. Until they
+  // existed there was nowhere in the system where money was recorded, so
+  // nothing could ever be attributed to a source, a route or a caller — which
+  // is why they were reported as NOT_BUILT rather than quietly omitted.
+  //
+  // They are still capable of saying IDLE, and IDLE here is the honest answer
+  // for this business today: the tables exist, and nothing has been through
+  // them. What must not happen is a money stage reading OK because a fixture
+  // walked a row through it.
+  for (const stage of moneyStages({ qualified, money })) stages.push(stage);
 
   // The first demand stage not passing work. Everything after it *on the same
   // track* is a consequence rather than a diagnosis, and is marked so nobody
@@ -479,13 +469,228 @@ export async function chainHealth(orgId: string): Promise<ChainHealth> {
     stages,
     firstBreak: broken,
     supplyBreak,
-    // Never true while a money stage is unbuilt: a chain that stops before
+    // Never true until money has actually arrived. A chain that stops before
     // anybody is paid is not a chain that flows, and saying otherwise is how a
-    // system reports itself finished having moved no money.
+    // system reports itself finished having moved nothing. `collected > 0` is a
+    // deliberately blunt condition: it is the only one that cannot be satisfied
+    // by a well-formed record.
     flowing:
       broken === null &&
       supplyBreak === null &&
-      stages.every((s) => s.status !== 'NOT_BUILT'),
+      stages.every((s) => s.status !== 'NOT_BUILT') &&
+      money.collected > 0,
     checkedAt: new Date().toISOString(),
   };
+}
+
+type MoneyCounts = {
+  requirements: number;
+  priceable: number;
+  quotes: number;
+  quotesWithCost: number;
+  sent: number;
+  accepted: number;
+  deals: number;
+  providerCommitted: number;
+  delivered: number;
+  invoiced: number;
+  settledIn: number;
+  collected: number;
+  paidOut: number;
+};
+
+async function moneyCounts(orgId: string): Promise<MoneyCounts> {
+  const [
+    requirements, priceable, quotes, quotesWithCost, sent, accepted,
+    deals, providerCommitted, delivered, invoiced, inbound, outbound,
+  ] = await Promise.all([
+    prisma.buyerRequirement.count({ where: { orgId, state: 'CURRENT' } }),
+    prisma.buyerRequirement.count({
+      where: { orgId, state: 'CURRENT', specification: { not: null }, quantity: { not: null } },
+    }),
+    prisma.routeQuote.count({ where: { orgId } }),
+    prisma.routeQuote.count({ where: { orgId, providerCost: { not: null } } }),
+    prisma.routeQuote.count({ where: { orgId, state: { in: ['SENT', 'ACCEPTED', 'DECLINED', 'EXPIRED'] } } }),
+    prisma.routeQuote.count({ where: { orgId, state: 'ACCEPTED' } }),
+    prisma.routeDeal.count({ where: { orgId } }),
+    prisma.routeDeal.count({ where: { orgId, providerCommittedAt: { not: null } } }),
+    prisma.routeDeal.count({ where: { orgId, deliveryCompletedAt: { not: null } } }),
+    prisma.dealPayment.count({ where: { orgId, direction: 'INBOUND' } }),
+    prisma.dealPayment.aggregate({
+      where: { orgId, direction: 'INBOUND', settledAt: { not: null } },
+      _sum: { amount: true }, _count: true,
+    }),
+    prisma.dealPayment.aggregate({
+      where: { orgId, direction: 'OUTBOUND', settledAt: { not: null } },
+      _sum: { amount: true },
+    }),
+  ]);
+
+  const collectedIn = Number(inbound._sum.amount ?? 0);
+  const paidOut = Number(outbound._sum.amount ?? 0);
+
+  return {
+    requirements, priceable, quotes, quotesWithCost, sent, accepted,
+    deals, providerCommitted, delivered, invoiced,
+    settledIn: inbound._count,
+    // Collected gross profit: money that arrived, less money that left. An
+    // invoice is not money and is never counted here.
+    collected: collectedIn > 0 ? collectedIn - paidOut : 0,
+    paidOut,
+  };
+}
+
+function moneyStages(input: { qualified: number; money: MoneyCounts }): ChainStage[] {
+  const { money } = input;
+  const stages: ChainStage[] = [];
+
+  stages.push({
+    key: 'requirements',
+    track: 'money',
+    label: 'Buyer requirement captured',
+    expectation: 'The buyer\'s scope, quantity, timing and authority are recorded as structured facts.',
+    ...(input.qualified > 0 && money.requirements === 0
+      ? {
+          status: 'BLOCKED' as const,
+          detail: `${input.qualified} qualified opportunit(y/ies) and not one recorded requirement. Nothing can be priced.`,
+          remedy: 'A call that qualified something did not capture what they actually need. Open the opportunity and record it.',
+        }
+      : money.requirements === 0
+        ? {
+            status: 'IDLE' as const,
+            detail: 'No buyer has told us what they need yet.',
+            remedy: null,
+          }
+        : money.priceable === 0
+          ? {
+              status: 'DEGRADED' as const,
+              detail: `${money.requirements} requirement(s), none of them with both a scope and a quantity. A price cannot follow from these.`,
+              remedy: 'The missing fields are named on each opportunity. They come from the buyer, not from us.',
+            }
+          : {
+              status: 'OK' as const,
+              detail: `${money.priceable} of ${money.requirements} requirement(s) carry enough to price.`,
+              remedy: null,
+            }),
+    measures: [
+      { label: 'current requirements', value: String(money.requirements) },
+      { label: 'priceable', value: String(money.priceable) },
+    ],
+    href: '/demand',
+  });
+
+  stages.push({
+    key: 'quote',
+    track: 'money',
+    label: 'Quote and economics',
+    expectation: 'A provider cost and a buyer price exist, with the gross profit that follows from them.',
+    ...(money.priceable > 0 && money.quotes === 0
+      ? {
+          status: 'BLOCKED' as const,
+          detail: `${money.priceable} priceable requirement(s) and no quote drafted.`,
+          remedy: 'Open the opportunity and draft one. A requirement nobody prices is a conversation nobody finished.',
+        }
+      : money.quotes === 0
+        ? { status: 'IDLE' as const, detail: 'Nothing has been quoted.', remedy: null }
+        : money.quotesWithCost === 0
+          ? {
+              status: 'DEGRADED' as const,
+              detail: `${money.quotes} quote(s) and not one with a provider cost. Every margin on these is a guess.`,
+              remedy: 'A quote with no cost needs owner approval before it goes out, and it says so on the quote.',
+            }
+          : money.sent === 0
+            ? {
+                status: 'DEGRADED' as const,
+                detail: `${money.quotes} quote(s) drafted and none sent.`,
+                remedy: 'A drafted quote sitting in the system is worth what an unsent email is worth.',
+              }
+            : {
+                status: 'OK' as const,
+                detail: `${money.sent} quote(s) sent, ${money.accepted} accepted.`,
+                remedy: null,
+              }),
+    measures: [
+      { label: 'quotes', value: String(money.quotes) },
+      { label: 'with a provider cost', value: String(money.quotesWithCost) },
+      { label: 'sent', value: String(money.sent) },
+      { label: 'accepted', value: String(money.accepted) },
+    ],
+    href: '/demand',
+  });
+
+  stages.push({
+    key: 'commitment',
+    track: 'money',
+    label: 'Commitment and delivery',
+    expectation: 'The buyer and provider commit, the work is delivered, and completion is evidenced.',
+    ...(money.accepted > 0 && money.deals === 0
+      ? {
+          status: 'BLOCKED' as const,
+          detail: `${money.accepted} accepted quote(s) and no deal recorded against any of them.`,
+          remedy: 'An accepted quote with no commitment record means nobody has established what was actually agreed.',
+        }
+      : money.deals === 0
+        ? { status: 'IDLE' as const, detail: 'Nobody has committed to anything yet.', remedy: null }
+        : money.providerCommitted === 0
+          ? {
+              status: 'BLOCKED' as const,
+              detail: `${money.deals} buyer commitment(s) and no provider committed to any of them. We have sold work nobody has agreed to do.`,
+              remedy: 'This is the exposure that matters. Secure the provider or tell the buyer.',
+            }
+          : money.delivered === 0
+            ? {
+                status: 'DEGRADED' as const,
+                detail: `${money.providerCommitted} of ${money.deals} deal(s) have a committed provider. None is delivered yet.`,
+                remedy: 'Delivery is evidenced on the deal record when it completes.',
+              }
+            : {
+                status: 'OK' as const,
+                detail: `${money.delivered} of ${money.deals} deal(s) delivered.`,
+                remedy: null,
+              }),
+    measures: [
+      { label: 'deals', value: String(money.deals) },
+      { label: 'provider committed', value: String(money.providerCommitted) },
+      { label: 'delivered', value: String(money.delivered) },
+    ],
+    href: '/demand',
+  });
+
+  stages.push({
+    key: 'payment',
+    track: 'money',
+    label: 'Payment and collected profit',
+    expectation: 'An invoice is raised, paid, and the gross profit is realised rather than estimated.',
+    ...(money.delivered > 0 && money.invoiced === 0
+      ? {
+          status: 'BLOCKED' as const,
+          detail: `${money.delivered} delivered deal(s) and nothing invoiced. The work is done and nobody has asked to be paid for it.`,
+          remedy: 'Raise the invoice on the deal record.',
+        }
+      : money.invoiced === 0
+        ? { status: 'IDLE' as const, detail: 'Nothing has been invoiced.', remedy: null }
+        : money.settledIn === 0
+          ? {
+              status: 'BLOCKED' as const,
+              detail: `${money.invoiced} invoice(s) raised and not one settled. An invoice is not money.`,
+              remedy: 'Chase them, or record the payment if it has arrived and was not entered.',
+            }
+          : {
+              status: 'OK' as const,
+              detail: `${money.settledIn} payment(s) received. Collected gross profit ${currency(money.collected)} after ${currency(money.paidOut)} paid out.`,
+              remedy: null,
+            }),
+    measures: [
+      { label: 'invoices raised', value: String(money.invoiced) },
+      { label: 'payments settled', value: String(money.settledIn) },
+      { label: 'collected gross profit', value: currency(money.collected) },
+    ],
+    href: '/demand',
+  });
+
+  return stages;
+}
+
+function currency(amount: number): string {
+  return `$${amount.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
 }

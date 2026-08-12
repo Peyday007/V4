@@ -3,6 +3,7 @@ import { requirePermission, requireUser } from '@/lib/auth/session';
 import { handleRouteError, json, rateLimit } from '@/lib/api';
 import { createRoom, markSent, expireRooms } from '@/lib/room/rooms';
 import { sendRoomEmail } from '@/lib/room/email';
+import { capabilityGate } from '@/lib/manager/gate';
 import { audit } from '@/lib/audit';
 
 export const dynamic = 'force-dynamic';
@@ -48,6 +49,18 @@ export async function POST(request: Request) {
       ? await requirePermission('document.send')
       : await requirePermission('deal.write');
     await rateLimit(`deal.room:${user.id}`, 60, 60_000);
+
+    // Only the outward act is gated. Somebody restricted from sending rooms can
+    // still build one and have it reviewed, which is usually the point of the
+    // restriction rather than an oversight in it.
+    if (body.action === 'send') {
+      const gate = await capabilityGate({
+        orgId: user.orgId, userId: user.id, capability: 'DEAL_ROOM_SENDING',
+      });
+      if (!gate.allowed) {
+        return json({ error: gate.message, kind: gate.kind, restorationRule: gate.restorationRule }, 423);
+      }
+    }
 
     if (body.action === 'create') {
       const result = await createRoom({

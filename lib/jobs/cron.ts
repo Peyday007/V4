@@ -8,6 +8,7 @@ import { drainContactResolution } from '@/lib/enrichment/schedule';
 import { resolveSupplyIfCatalogueChanged } from '@/lib/enrichment/supply';
 import { expireQuotes } from '@/lib/deal/quote';
 import { expireRooms } from '@/lib/room/rooms';
+import { evaluateBreakers } from '@/lib/manager/breakers';
 import { handleRouteError, json } from '@/lib/api';
 
 export type CronMode = 'tick' | 'daily';
@@ -65,6 +66,8 @@ export async function runCron(request: Request, mode: CronMode) {
       supplyRematched?: number;
       quotesExpired?: number;
       roomsExpired?: number;
+      breakersOpened?: number;
+      breakersClosed?: number;
     }> = [];
 
     for (const org of orgs) {
@@ -138,6 +141,16 @@ export async function runCron(request: Request, mode: CronMode) {
       const roomsClosed = await expireRooms({ orgId: org.id });
       if (roomsClosed > 0) enrichment[enrichment.length - 1].roomsExpired = roomsClosed;
 
+      // Capability health, every tick. A breaker that only trips on the daily
+      // sweep is a breaker that lets a whole day of calls fail into a dialer
+      // that is down — the window between "broken" and "stopped" is the only
+      // thing this mechanism exists to shorten.
+      const breakers = await evaluateBreakers({ orgId: org.id });
+      if (breakers.opened.length > 0 || breakers.closed.length > 0) {
+        enrichment[enrichment.length - 1].breakersOpened = breakers.opened.length;
+        enrichment[enrichment.length - 1].breakersClosed = breakers.closed.length;
+      }
+
       if (mode === 'daily') {
         // Idempotency keys are date-stamped so a retried cron on the same day
         // does not stack duplicate sweeps.
@@ -160,6 +173,11 @@ export async function runCron(request: Request, mode: CronMode) {
           // measured in months, and a sweep that runs every ten minutes would
           // scan the same rows a hundred and forty times a day to find nothing.
           { kind: 'call.expire_recordings' as const, priority: 85 },
+          // The consistency sweep and the owner's brief, in that order: the
+          // brief reports the questions the sweep opened, and running them the
+          // other way round would report yesterday's.
+          { kind: 'manager.sweep' as const, priority: 60 },
+          { kind: 'manager.brief' as const, priority: 96 },
         ];
         for (const job of jobs) {
           const created = await enqueue({

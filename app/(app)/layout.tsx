@@ -108,6 +108,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             <NavLink href="/analytics">{isCaller ? 'My performance' : 'Analytics'}</NavLink>
             {!isCaller && <NavLink href="/measure">What is working</NavLink>}
             {!isCaller && <NavLink href="/reviews">Call reviews</NavLink>}
+            {can(user, 'analytics.caller.read.all') && <NavLink href="/manager">System manager</NavLink>}
             {can(user, 'analytics.pipeline.read') && <NavLink href="/outreach">Outreach channels</NavLink>}
             {can(user, 'analytics.pipeline.read') && <NavLink href="/ads">Advertising plan</NavLink>}
             {can(user, 'lane.read') && <NavLink href="/lanes">Deal lanes</NavLink>}

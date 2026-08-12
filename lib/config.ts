@@ -1,3 +1,4 @@
+import type { InterventionRung } from '@prisma/client';
 import { prisma } from '@/lib/db';
 
 /**
@@ -84,6 +85,38 @@ export type OrgConfig = {
     /** A ceiling that applies even when autonomous sending is on. */
     maxAutonomousSendsPerDay: number;
   };
+  /**
+   * What the System Manager is allowed to actually do.
+   *
+   * Every rung above coaching starts in shadow — decided, recorded, and
+   * deliberately without effect. The directive requires it ("feature flags and
+   * shadow mode are required for high-impact interventions until calibrated
+   * against real work"), and the requirement is the right way round: these
+   * rules have never run against this business, and the first few weeks of any
+   * such ruleset are mostly it being wrong about people in ways nobody can
+   * predict from the code.
+   */
+  managerRules: {
+    /**
+     * The rungs that may take effect. Everything else is written in shadow.
+     *
+     * Two rungs are absent whatever this list says: a security restriction and
+     * an owner escalation are the owner's to apply, and the ladder refuses to
+     * enforce them from a rule no matter how the flag is set.
+     */
+    enforceableRungs: InterventionRung[];
+    /** Completed cases about a person before any rung may restrict them. */
+    minCasesBeforeRestriction: number;
+    /** Attempts below which a caller's numbers are not read as performance. */
+    minAttemptsForCoaching: number;
+    /** Observations a capability needs before its breaker may trip. */
+    breakerMinimumObservations: number;
+    /** Failure share, over that window, that trips it. */
+    breakerFailureRate: number;
+    breakerWindowMinutes: number;
+    /** How long before one probe is let through to see if it recovered. */
+    breakerRetryMinutes: number;
+  };
 };
 
 export const DEFAULT_CONFIG: OrgConfig = {
@@ -164,6 +197,18 @@ export const DEFAULT_CONFIG: OrgConfig = {
     allowGenericInboxFallback: false,
     autonomousSendingEnabled: false,
     maxAutonomousSendsPerDay: 0,
+  },
+  managerRules: {
+    // Guidance, a correction to make, and a short piece of coaching. Nothing
+    // here takes work away from anybody until somebody has read a few hundred
+    // of these and decided the rules are worth obeying.
+    enforceableRungs: ['INLINE_GUIDANCE', 'REQUIRED_CORRECTION', 'MICRO_COACHING'],
+    minCasesBeforeRestriction: 3,
+    minAttemptsForCoaching: 25,
+    breakerMinimumObservations: 8,
+    breakerFailureRate: 0.5,
+    breakerWindowMinutes: 60,
+    breakerRetryMinutes: 30,
   },
 };
 
