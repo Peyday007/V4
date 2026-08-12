@@ -1,0 +1,76 @@
+# The recurring tick, from a scheduler that has no plan limits.
+#
+# Vercel's Hobby plan refuses any cron expression that fires more than once a
+# day — the deployment fails rather than degrading — so `*/10 * * * *` in
+# vercel.json only works on Pro and above. On Hobby that entry must be removed
+# and this workflow is what drives the loop instead.
+#
+# Contact resolution needs a frequent tick to be worth anything: an opportunity
+# discovered this morning that nobody can ring until tomorrow's sweep is an
+# opportunity with a day taken off its buying window.
+#
+# Setup, once:
+#
+#   Settings → Secrets and variables → Actions
+#     CRON_SECRET   the same value as the Vercel environment variable
+#     APP_BASE_URL  https://<your-deployment>   (no trailing slash)
+#
+# GitHub's scheduled workflows are best-effort and can run late under load, and
+# they are disabled automatically after 60 days without repository activity —
+# so this is the fallback for Hobby, not the better option. On Pro, delete this
+# file and let vercel.json do it.
+
+name: Cron tick
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  # So a person can confirm it works without waiting ten minutes.
+  workflow_dispatch:
+
+# A slow run must not overlap the next one. The loop is safe to run
+# concurrently — claims are conditional updates — but overlapping runs spend
+# provider budget twice for no extra progress.
+concurrency:
+  group: cron-tick
+  cancel-in-progress: false
+
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Fire the tick
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${CRON_SECRET:-}" ] || [ -z "${APP_BASE_URL:-}" ]; then
+            echo "CRON_SECRET and APP_BASE_URL must both be set as repository secrets." >&2
+            exit 1
+          fi
+
+          # --fail-with-body so a 401 or 503 fails the run loudly and still
+          # prints what the server said. A scheduler that reports success while
+          # being rejected is the failure mode this whole file is fixing.
+          response=$(curl --silent --show-error --fail-with-body \
+            --max-time 120 \
+            --header "Authorization: Bearer ${CRON_SECRET}" \
+            "${APP_BASE_URL}/api/cron/tick")
+
+          echo "$response"
+
+          # The run is only useful if the contact backlog is shrinking. Surfaced
+          # in the job summary so somebody scanning the Actions tab can see
+          # whether opportunities are becoming callable without opening the app.
+          echo "$response" | python3 -c '
+          import json, sys
+          body = json.load(sys.stdin)
+          for row in body.get("enrichment", []):
+              print(
+                  f"{row[\"org\"]}: scheduled {row[\"scheduled\"]}, attempted {row[\"attempted\"]}, "
+                  f"resolved {row[\"resolved\"]}, released {row[\"released\"]} route(s), "
+                  f"{row[\"unscheduled\"]} organisation(s) still unscheduled"
+              )
+          ' >> "$GITHUB_STEP_SUMMARY"

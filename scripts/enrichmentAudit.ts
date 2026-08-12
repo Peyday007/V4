@@ -62,8 +62,8 @@ async function main() {
   const pipeline = await runDemandPipeline({ orgId });
   check(
     'running the pipeline put organisations into the workflow',
-    pipeline.contactResolution.scheduled + pipeline.contactResolution.alreadyTracked > 0,
-    `${pipeline.contactResolution.scheduled} scheduled, ${pipeline.contactResolution.alreadyTracked} already tracked`,
+    pipeline.contactResolution.scheduled > 0 && pipeline.contactResolution.unscheduledRemaining === 0,
+    `${pipeline.contactResolution.scheduled} scheduled, ${pipeline.contactResolution.unscheduledRemaining} left unscheduled`,
   );
 
   const uncovered = await prisma.$queryRaw<Array<{ count: bigint }>>`
@@ -85,7 +85,7 @@ async function main() {
   console.log('\n--- 2. scheduling twice does not duplicate work ----------------');
   const again = await scheduleContactResolution({ orgId });
   check('a second scheduling pass creates nothing new', again.scheduled === 0,
-    `${again.scheduled} created, ${again.alreadyTracked} already tracked`);
+    `${again.scheduled} created, ${again.unscheduledRemaining} left unscheduled`);
 
   const duplicates = await prisma.$queryRaw<Array<{ companyId: string; n: bigint }>>`
     SELECT "companyId", COUNT(*)::bigint AS n FROM "ContactResolution"

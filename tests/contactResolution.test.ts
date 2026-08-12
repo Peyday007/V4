@@ -7,6 +7,7 @@ import {
   releasesToCallQueue,
   type ContactCandidate,
 } from '@/lib/enrichment/candidates';
+import { sortByPriority } from '@/lib/enrichment/schedule';
 import {
   MAX_TRANSIENT_ATTEMPTS,
   NOTHING_FOUND_DAYS,
@@ -274,5 +275,62 @@ describe('new information earns a fresh attempt', () => {
 
   it('changes when a caller rules a number out', () => {
     expect(fingerprintOf(base)).not.toBe(fingerprintOf({ ...base, rejectedValues: ['312-555-0101'] }));
+  });
+});
+
+describe('the order organisations are worked in', () => {
+  // The claim query selects by priority, but `UPDATE ... RETURNING` emits rows
+  // in whatever order the update touched them. Sorting the claim again is what
+  // makes the selected order the worked order — without it a batch could ring
+  // Tier B before Tier A and nobody would notice, because the selection looked
+  // right.
+  const row = (tier: string | null, closes: string | null, routes = 1) => ({
+    tier,
+    closes: closes ? new Date(closes) : null,
+    routes,
+  });
+
+  it('puts every Tier A organisation before every Tier B one', () => {
+    const sorted = sortByPriority([
+      row('STRONG_TRIGGER', '2026-08-19'),
+      row('ACTIVE_DEMAND', '2026-10-30'),
+      row('STRONG_TRIGGER', '2026-08-14'),
+      row('ACTIVE_DEMAND', '2026-09-16'),
+    ]);
+    expect(sorted.map((r) => r.tier)).toEqual([
+      'ACTIVE_DEMAND', 'ACTIVE_DEMAND', 'STRONG_TRIGGER', 'STRONG_TRIGGER',
+    ]);
+  });
+
+  it('takes the nearest buying window first within a tier', () => {
+    const sorted = sortByPriority([
+      row('ACTIVE_DEMAND', '2026-10-30'),
+      row('ACTIVE_DEMAND', '2026-08-20'),
+      row('ACTIVE_DEMAND', '2026-09-16'),
+    ]);
+    expect(sorted.map((r) => r.closes!.toISOString().slice(0, 10))).toEqual([
+      '2026-08-20', '2026-09-16', '2026-10-30',
+    ]);
+  });
+
+  it('sorts an organisation with no window last rather than first', () => {
+    // A null window sorting first is the classic version of this bug: the
+    // record with the least urgency takes the batch ahead of one closing
+    // on Friday.
+    const sorted = sortByPriority([row('ACTIVE_DEMAND', null), row('ACTIVE_DEMAND', '2026-08-20')]);
+    expect(sorted[0].closes).not.toBeNull();
+  });
+
+  it('breaks a tie on how many routes ride on the one phone number', () => {
+    const sorted = sortByPriority([
+      row('ACTIVE_DEMAND', '2026-09-16', 1),
+      row('ACTIVE_DEMAND', '2026-09-16', 4),
+    ]);
+    expect(sorted[0].routes).toBe(4);
+  });
+
+  it('puts an organisation with no live tier last rather than treating it as Tier A', () => {
+    const sorted = sortByPriority([row(null, '2026-08-01'), row('STRONG_TRIGGER', '2026-12-01')]);
+    expect(sorted[0].tier).toBe('STRONG_TRIGGER');
   });
 });

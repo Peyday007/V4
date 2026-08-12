@@ -111,7 +111,9 @@ Demand sources publish licences, permits and solicitations; almost none of them 
 **How it is triggered.** Two entry points, one implementation (`lib/enrichment/schedule.ts` → `resolveCompanyContact`):
 
 - **Immediately after routing.** `runDemandPipeline` schedules every organisation behind a live route and enqueues `enrichment.resolve_contacts`. This runs whenever a source run creates or updates events, so a licence found at nine is callable by nine-fifteen rather than tomorrow.
-- **Every cron tick.** `/api/cron?mode=tick` enqueues the same job. It schedules anything missed, and works records whose retry has come round, whose contact has gone stale, or whose account gained information since the last attempt.
+- **Every cron tick.** `/api/cron/tick` runs the backlog **inline, first, with a reserved slice of the invocation** — it does not enqueue a job and hope one gets claimed. It discovers organisations with live demand and no resolution state at all, schedules them in bounded batches, and works them. This is the path that covers demand routed before the workflow existed, which no source run will ever touch again.
+
+  It is reserved rather than merely prioritised. As a job at priority 35 it sat behind `discovery.run_all` and `demand.poll_sources`, both of which do live HTTP with retries and 20-second timeouts inside a 60-second function — so the invocation was killed before the enrichment job was ever claimed, every day, while the cron reported success. Reordering would only have moved the starvation onto whatever ended up last.
 
 Scheduling is keyed by organisation, not by route: four routes off one gym opening share one phone number and one attempt to find it. Claims are conditional updates with `FOR UPDATE SKIP LOCKED`, so several workers — or a redeploy mid-run — produce one attempt rather than duplicates.
 
@@ -133,9 +135,38 @@ Scheduling is keyed by organisation, not by route: four routes off one gym openi
 
 A failure is never presented as "this business has no phone number". That distinction is the point of the enum.
 
+**Scheduling order.** Tier A first, then by the nearest buying window, then Tier B the same way, then the account with the most routes riding on one number. Applied twice on purpose: once when choosing which organisations to claim, and again to the claimed batch — `UPDATE ... RETURNING` emits rows in whatever order it touched them, so without the second sort a batch is *selected* by priority and *worked* in an arbitrary one.
+
 **Running the backlog by hand.** `npm run enrich:backfill` calls the same sweep the cron calls, with progress output. Safe to stop, restart, and run alongside the cron.
 
-**Verifying it.** `npm run audit:enrichment` drives the production path against Postgres. `node scripts/browserEnrichmentCheck.mjs` drives the same flow through a browser against a built server.
+**Verifying it.** `npm run audit:enrichment` drives the production path against Postgres. `npm run audit:cron` starts from a backlog nothing has scheduled and drives the real authenticated HTTP route — that is the one that would have caught the production failure. `node scripts/browserEnrichmentCheck.mjs` drives the flow through a browser against a built server.
+
+## Scheduling in production
+
+The loop only runs if something calls it. Two endpoints, both authenticated with `CRON_SECRET` as either `Authorization: Bearer <secret>` or `x-cron-secret`:
+
+| Endpoint | What it does | Cadence |
+| --- | --- | --- |
+| `/api/cron/tick` | Contact backlog, then drain the job queue | As often as the scheduler allows |
+| `/api/cron/daily` | The above, plus discovery, follow-ups, supply re-match, plan, metrics | Once a day |
+
+`/api/cron?mode=tick|daily` still works and is equivalent. Prefer the path form: a scheduler that drops the query string silently runs `tick` forever and reports success.
+
+**Vercel plan matters.** Hobby refuses any cron expression that fires more than once a day — the deployment fails rather than degrading. `vercel.json` schedules the tick every ten minutes, which requires **Pro or above**.
+
+If the deployment is on Hobby, do one of these:
+
+1. **Upgrade to Pro.** `vercel.json` then works as written.
+2. **Use the bundled GitHub Actions workflow.** `.github/workflows/cron-tick.yml` calls `/api/cron/tick` every ten minutes from GitHub's scheduler, which has no plan limit. It needs two repository secrets — `CRON_SECRET` (matching the Vercel environment variable) and `APP_BASE_URL`. Remove the tick entry from `vercel.json` so the deployment builds. GitHub's schedules are best-effort and are disabled after 60 days of repository inactivity, so this is the fallback rather than the better option.
+3. **Any external scheduler.** Anything that can issue an authenticated GET on a timer works: Supabase `pg_cron` with `pg_net`, Cloud Scheduler, cron-job.org.
+
+**Checking it is actually running.** Every response carries an `enrichment` block per organisation:
+
+```json
+{"org":"...","scheduled":8,"attempted":10,"resolved":4,"released":8,"stillQueued":0,"unscheduled":0}
+```
+
+`unscheduled` is the number that matters. Above zero means organisations with live demand still have no resolution state and the board still shows rows reading "Not scheduled"; the next invocation will bring in the next batch. If it stays above zero across several invocations, the tick is not running — check the scheduler before looking at anything else.
 
 ### Troubleshooting contact resolution
 

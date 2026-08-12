@@ -1227,7 +1227,7 @@ export type PipelineResult = {
   resolution: { resolved: number; unresolved: number };
   routes: RouteBuildOutcome;
   /** Organisations newly put into the contact-resolution workflow. */
-  contactResolution: { scheduled: number; alreadyTracked: number };
+  contactResolution: { scheduled: number; unscheduledRemaining: number };
 };
 
 /**

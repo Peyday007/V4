@@ -24,6 +24,7 @@
     "enrich:backfill": "tsx scripts/enrichmentBackfill.ts",
     "audit:caller": "tsx scripts/callerAudit.ts",
     "audit:enrichment": "tsx scripts/enrichmentAudit.ts",
+    "audit:cron": "tsx scripts/cronBacklogAudit.ts",
     "vercel-build": "prisma generate && node scripts/deployMigrate.mjs && next build",
     "db:seed:prod": "tsx prisma/seed.ts",
     "db:migrate:new": "prisma migrate dev --create-only",

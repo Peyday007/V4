@@ -21,6 +21,8 @@ import { resolveCompanyContact, strongestProvenance, type ResolutionResult } fro
 
 /** How many organisations one worker pass will attempt. */
 export const DEFAULT_BATCH = 25;
+/** How many organisations one pass will bring into the workflow. */
+export const SCHEDULE_BATCH = 500;
 /** A claim older than this belonged to a worker that is not coming back. */
 const STALE_CLAIM_MS = 10 * 60_000;
 
@@ -37,8 +39,15 @@ function batchSize(requested?: number): number {
 export type ScheduleOutcome = {
   /** Organisations that had no resolution row and now have one. */
   scheduled: number;
-  /** Organisations already in the workflow, left where they were. */
-  alreadyTracked: number;
+  /**
+   * Organisations with live demand still carrying no resolution state.
+   *
+   * The number that matters operationally: while it is above zero the board
+   * still has rows reading "Not scheduled", and the next invocation has work
+   * to do. Reported rather than inferred, because inferring it from a total
+   * was how a backlog that was never reached could look like one that was.
+   */
+  unscheduledRemaining: number;
 };
 
 /**
@@ -58,8 +67,19 @@ export async function scheduleContactResolution(params: {
   orgId: string;
   /** Restrict to these accounts. Omitted means every account with live demand. */
   companyIds?: string[];
+  /**
+   * How many organisations this pass may bring into the workflow.
+   *
+   * Bounded so one invocation cannot be the whole backlog. A workspace with
+   * fifty thousand accounts must not depend on a single serverless function
+   * living long enough to insert fifty thousand rows — it takes a slice, the
+   * next invocation takes the next, and the ordering below means the slices
+   * arrive in the order they are worth doing.
+   */
+  limit?: number;
 }): Promise<ScheduleOutcome> {
   const { orgId } = params;
+  const limit = Math.min(Math.max(params.limit ?? SCHEDULE_BATCH, 1), 2000);
 
   const restriction = params.companyIds?.length
     ? Prisma.sql`AND r."companyId" IN (${Prisma.join(params.companyIds)})`
@@ -67,25 +87,44 @@ export async function scheduleContactResolution(params: {
 
   // One statement, so two workers arriving together produce one row per
   // organisation rather than a unique-constraint failure each.
+  //
+  // The anti-join against `ContactResolution` is what makes this a backlog
+  // query rather than a re-scan: it selects organisations that have live demand
+  // and no contact-resolution state at all, which is exactly the population
+  // that predates the workflow and would otherwise never be picked up, because
+  // nothing re-routes an event that was routed last week.
   const inserted = await prisma.$executeRaw`
     INSERT INTO "ContactResolution" ("id", "orgId", "companyId", "status", "nextAttemptAt", "createdAt", "updatedAt")
-    SELECT
-      gen_random_uuid()::text, ${orgId}, r."companyId", 'QUEUED', NOW(), NOW(), NOW()
-    FROM "RouteHypothesis" r
-    WHERE r."orgId" = ${orgId}
-      AND r."status" NOT IN ('EXPIRED', 'REJECTED')
-      ${restriction}
-    GROUP BY r."companyId"
+    SELECT gen_random_uuid()::text, ${orgId}, backlog."companyId", 'QUEUED', NOW(), NOW(), NOW()
+    FROM (
+      SELECT r."companyId" AS "companyId"
+      FROM "RouteHypothesis" r
+      LEFT JOIN "ContactResolution" cr ON cr."companyId" = r."companyId"
+      WHERE r."orgId" = ${orgId}
+        AND r."status" NOT IN ('EXPIRED', 'REJECTED')
+        AND cr."id" IS NULL
+        ${restriction}
+      GROUP BY r."companyId"
+      -- Tier A first, then by the nearest buying window, then Tier B the same
+      -- way. Postgres orders enums by declaration and LeadTier declares
+      -- ACTIVE_DEMAND first, so ascending is the operator's order.
+      ORDER BY MIN(r."tier") ASC, MIN(r."windowClosesAt") ASC NULLS LAST, r."companyId" ASC
+      LIMIT ${limit}
+    ) backlog
     ON CONFLICT ("companyId") DO NOTHING
   `;
 
   const [{ count }] = await prisma.$queryRaw<Array<{ count: bigint }>>`
     SELECT COUNT(DISTINCT r."companyId")::bigint AS count
     FROM "RouteHypothesis" r
-    WHERE r."orgId" = ${orgId} AND r."status" NOT IN ('EXPIRED', 'REJECTED') ${restriction}
+    LEFT JOIN "ContactResolution" cr ON cr."companyId" = r."companyId"
+    WHERE r."orgId" = ${orgId}
+      AND r."status" NOT IN ('EXPIRED', 'REJECTED')
+      AND cr."id" IS NULL
+      ${restriction}
   `;
 
-  return { scheduled: inserted, alreadyTracked: Math.max(0, Number(count) - inserted) };
+  return { scheduled: inserted, unscheduledRemaining: Number(count) };
 }
 
 // ---------------------------------------------------------------------------
@@ -103,17 +142,32 @@ export async function scheduleContactResolution(params: {
  * `FOR UPDATE SKIP LOCKED` is what makes this safe to run from several workers
  * at once — a second worker steps over rows the first is claiming rather than
  * blocking behind them or duplicating them.
+ *
+ * The priority keys come back with the rows and are sorted again in the caller.
+ * `UPDATE ... WHERE id IN (SELECT ... ORDER BY ...) RETURNING` orders which
+ * rows are *chosen*, but `RETURNING` emits them in whatever order the update
+ * touched them — so without the second sort the batch is selected by priority
+ * and then worked in an arbitrary one. On a backlog larger than a batch that is
+ * invisible; within a batch it means Tier B can be rung up before Tier A.
  */
+export type ClaimedResolution = {
+  id: string;
+  companyId: string;
+  tier: string | null;
+  closes: Date | null;
+  routes: number | null;
+};
+
 export async function claimResolutions(params: {
   orgId: string;
   limit: number;
   workerId: string;
   now?: Date;
-}): Promise<Array<{ id: string; companyId: string }>> {
+}): Promise<ClaimedResolution[]> {
   const now = params.now ?? new Date();
   const staleBefore = new Date(now.getTime() - STALE_CLAIM_MS);
 
-  return prisma.$queryRaw<Array<{ id: string; companyId: string }>>`
+  const claimed = await prisma.$queryRaw<ClaimedResolution[]>`
     UPDATE "ContactResolution" AS target
     SET "status" = 'IN_PROGRESS', "lockedAt" = ${now}, "lockedBy" = ${params.workerId}
     WHERE target."id" IN (
@@ -140,8 +194,36 @@ export async function claimResolutions(params: {
       LIMIT ${params.limit}
       FOR UPDATE OF cr SKIP LOCKED
     )
-    RETURNING target."id", target."companyId"
+    RETURNING
+      target."id",
+      target."companyId",
+      (SELECT MIN(r."tier")::text FROM "RouteHypothesis" r
+        WHERE r."companyId" = target."companyId" AND r."status" NOT IN ('EXPIRED','REJECTED')) AS tier,
+      (SELECT MIN(r."windowClosesAt") FROM "RouteHypothesis" r
+        WHERE r."companyId" = target."companyId" AND r."status" NOT IN ('EXPIRED','REJECTED')) AS closes,
+      (SELECT COUNT(*)::int FROM "RouteHypothesis" r
+        WHERE r."companyId" = target."companyId" AND r."status" NOT IN ('EXPIRED','REJECTED')) AS routes
   `;
+
+  return sortByPriority(claimed);
+}
+
+/** Tier A by nearest window, then Tier B the same way. */
+export function sortByPriority<T extends { tier: string | null; closes: Date | null; routes: number | null }>(
+  rows: T[],
+): T[] {
+  const tierRank = (tier: string | null) =>
+    tier === 'ACTIVE_DEMAND' ? 0 : tier === 'STRONG_TRIGGER' ? 1 : 2;
+  return [...rows].sort((a, b) => {
+    const tier = tierRank(a.tier) - tierRank(b.tier);
+    if (tier !== 0) return tier;
+    // A window that closes sooner is worth more than one that closes later,
+    // and an account with no window at all sorts last rather than first.
+    const aCloses = a.closes ? a.closes.getTime() : Number.POSITIVE_INFINITY;
+    const bCloses = b.closes ? b.closes.getTime() : Number.POSITIVE_INFINITY;
+    if (aCloses !== bCloses) return aCloses - bCloses;
+    return (b.routes ?? 0) - (a.routes ?? 0);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -161,6 +243,8 @@ export type SweepOutcome = {
   releasedAccounts: string[];
   /** Organisations still waiting, so a caller can see there is more to come. */
   remaining: number;
+  /** Live-demand organisations still carrying no resolution state at all. */
+  unscheduledRemaining: number;
   durationMs: number;
 };
 
@@ -196,6 +280,7 @@ export async function sweepContactResolution(params: {
     released: 0,
     releasedAccounts: [],
     remaining: 0,
+    unscheduledRemaining: schedule.unscheduledRemaining,
     durationMs: 0,
   };
 
@@ -269,7 +354,8 @@ export async function drainContactResolution(params: {
   const startedAt = Date.now();
   const total: SweepOutcome = {
     scheduled: 0, attempted: 0, resolved: 0, ambiguous: 0, unresolved: 0,
-    failed: 0, released: 0, releasedAccounts: [], remaining: 0, durationMs: 0,
+    failed: 0, released: 0, releasedAccounts: [], remaining: 0,
+    unscheduledRemaining: 0, durationMs: 0,
   };
 
   while (Date.now() - startedAt < budget) {
@@ -283,8 +369,11 @@ export async function drainContactResolution(params: {
     total.released += pass.released;
     total.releasedAccounts.push(...pass.releasedAccounts);
     total.remaining = pass.remaining;
+    total.unscheduledRemaining = pass.unscheduledRemaining;
     params.onBatch?.(pass);
-    if (pass.attempted === 0) break;
+    // Nothing attempted and nothing left to bring in means the backlog is
+    // genuinely clear, rather than merely quiet this second.
+    if (pass.attempted === 0 && pass.scheduled === 0) break;
   }
 
   total.durationMs = Date.now() - startedAt;
@@ -319,7 +408,8 @@ export async function retryContactResolution(params: {
       requeued: 0,
       worked: {
         scheduled: 0, attempted: 0, resolved: 0, ambiguous: 0, unresolved: 0,
-        failed: 0, released: 0, releasedAccounts: [], remaining: 0, durationMs: 0,
+        failed: 0, released: 0, releasedAccounts: [], remaining: 0,
+        unscheduledRemaining: 0, durationMs: 0,
       },
     };
   }
