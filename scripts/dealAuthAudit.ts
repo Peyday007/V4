@@ -38,10 +38,22 @@ async function signIn(email: string): Promise<string | null> {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ email, password: PASSWORD }),
   });
-  if (!response.ok) return null;
+  if (!response.ok) {
+    // Loudly. This used to return null, and the blocks below then skipped in
+    // silence — so a run rate-limited halfway through reported the same "all
+    // passed" as a complete one. The count guard at the end is the backstop;
+    // this is the message that says why.
+    const hint = response.status === 429
+      ? 'rate-limited — the login route allows ten attempts a minute per address. Wait a minute and re-run.'
+      : await response.text().catch(() => '');
+    throw new Error(`Sign-in failed for ${email}: HTTP ${response.status} — ${hint}`);
+  }
   const cookie = response.headers.get('set-cookie');
   return cookie ? cookie.split(';')[0] : null;
 }
+
+/** How many checks this audit runs when nothing is skipped. */
+const EXPECTED_CHECKS = 25;
 
 async function post(path: string, body: unknown, cookie?: string | null) {
   const response = await fetch(`${BASE}${path}`, {
@@ -210,6 +222,12 @@ async function main() {
     }
   } else {
     check('an approval existed to test the decision path', false, 'none pending — run dealProgressionAudit first');
+  }
+
+  // A run that skipped work must not report the same thing as a complete one.
+  if (checks !== EXPECTED_CHECKS) {
+    failures += 1;
+    console.log(` FAIL  the audit ran every check it has — ran ${checks} of ${EXPECTED_CHECKS}`);
   }
 
   console.log(`\n${checks - failures}/${checks} checks passed.`);

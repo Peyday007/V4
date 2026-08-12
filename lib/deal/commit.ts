@@ -4,6 +4,7 @@ import { getOrgConfig } from '@/lib/config';
 import { approvalsRequired, syncQuoteApprovals, approvalGate } from './approval';
 import { economicsOf } from './quote';
 import { recordDealEvent, newCorrelationId } from './events';
+import { recordDealOutcome } from '@/lib/measure/funnel';
 
 /**
  * Commitment, delivery and money.
@@ -196,6 +197,10 @@ export async function commitBuyer(options: {
     return created;
   });
 
+  // The funnel reads the deal rather than being told about it, so WON is
+  // always backed by a dated commitment with evidence on it.
+  await recordDealOutcome({ routeId: deal.routeId });
+
   return { ok: true, deal };
 }
 
@@ -358,6 +363,10 @@ export async function advanceDeal(options: {
     });
     return row;
   });
+
+  // Delivery and loss are funnel rungs. Recorded from the row rather than from
+  // the request, so a stage that failed to persist records nothing.
+  await recordDealOutcome({ routeId: deal.routeId });
 
   return { ok: true, deal: updated };
 }
@@ -532,6 +541,11 @@ export async function settlePayment(options: {
       confidence: 'realised',
     });
   });
+
+  // Money moving is the last rung, and the only one that can carry a profit
+  // figure. Recorded here rather than at invoice time, because an invoice is a
+  // claim and this function is where it stops being one.
+  await recordDealOutcome({ routeId: payment.deal.routeId });
 
   return { ok: true };
 }

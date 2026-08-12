@@ -2,6 +2,7 @@ import type { CallDisposition, SignalCategory } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { captureRequirement, requirementFromDiscovery, withdrawRequirement } from './requirement';
 import { syncCandidatesFromMatching, supplyPosture } from './provider';
+import { recordCallOutcome } from '@/lib/measure/funnel';
 
 /**
  * What a saved call does to the deal underneath it.
@@ -65,6 +66,18 @@ export async function progressFromCall(params: {
   };
 
   try {
+    // --- what this call proved about the funnel ---------------------------
+    //
+    // First, and outside the branch below, because a no-answer and a
+    // do-not-contact are both real outcomes for the source that produced this
+    // lead. Recording only the calls that went well is how a connector with a
+    // 2% answer rate reports the same funnel as one with 40%.
+    await recordCallOutcome({
+      routeId: params.routeId,
+      disposition: params.disposition,
+      occurredAt: params.now,
+    });
+
     // --- the buyer side --------------------------------------------------
     if (TOLD_US_NO.includes(params.disposition)) {
       const reason = typeof params.discovery.disqualifyReason === 'string' && params.discovery.disqualifyReason.trim()

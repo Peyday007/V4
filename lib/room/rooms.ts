@@ -3,6 +3,7 @@ import type { DealRoom, Prisma, RoomEventKind, RoomState } from '@prisma/client'
 import { prisma } from '@/lib/db';
 import { recordDealEvent, newCorrelationId } from '@/lib/deal/events';
 import { buildRoomContent, type RoomContent } from './content';
+import { recordRoomOutcome } from '@/lib/measure/funnel';
 
 /**
  * Creating, sending and tracking a Deal Room.
@@ -424,6 +425,11 @@ export async function recordProspectAction(options: {
         correlationId: newCorrelationId(),
       });
     });
+
+    // A deliberate act by the prospect is a funnel rung. Recorded only on the
+    // first one: the dedupe above means a second click never reaches here, so
+    // the funnel counts prospects rather than button presses.
+    await recordRoomOutcome({ routeId: room.routeId, action: options.action, occurredAt: now });
 
     return { ok: true, alreadyRecorded: false, message: acknowledgement(options.action) };
   } catch (error) {

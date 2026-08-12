@@ -626,6 +626,9 @@ model Organization {
   dealEvents             DealEvent[]
   dealRooms              DealRoom[]
   dealRoomEvents         DealRoomEvent[]
+  experiments            Experiment[]
+  experimentAssignments  ExperimentAssignment[]
+  processVersions        ProcessVersion[]
 }
 
 model Permission {
@@ -701,6 +704,8 @@ model User {
 
   requirementsCaptured BuyerRequirement[] @relation("RequirementCapturedBy")
   roomsCreated         DealRoom[]         @relation("RoomCreatedBy")
+  experimentsCreated   Experiment[]       @relation("ExperimentCreatedBy")
+  processVersions      ProcessVersion[]   @relation("ProcessVersionCreatedBy")
   quotesCreated        RouteQuote[]       @relation("QuoteCreatedBy")
   dealsCreated         RouteDeal[]        @relation("DealCreatedBy")
   paymentsRecorded     DealPayment[]      @relation("PaymentRecordedBy")
@@ -2916,8 +2921,19 @@ enum OutcomeStage {
   VERIFIED_LEAD
   CONTACTED
   RESPONDED
+  /// Somebody who can speak to the requirement answered. Distinct from
+  /// RESPONDED, which only means the phone was picked up.
+  RELEVANT_PERSON
+  /// They told us the need is real. The first rung that is about the deal
+  /// rather than about reaching anybody.
+  NEED_CONFIRMED
   QUALIFIED_CONVERSATION
+  /// They asked for a price. Kept apart from QUOTED, because the gap between
+  /// being asked and actually sending one is a real and measurable failure.
+  QUOTE_REQUESTED
   QUOTED
+  /// They accepted a low-risk first step from a deal room.
+  PROOF_STEP_ACCEPTED
   WON
   LOST
   COMPLETED
@@ -4053,4 +4069,202 @@ model DealRoomEvent {
   @@unique([roomId, kind, dedupeKey])
   @@index([orgId, occurredAt])
   @@index([roomId, occurredAt])
+}
+
+// ---------------------------------------------------------------------------
+// Measurement: experiments, and the versions of things that influenced work
+//
+// The previous system could not tell a good source from a bad one, and the
+// reason was not a missing dashboard. It was that nothing downstream of the
+// appointment ever came back to the thing that produced the lead, so every
+// comparison was between counts of records. Record volume is never source
+// performance, and this section exists to make that measurable rather than
+// merely stated.
+// ---------------------------------------------------------------------------
+
+enum ExperimentState {
+  /// Being written. Assigns nobody.
+  DRAFT
+  RUNNING
+  /// Stopped early because a guardrail moved the wrong way.
+  HALTED
+  /// Finished, with a readout.
+  CONCLUDED
+}
+
+/// What an experiment is allowed to vary.
+///
+/// Deliberately a closed list. An experiment that can change anything is an
+/// experiment nobody can interpret, and one that can change a compliance rule
+/// is not an experiment at all.
+enum ExperimentSubject {
+  /// Opening lines, objection handling, the order questions are asked in.
+  CALL_SCRIPT
+  /// Which reversible first step a deal room offers.
+  PROOF_STEP
+  /// The wording of the message that carries a room.
+  OUTREACH_COPY
+  /// How the calling queue is ordered.
+  QUEUE_ORDER
+  /// Which audience the outreach targets first.
+  AUDIENCE_ORDER
+}
+
+model Experiment {
+  id    String @id @default(cuid())
+  orgId String
+
+  name       String
+  hypothesis String
+  subject    ExperimentSubject
+  state      ExperimentState   @default(DRAFT)
+
+  /// The single outcome declared before the experiment ran.
+  ///
+  /// Predeclared because the alternative is choosing the metric that moved,
+  /// which will always find something in a funnel with ten rungs.
+  primaryOutcome OutcomeStage
+  /// Outcomes that must not get worse, whatever the primary does. A change
+  /// that lifts an early rung while worsening completion, complaints or gross
+  /// profit is not a win, and this is where that is enforced rather than
+  /// remembered.
+  guardrails     OutcomeStage[] @default([])
+
+  /// Below this many assigned subjects per arm, the readout says the sample is
+  /// too small rather than naming a winner.
+  minimumSamplePerArm Int @default(30)
+
+  /// Which populations this applies to. Empty means all of them.
+  ///
+  /// Stratification is not optional in this business: a script tested only on
+  /// active demand and rolled out to directory prospects has been tested on a
+  /// different problem.
+  tiers   LeadTier[]       @default([])
+  routes  SignalCategory[] @default([])
+  markets String[]         @default([])
+
+  startedAt   DateTime?
+  concludedAt DateTime?
+  /// Why it ended. Always written, including when it simply finished.
+  conclusion  String?
+  /// The arm that won, when one did. Null is a legitimate result.
+  winningArmId String?  @unique
+
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy User?        @relation("ExperimentCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  arms        ExperimentArm[]
+  assignments ExperimentAssignment[]
+
+  @@index([orgId, state])
+}
+
+model ExperimentArm {
+  id           String @id @default(cuid())
+  experimentId String
+
+  key   String
+  label String
+  /// True for the arm that represents current behaviour.
+  isControl Boolean @default(false)
+  /// The version of the thing this arm uses. Null for the control where the
+  /// control is "whatever is shipped".
+  processVersionId String?
+  /// Share of traffic, 0–1. Summed across arms this must be 1.
+  weight Float @default(0.5)
+
+  createdAt DateTime @default(now())
+
+  experiment  Experiment      @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+  version     ProcessVersion? @relation(fields: [processVersionId], references: [id], onDelete: SetNull)
+  assignments ExperimentAssignment[]
+
+  @@unique([experimentId, key])
+}
+
+/// Which arm a subject landed in, recorded the first time it was decided.
+///
+/// Stored rather than recomputed, even though assignment is deterministic. The
+/// hash is stable, but the *inputs* to it are not: a route can change tier, and
+/// a subject that silently moves arms mid-experiment contaminates both.
+model ExperimentAssignment {
+  id           String @id @default(cuid())
+  orgId        String
+  experimentId String
+  armId        String
+
+  /// What was assigned. A route for most subjects; a caller for queue-order work.
+  subjectType String
+  subjectId   String
+
+  /// The stratum this subject belonged to when assigned, so the readout can
+  /// compare like with like rather than in one average.
+  stratum String
+
+  assignedAt DateTime @default(now())
+
+  org        Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  experiment Experiment    @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+  arm        ExperimentArm @relation(fields: [armId], references: [id], onDelete: Cascade)
+
+  @@unique([experimentId, subjectType, subjectId])
+  @@index([orgId, experimentId, armId])
+}
+
+enum ProcessKind {
+  CALL_SCRIPT
+  OUTREACH_COPY
+  PROOF_STEP_POLICY
+  BRIEF_PROMPT
+  SUMMARY_PROMPT
+}
+
+/// A version of something that influences how work is done.
+///
+/// Versioned at the time it influenced the work, not at the time somebody asks
+/// about it. Six weeks later "which script produced these numbers" has exactly
+/// one answer, and it is not reconstructed from a changelog.
+///
+/// Prompt edits cannot change compliance or authority rules. Those live in
+/// code, are not variables, and no version stored here is consulted for them.
+model ProcessVersion {
+  id    String @id @default(cuid())
+  orgId String
+
+  kind    ProcessKind
+  key     String
+  version Int
+
+  label String
+  body  String
+  /// Variables the body is allowed to reference. An unknown one is rejected at
+  /// save time rather than rendering as an empty string in front of a buyer.
+  declaredVariables String[] @default([])
+  notes             String?
+
+  /// Exactly one live version per (kind, key), enforced by a partial index.
+  isActive Boolean @default(false)
+  /// True for the version shipped with the product. Never deleted, so there is
+  /// always something safe to fall back to.
+  isFallback Boolean @default(false)
+
+  supersededById String?   @unique
+  retiredAt      DateTime?
+
+  createdById String?
+  createdAt   DateTime @default(now())
+
+  org          Organization    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy    User?           @relation("ProcessVersionCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  supersededBy ProcessVersion? @relation("ProcessVersions", fields: [supersededById], references: [id], onDelete: SetNull)
+  supersedes   ProcessVersion? @relation("ProcessVersions")
+
+  arms ExperimentArm[]
+
+  @@unique([orgId, kind, key, version])
+  @@index([orgId, kind, isActive])
 }

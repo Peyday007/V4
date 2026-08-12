@@ -6,6 +6,7 @@ import { approvalsRequired, syncQuoteApprovals, approvalGate } from './approval'
 import { costIsUsable } from './provider';
 import { priceability } from './requirement';
 import { recordDealEvent, diffOf, newCorrelationId } from './events';
+import { recordQuoteSent } from '@/lib/measure/funnel';
 
 /**
  * Priced offers to the buyer, as versions.
@@ -352,6 +353,11 @@ export async function sendQuote(options: {
     });
     return updated;
   });
+
+  // Recorded after the send succeeded, not before. A funnel rung written for a
+  // quote that failed to go out is the kind of number that survives long
+  // enough to be believed.
+  await recordQuoteSent({ routeId: quote.routeId, occurredAt: now });
 
   return { ok: true, quote: sent, economics: economicsOf(sent), approvalsOpened: 0 };
 }
