@@ -6,6 +6,8 @@ import { funnelTotals, sourceScorecards } from '@/lib/demand/performance';
 import { DemandControls } from '@/components/DemandControls';
 import { EnrichmentPanel } from '@/components/EnrichmentPanel';
 import { enrichmentOverview } from '@/lib/enrichment/report';
+import { ChainHealth } from '@/components/ChainHealth';
+import { chainHealth } from '@/lib/health/chain';
 
 export const dynamic = 'force-dynamic';
 
@@ -30,6 +32,8 @@ export default async function SourcesPage() {
     }),
     enrichmentOverview(user.orgId),
   ]);
+  // Loaded after the rest so the panels it summarises are already resolved.
+  const chain = await chainHealth(user.orgId);
 
   return (
     <>
@@ -40,6 +44,10 @@ export default async function SourcesPage() {
         </div>
         <Link href="/demand" className="btn secondary">Back to the queue</Link>
       </div>
+
+      {/* First on the page: it is the only panel that can say which of the
+          others is worth opening. */}
+      <ChainHealth health={chain} />
 
       <EnrichmentPanel overview={enrichment} />
 

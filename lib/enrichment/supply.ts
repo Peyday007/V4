@@ -200,6 +200,47 @@ async function raiseSourcingTasks(
   return created;
 }
 
+/** Where the last-seen catalogue fingerprint is kept between invocations. */
+const FINGERPRINT_KEY = 'supply.catalogueFingerprint';
+
+/**
+ * Re-match supply if, and only if, the provider catalogue has changed.
+ *
+ * Called every tick. Re-running the match unconditionally would be hundreds of
+ * route updates for a set that changes when somebody recruits a provider — but
+ * only re-running it daily means a route stays "blocked on supply" for up to a
+ * day after the provider who unblocks it was added, which is exactly the kind
+ * of stale answer an operator stops trusting.
+ *
+ * The fingerprint costs one aggregate query. That is cheap enough to ask every
+ * time and precise enough that a positive answer always means the match could
+ * genuinely produce a different result.
+ */
+export async function resolveSupplyIfCatalogueChanged(params: {
+  orgId: string;
+  now?: Date;
+}): Promise<{ changed: boolean; outcome: SupplyOutcome | null; fingerprint: string }> {
+  const fingerprint = await providerCatalogueFingerprint(params.orgId);
+  const previous = await prisma.configSetting.findUnique({
+    where: { orgId_key: { orgId: params.orgId, key: FINGERPRINT_KEY } },
+    select: { value: true },
+  });
+
+  if (previous && previous.value === fingerprint) {
+    return { changed: false, outcome: null, fingerprint };
+  }
+
+  const outcome = await resolveSupply({ orgId: params.orgId, now: params.now });
+  // Written after the match, so an invocation that dies mid-match re-runs
+  // rather than recording work it did not finish.
+  await prisma.configSetting.upsert({
+    where: { orgId_key: { orgId: params.orgId, key: FINGERPRINT_KEY } },
+    create: { orgId: params.orgId, key: FINGERPRINT_KEY, value: fingerprint },
+    update: { value: fingerprint },
+  });
+  return { changed: true, outcome, fingerprint };
+}
+
 /**
  * A fingerprint of the provider catalogue.
  *

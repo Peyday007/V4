@@ -223,33 +223,6 @@ export const HANDLERS: Record<string, JobHandler> = {
   },
 
   /**
-   * One organisation, on demand.
-   *
-   * Ordinary lead enrichment and demand opportunities go through the same
-   * implementation — this handler is a thin call into it rather than a second
-   * enrichment path, which is what stops the two drifting apart and stops the
-   * same organisation being enriched twice under two names.
-   */
-  'enrichment.company': async (job) => {
-    const payload = job.payload as Payload;
-    const companyId = requireString(payload, 'companyId');
-    const result = await resolveCompanyContact({
-      orgId: job.orgId,
-      companyId,
-      force: payload.force === true,
-    });
-    return {
-      companyId,
-      status: result.status,
-      confidence: result.confidence,
-      sources: result.sources,
-      blocker: result.blocker,
-      callableRoutes: result.callableRoutes,
-      nextAttemptAt: result.nextAttemptAt?.toISOString() ?? null,
-    };
-  },
-
-  /**
    * The recurring contact-resolution worker.
    *
    * Schedules any organisation with live demand that is not yet in the

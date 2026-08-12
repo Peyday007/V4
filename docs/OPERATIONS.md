@@ -141,6 +141,18 @@ A failure is never presented as "this business has no phone number". That distin
 
 **Verifying it.** `npm run audit:enrichment` drives the production path against Postgres. `npm run audit:cron` starts from a backlog nothing has scheduled and drives the real authenticated HTTP route — that is the one that would have caught the production failure. `node scripts/browserEnrichmentCheck.mjs` drives the flow through a browser against a built server.
 
+## Where the machine is stopped
+
+**Demand → Source health** opens with the whole chain in the order work moves through it, and names only the *first* stage that is not passing work along.
+
+It exists because every other panel in this application reports on its own stage honestly, and that is exactly why none of them can answer "why is nothing happening" — the break is always upstream of wherever you are looking. Fixing stage six while stage two is dry is how a fortnight goes by.
+
+Three rules keep it honest:
+
+- **Downstream stages are not given a verdict.** An empty calling queue below a dry demand source is not a calling problem, and saying so sends somebody to the wrong screen.
+- **Supply is a parallel track, not a chain link.** A route with no verified provider is a real gap whether or not the phone rang today, so it keeps its own verdict and is never masked by a demand-side break.
+- **Unbuilt stages say `not built`, never `OK`.** Buyer requirements, quotes, delivery and payment do not exist yet. Reporting them green is how a system claims to be finished having moved no money — and it is why no source, route or caller can currently be credited with profit.
+
 ## Scheduling in production
 
 The loop only runs if something calls it. Two endpoints, both authenticated with `CRON_SECRET` as either `Authorization: Bearer <secret>` or `x-cron-secret`:

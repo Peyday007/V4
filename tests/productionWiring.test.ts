@@ -1,0 +1,211 @@
+import { readFileSync } from 'node:fs';
+import { describe, expect, it } from 'vitest';
+import { HANDLERS } from '@/lib/jobs/handlers';
+
+/**
+ * Does the production path actually call the thing?
+ *
+ * The single most expensive failure in this codebase, twice over: logic written
+ * correctly, tested in isolation, and reached by nothing real. Contact
+ * resolution was enqueued as a job that no invocation ever had budget to claim,
+ * and the cron returned 200 every morning while a hundred and fifty
+ * opportunities sat untouched. Unit tests all passed. They were testing the
+ * implementation, and the implementation was never the problem.
+ *
+ * So these read the deployed files as text and assert the call site exists.
+ * That is a blunt instrument and it is the right one: it fails when somebody
+ * refactors the caller away, which is exactly the event no behavioural test in
+ * this repository would have noticed.
+ *
+ * Every assertion here has been mutation-checked — the call site was removed
+ * and the test confirmed to fail — because a wiring guard that passes against
+ * broken wiring is worse than none.
+ */
+
+const read = (path: string) => readFileSync(path, 'utf8');
+
+describe('the scheduler reaches the contact backlog', () => {
+  const cron = read('lib/jobs/cron.ts');
+
+  it('runs the backlog from the cron handler itself, not via a queued job', () => {
+    // The original bug in one line: as a job at priority 35 it sat behind
+    // discovery and was never claimed inside the function's lifetime.
+    expect(cron).toMatch(/drainContactResolution\(/);
+    expect(cron).toMatch(/import .*drainContactResolution.* from '@\/lib\/enrichment\/schedule'/);
+  });
+
+  it('gives the backlog its budget before draining the rest of the queue', () => {
+    const backlogAt = cron.indexOf('drainContactResolution(');
+    const drainAt = cron.indexOf('processJobs(');
+    expect(backlogAt).toBeGreaterThan(-1);
+    expect(drainAt).toBeGreaterThan(-1);
+    // Ordering is the guarantee. Behind the queue drain it is starvable again.
+    expect(backlogAt).toBeLessThan(drainAt);
+  });
+
+  it('stops the queue drain claiming work it cannot finish', () => {
+    expect(cron).toMatch(/processJobs\(\s*10\s*,\s*undefined\s*,\s*deadline\s*\)/);
+  });
+
+  it('re-matches supply when the provider catalogue changes', () => {
+    expect(cron).toMatch(/resolveSupplyIfCatalogueChanged\(/);
+  });
+
+  it('reports the outstanding backlog on every response', () => {
+    // `unscheduled` above zero is the one number that says the tick is not
+    // reaching the backlog. A response without it cannot be diagnosed.
+    expect(cron).toMatch(/unscheduled:\s*backlog\.unscheduledRemaining/);
+  });
+});
+
+describe('the deployed routes exist and carry the mode in the path', () => {
+  it('exposes an explicit tick and daily route', () => {
+    expect(read('app/api/cron/tick/route.ts')).toMatch(/runCron\(request,\s*'tick'\)/);
+    expect(read('app/api/cron/daily/route.ts')).toMatch(/runCron\(request,\s*'daily'\)/);
+  });
+
+  it('schedules both of them in vercel.json, by path', () => {
+    const vercel = JSON.parse(read('vercel.json')) as { crons?: Array<{ path: string; schedule: string }> };
+    const paths = (vercel.crons ?? []).map((c) => c.path);
+    // A query string is the thing a scheduler is most likely to drop, and
+    // dropping it silently downgrades `daily` to `tick`.
+    expect(paths).toContain('/api/cron/tick');
+    expect(paths).toContain('/api/cron/daily');
+    for (const path of paths) expect(path).not.toContain('?');
+  });
+
+  it('schedules the tick more often than once a day', () => {
+    const vercel = JSON.parse(read('vercel.json')) as { crons?: Array<{ path: string; schedule: string }> };
+    const tick = (vercel.crons ?? []).find((c) => c.path === '/api/cron/tick');
+    expect(tick).toBeDefined();
+    // Daily is not a tick. This is the schedule Vercel's Hobby plan refuses,
+    // which is why the repository also carries a GitHub Actions trigger.
+    expect(tick!.schedule).not.toMatch(/^\d+\s+\d+\s+\*\s+\*\s+\*$/);
+  });
+
+  it('ships a plan-independent trigger for deployments that cannot run it', () => {
+    const workflow = read('.github/workflows/cron-tick.yml');
+    expect(workflow).toMatch(/\/api\/cron\/tick/);
+    expect(workflow).toMatch(/Authorization: Bearer/);
+    // --fail-with-body, so a rejected call fails the run loudly rather than
+    // reporting success while being turned away.
+    expect(workflow).toMatch(/--fail-with-body/);
+  });
+});
+
+describe('routing schedules contact resolution as its last step', () => {
+  const pipeline = read('lib/demand/pipeline.ts');
+
+  it('calls the shared scheduler', () => {
+    expect(pipeline).toMatch(/scheduleContactResolution\(/);
+  });
+
+  it('reports what it left unscheduled rather than inferring it', () => {
+    expect(pipeline).toMatch(/contactResolution/);
+  });
+});
+
+describe('resolution writes where the calling queue reads', () => {
+  it('writes the phone onto the company record', () => {
+    // The queue's contactability is COALESCE(correctedPhone, company.phone, …).
+    // Writing anywhere else resolves a contact that never becomes callable.
+    expect(read('lib/enrichment/resolve.ts')).toMatch(/prisma\.company\.update\([\s\S]*?phone:\s*candidate\.phone/);
+  });
+
+  it('recomputes eligibility with the queue’s own clause, not a copy', () => {
+    const resolve = read('lib/enrichment/resolve.ts');
+    expect(resolve).toMatch(/from '@\/lib\/demand\/queue'/);
+    // Twice, and both matter: once before the attempt and once after, because
+    // "this attempt released work" is the difference between them. Asserting
+    // the symbol merely appears passes when one of the two is deleted, which a
+    // mutation run caught.
+    const calls = [...resolve.matchAll(/callableRouteCount\(/g)];
+    expect(calls.length, 'expected a before and an after measurement').toBeGreaterThanOrEqual(2);
+  });
+
+  it('reopens resolution when a caller reports a wrong number', () => {
+    expect(read('lib/demand/outreach.ts')).toMatch(/rejectContactValue\(/);
+  });
+});
+
+describe('every job kind is either reachable or declared dormant', () => {
+  /**
+   * Handlers with no enqueue site anywhere.
+   *
+   * Listed explicitly rather than tolerated silently. Each of these is a
+   * capability that exists in code and cannot currently be triggered by
+   * anything — which is worth knowing and is not worth pretending is wired.
+   * Removing a name from this list without adding an enqueue site fails the
+   * test below.
+   */
+  const DORMANT: Record<string, string> = {
+    'scoring.run_all': 'Bulk rescoring. Reached only through planning.daily, which calls the function directly.',
+    'next_action.refresh_all': 'Same — planning.daily calls refreshAllNextActions directly.',
+    'vulnerability.assess_all': 'Same — planning.daily calls assessAllCompanies directly.',
+    'lanes.evaluate_all': 'Same — planning.daily calls evaluateAllLanes directly.',
+    'document.generate': 'Document generation has no trigger yet; documents are produced on request.',
+    'notification.send': 'No notification channel is configured, so nothing raises one.',
+  };
+
+  /**
+   * Every file that can put a job on the queue, with handler *declarations*
+   * stripped out.
+   *
+   * The strip matters. `handlers.ts` names each kind twice — once as the key
+   * of the handler and once, sometimes, in an `enqueue` call that chains the
+   * next step. Counting the key as a call site makes every handler look wired
+   * to itself, which is precisely the illusion this file exists to break.
+   */
+  const enqueueSites = [
+    'lib/jobs/cron.ts',
+    'lib/jobs/handlers.ts',
+    'lib/demand/pipeline.ts',
+    'scripts/tick.ts',
+    'lib/calling.ts',
+    'app/api/discovery/run/route.ts',
+  ]
+    .map((path) => {
+      let src: string;
+      try {
+        src = read(path);
+      } catch {
+        return '';
+      }
+      // Drop `'some.kind': async (job) => {` — the declaration, not a call.
+      return src.replace(/^\s*'[a-z_.]+':\s*async\b.*$/gm, '');
+    })
+    .join('\n');
+
+  /**
+   * Kinds named in an `enqueue({ kind: … })`, including the ternary form.
+   *
+   * Filtered against the declared handlers, because `kind:` is an ordinary
+   * field name elsewhere — an audit row and a task both have one — and a
+   * `kind: 'system'` has no business being read as a job.
+   */
+  const enqueued = new Set(
+    [...enqueueSites.matchAll(/kind:\s*(?:[^,;{}]*?\?\s*)?'([a-z_.]+)'(?:\s*:\s*'([a-z_.]+)')?/g)]
+      .flatMap((m) => [m[1], m[2]])
+      .filter((k): k is string => Boolean(k) && k in HANDLERS),
+  );
+
+  it('has a handler for nothing that cannot be enqueued, unless declared', () => {
+    const unreachable = Object.keys(HANDLERS).filter((kind) => !enqueued.has(kind));
+    const undeclared = unreachable.filter((kind) => !(kind in DORMANT));
+    expect(undeclared, `job kinds with a handler and no enqueue site: ${undeclared.join(', ')}`).toEqual([]);
+  });
+
+  it('declares nothing dormant that is actually wired', () => {
+    // The other direction, so the list cannot rot into a lie once somebody
+    // wires one of these up.
+    const wiredButDeclared = Object.keys(DORMANT).filter((kind) => enqueued.has(kind));
+    expect(wiredButDeclared, `declared dormant but enqueued somewhere: ${wiredButDeclared.join(', ')}`).toEqual([]);
+  });
+
+  it('has a handler for every kind anything enqueues', () => {
+    expect(enqueued.size).toBeGreaterThan(0);
+    for (const kind of enqueued) {
+      expect(HANDLERS[kind], `enqueued with no handler: "${kind}"`).toBeTypeOf('function');
+    }
+  });
+});

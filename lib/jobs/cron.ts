@@ -5,6 +5,7 @@ import { audit } from '@/lib/audit';
 import { enqueue } from './queue';
 import { processJobs } from './runner';
 import { drainContactResolution } from '@/lib/enrichment/schedule';
+import { resolveSupplyIfCatalogueChanged } from '@/lib/enrichment/supply';
 import { handleRouteError, json } from '@/lib/api';
 
 export type CronMode = 'tick' | 'daily';
@@ -58,6 +59,8 @@ export async function runCron(request: Request, mode: CronMode) {
       released: number;
       stillQueued: number;
       unscheduled: number;
+      /** Routes whose supply status moved because the catalogue changed. */
+      supplyRematched?: number;
     }> = [];
 
     for (const org of orgs) {
@@ -107,6 +110,15 @@ export async function runCron(request: Request, mode: CronMode) {
         stillQueued: backlog.remaining,
         unscheduled: backlog.unscheduledRemaining,
       });
+
+      // Supply is re-matched the moment the provider catalogue changes rather
+      // than only on the daily sweep, so a route stops reading "blocked on
+      // supply" the same tick somebody who can do the work is added. When
+      // nothing has changed this costs one aggregate query.
+      const supply = await resolveSupplyIfCatalogueChanged({ orgId: org.id });
+      if (supply.changed && supply.outcome) {
+        enrichment[enrichment.length - 1].supplyRematched = supply.outcome.changed;
+      }
 
       if (mode === 'daily') {
         // Idempotency keys are date-stamped so a retried cron on the same day

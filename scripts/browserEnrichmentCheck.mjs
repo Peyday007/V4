@@ -230,6 +230,25 @@ check('it names any configuration that is blocking enrichment, or says nothing i
   /Configuration stopping automatic enrichment/.test(adminText) || /Nothing blocked/.test(adminText));
 
 // ---------------------------------------------------------------------------
+console.log('\n--- the whole chain names where it is stopped -------------------');
+check('the admin view opens with where the machine is stopped',
+  /Where the machine is stopped/.test(adminText));
+for (const stage of ['Demand sources', 'Dated demand events', 'Organisation and location',
+                     'Commercial routes', 'Contact resolution', 'Work ready to call',
+                     'Calls being made', 'Supply able to deliver']) {
+  check(`the chain lists "${stage}"`, adminText.includes(stage));
+}
+check('exactly one break is emphasised, not a wall of amber',
+  (await page.locator('.alert.danger').count()) <= 1,
+  `${await page.locator('.alert.danger').count()} danger alert(s)`);
+check('supply keeps its own verdict rather than being hidden behind a demand break',
+  /Supply, separately/.test(adminText) || /Supply able to deliver/.test(adminText));
+check('the stages that would record money are named as not built',
+  /Not built yet/.test(adminText) && /payment and collected profit/i.test(adminText));
+check('it does not claim the chain is flowing while nothing is paid',
+  !/flowing all the way/.test(adminText) || !/Not built yet/.test(adminText));
+
+// ---------------------------------------------------------------------------
 console.log('\n--- state survives a reload -------------------------------------');
 await page.goto(`${BASE}/demand`);
 await page.waitForSelector('table.table tbody tr', { timeout: 15000 });

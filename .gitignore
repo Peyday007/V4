@@ -14,3 +14,7 @@ coverage/
 *.tsbuildinfo
 storage/
 !storage/.gitkeep
+
+# Scratch files from the browser checks, cleaned up on a normal run but left
+# behind when one is interrupted.
+scripts/.browser-check-*/

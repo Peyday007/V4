@@ -1,4 +1,3 @@
-import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { CONTACT_SOURCES, unavailableSources } from './sources';
 
@@ -223,6 +222,3 @@ export async function contactProvenanceFor(orgId: string, companyId: string): Pr
     })),
   };
 }
-
-/** Filter helper for the board: the states that are not "ready to call". */
-export const BLOCKED_STATES = Prisma.sql`('AMBIGUOUS','NONE_FOUND','FAILED','WAITING','RETRY_SCHEDULED','ENRICHING')`;
