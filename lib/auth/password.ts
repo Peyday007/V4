@@ -9,12 +9,26 @@ const scrypt = promisify(scryptCb) as (
 
 const KEYLEN = 64;
 
-/** scrypt with per-password salt. Format: scrypt$<saltHex>$<hashHex>. */
-export async function hashPassword(password: string): Promise<string> {
-  if (password.length < 10) throw new Error('Password must be at least 10 characters');
+/**
+ * scrypt with per-secret salt. Format: scrypt$<saltHex>$<hashHex>.
+ *
+ * The minimum length is a property of the credential, not of the hashing, so
+ * it is a parameter. A password typed once a day should be long; a caller's
+ * PIN, typed between calls on a shared machine, is short by design and is
+ * protected by a lockout instead. Both go through the same scrypt — a short
+ * credential is not a reason to hash it weakly.
+ */
+export async function hashSecret(secret: string, minimumLength: number): Promise<string> {
+  if (secret.length < minimumLength) {
+    throw new Error(`Secret must be at least ${minimumLength} characters`);
+  }
   const salt = randomBytes(16);
-  const derived = await scrypt(password, salt, KEYLEN);
+  const derived = await scrypt(secret, salt, KEYLEN);
   return `scrypt$${salt.toString('hex')}$${derived.toString('hex')}`;
+}
+
+export async function hashPassword(password: string): Promise<string> {
+  return hashSecret(password, 10);
 }
 
 export async function verifyPassword(password: string, stored: string): Promise<boolean> {

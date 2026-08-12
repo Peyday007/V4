@@ -610,6 +610,9 @@ model Organization {
   qualificationQuestions QualificationQuestion[]
   contactResolutions     ContactResolution[]
   contactProvenance      ContactProvenance[]
+  workPackets            WorkPacket[]
+  packetItems            PacketItem[]
+  workIncidents          WorkIncident[]
 }
 
 model Permission {
@@ -680,6 +683,8 @@ model User {
   messagesSent       Message[]
 
   outreachAttempts OutreachAttempt[]
+  workPackets      WorkPacket[]      @relation("PacketCaller")
+  incidents        WorkIncident[]    @relation("IncidentCaller")
 
   @@unique([orgId, email])
   @@index([orgId])
@@ -700,21 +705,34 @@ model Session {
 }
 
 model CallerProfile {
-  id                 String   @id @default(cuid())
-  userId             String   @unique
-  timezone           String   @default("America/New_York")
-  languages          String[] @default(["en"])
-  industryStrengths  String[] @default([])
-  callTypeStrengths  String[] @default([])
-  maxDailyCalls      Int      @default(40)
-  coldCallSkill      Float    @default(0.5)
-  warmCallSkill      Float    @default(0.5)
-  objectionSkill     Float    @default(0.5)
-  extractionAccuracy Float    @default(0.5)
-  buyerSideSkill     Float    @default(0.5)
-  supplySideSkill    Float    @default(0.5)
+  id     String @id @default(cuid())
+  userId String @unique
+
+  /// Hash of this caller's personal PIN. Never the PIN itself, and never
+  /// shared: one PIN per person is what makes every read and write in the
+  /// caller workspace attributable to somebody.
+  pinHash            String?
+  pinSetAt           DateTime?
+  pinLastUsedAt      DateTime?
+  /// Consecutive failures. A PIN is short, so it needs a lockout that a
+  /// password does not.
+  pinFailedCount     Int       @default(0)
+  pinLockedUntil     DateTime?
+  /// Revoked without deleting the person, their assignments or their history.
+  pinRevokedAt       DateTime?
+  timezone           String    @default("America/New_York")
+  languages          String[]  @default(["en"])
+  industryStrengths  String[]  @default([])
+  callTypeStrengths  String[]  @default([])
+  maxDailyCalls      Int       @default(40)
+  coldCallSkill      Float     @default(0.5)
+  warmCallSkill      Float     @default(0.5)
+  objectionSkill     Float     @default(0.5)
+  extractionAccuracy Float     @default(0.5)
+  buyerSideSkill     Float     @default(0.5)
+  supplySideSkill    Float     @default(0.5)
   notes              String?
-  updatedAt          DateTime @updatedAt
+  updatedAt          DateTime  @updatedAt
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
@@ -2781,6 +2799,8 @@ model RouteHypothesis {
 
   outreach         OutreachState?
   outreachAttempts OutreachAttempt[]
+  packetItems      PacketItem[]
+  incidents        WorkIncident[]
 
   @@unique([eventId, companyId, playbookKey])
   @@index([orgId, tier, friction])
@@ -2919,7 +2939,18 @@ enum CallDisposition {
   LEFT_VOICEMAIL
   GATEKEEPER
   WRONG_NUMBER
+  /// Somebody who can speak to the requirement, who is not necessarily the
+  /// person who signs.
+  REACHED_RELEVANT_PERSON
+  /// We now know who decides. Not the same as having spoken to them.
+  DECISION_MAKER_IDENTIFIED
   REACHED_DECISION_MAKER
+  /// They told us the need is real. The strongest thing a call can establish.
+  NEED_CONFIRMED
+  /// They told us it is not. A negative answer is a finding, not a failure.
+  NEED_UNCONFIRMED
+  /// They asked for a price. The first point at which economics are real.
+  QUOTE_REQUESTED
   INTERESTED
   NEEDS_INFORMATION
   FOLLOW_UP
@@ -2968,6 +2999,12 @@ model OutreachState {
 
 /// One attempt. Append-only: rows are inserted and never updated or deleted,
 /// so the history of what was tried survives every later correction.
+/// What the caller learned, in the shape the route actually needs.
+///
+/// On the attempt rather than in a table of its own, because it is a fact
+/// about one conversation and the attempt is already append-only. A giant
+/// notes field cannot answer "how many buyers named a reorder cycle"; these
+/// can, and they are what the after-call gate checks.
 model OutreachAttempt {
   id      String  @id @default(cuid())
   orgId   String
@@ -2977,6 +3014,13 @@ model OutreachAttempt {
 
   disposition     CallDisposition
   notes           String?
+  /// Route-specific answers, in the shape the route actually needs.
+  ///
+  /// Here rather than in a table of its own: it is a fact about one
+  /// conversation and the attempt is already append-only. A giant notes field
+  /// cannot answer "how many buyers named a reorder cycle"; this can, and it
+  /// is what the after-call gate checks before serving the next opportunity.
+  discovery       Json            @default("{}")
   /// What the operator saw at the time, so a later engine change cannot make
   /// the record of the call disagree with the call.
   contextSnapshot Json            @default("{}")
@@ -3159,4 +3203,169 @@ model ContactProvenance {
 
   @@unique([companyId, field, value])
   @@index([orgId, companyId, field])
+}
+
+// ---------------------------------------------------------------------------
+// Caller execution
+// ---------------------------------------------------------------------------
+
+enum PacketStatus {
+  OPEN
+  COMPLETE
+  EXPIRED
+  CANCELLED
+}
+
+/// Where one opportunity has got to inside one caller's packet.
+enum PacketItemStatus {
+  /// Assigned and not yet started.
+  PENDING
+  /// Claimed by the caller right now, with a lease.
+  IN_PROGRESS
+  /// An attempt was recorded against it.
+  WORKED
+  /// Deliberately passed over, with a reason.
+  SKIPPED
+  /// Handed back — expired, reassigned, or no longer servable.
+  RETURNED
+}
+
+/// A controlled portfolio of work handed to one caller.
+///
+/// Not a fixed-order cold list. The order adapts at serve time — a callback
+/// promised for eleven o'clock outranks a cold Tier A record at eleven o'clock
+/// — but ownership does not move with it, so two callers can never be working
+/// the same organisation while each believes it is theirs.
+///
+/// The versions are recorded because a result is only interpretable against
+/// the script, process and offer that were in force when the work was done.
+/// Comparing this month's conversion against last month's without them
+/// compares two different experiments and calls the difference performance.
+model WorkPacket {
+  id       String @id @default(cuid())
+  orgId    String
+  callerId String
+
+  name   String
+  status PacketStatus @default(OPEN)
+
+  assignedAt  DateTime  @default(now())
+  expiresAt   DateTime?
+  completedAt DateTime?
+
+  /// In force when this packet was created.
+  scriptVersion  String?
+  processVersion String?
+  offerVersion   String?
+
+  /// What the caller is trying to learn, beyond making contact.
+  discoveryObjective String?
+  /// Stable cohort label, so an experiment is not re-randomised per record.
+  experimentCohort   String?
+
+  /// How many items must be worked before the packet is finished. Null means
+  /// every one of them.
+  completionTarget Int?
+  notes            String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  caller User         @relation("PacketCaller", fields: [callerId], references: [id], onDelete: Cascade)
+  items  PacketItem[]
+
+  @@index([orgId, callerId, status])
+  @@index([orgId, status, expiresAt])
+}
+
+/// One opportunity inside one packet, and who currently owns it.
+///
+/// The unique index on the active rows is the guarantee: a route can be
+/// PENDING or IN_PROGRESS in exactly one packet at a time. It is a partial
+/// index, written by hand in the migration, because "two callers must not both
+/// be told this is theirs" is a database invariant and not a convention.
+model PacketItem {
+  id       String @id @default(cuid())
+  orgId    String
+  packetId String
+  routeId  String
+  /// Copied from the packet so the "one live record per caller" invariant can
+  /// be a partial unique index rather than a query somebody has to remember.
+  /// A caller holding two records at once has one of them going cold behind a
+  /// thirty-minute lease, which is exactly what two browser tabs produce.
+  callerId String
+
+  status   PacketItemStatus @default(PENDING)
+  /// The order the packet was built in. Serve-time ordering may differ.
+  position Int              @default(0)
+
+  /// Lease. A caller who closes the tab does not hold the record forever.
+  claimedAt      DateTime?
+  leaseExpiresAt DateTime?
+  workedAt       DateTime?
+  skippedReason  String?
+  returnedReason String?
+
+  /// Where it came from, when it was moved between callers.
+  reassignedFromPacketId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org    Organization    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  packet WorkPacket      @relation(fields: [packetId], references: [id], onDelete: Cascade)
+  route  RouteHypothesis @relation(fields: [routeId], references: [id], onDelete: Cascade)
+
+  @@unique([packetId, routeId])
+  @@index([orgId, status])
+  @@index([routeId, status])
+  @@index([callerId, status])
+}
+
+/// Something the system did wrong, kept apart from something a caller did wrong.
+///
+/// The distinction is the whole point. A save that failed, a stale assignment,
+/// a dialer outage — these stop a caller working and must never be counted
+/// against them, or read later as a caller who went quiet. An incident records
+/// what broke, preserves what the caller had typed, and is resolved by somebody
+/// looking at it rather than by time passing.
+enum IncidentKind {
+  SAVE_FAILURE
+  ASSIGNMENT_CONFLICT
+  STALE_ASSIGNMENT
+  ELIGIBILITY_CHANGED
+  INTEGRATION_FAILURE
+}
+
+enum IncidentStatus {
+  OPEN
+  RESOLVED
+}
+
+model WorkIncident {
+  id       String  @id @default(cuid())
+  orgId    String
+  callerId String?
+  routeId  String?
+
+  kind   IncidentKind
+  status IncidentStatus @default(OPEN)
+
+  detail    String
+  /// Exactly what the caller had entered when it broke, so nothing they typed
+  /// is lost to a failure that was not theirs.
+  preserved Json   @default("{}")
+
+  createdAt  DateTime  @default(now())
+  resolvedAt DateTime?
+  resolvedBy String?
+  resolution String?
+
+  org    Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  caller User?            @relation("IncidentCaller", fields: [callerId], references: [id], onDelete: SetNull)
+  route  RouteHypothesis? @relation(fields: [routeId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, status, createdAt])
+  @@index([orgId, callerId, status])
 }

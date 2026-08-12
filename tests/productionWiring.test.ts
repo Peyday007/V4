@@ -128,6 +128,76 @@ describe('resolution writes where the calling queue reads', () => {
   });
 });
 
+describe('the caller workspace is wired, not merely written', () => {
+  it('serves work through the guard, scoped to the signed-in caller', () => {
+    const route = read('app/api/work/next/route.ts');
+    expect(route).toMatch(/requireWorkspace\(\)/);
+    expect(route).toMatch(/scopeFor\(user\)/);
+    // A caller id taken from the request would turn one authorisation check
+    // into one per call site, and the forgotten one is the leak.
+    expect(route).not.toMatch(/callerId:\s*(?:body|params|input|parsed)/);
+  });
+
+  it('checks the gate on the server before serving, not in the browser', () => {
+    const packets = read('lib/caller/packets.ts');
+    const gateAt = packets.indexOf('await afterCallGate(');
+    const serveAt = packets.indexOf('servableRows({');
+    expect(gateAt).toBeGreaterThan(-1);
+    expect(serveAt).toBeGreaterThan(-1);
+    // Ordering is the guarantee: checked before the work is chosen.
+    expect(gateAt).toBeLessThan(serveAt);
+  });
+
+  it('validates the outcome on the server, with the same rule the form shows', () => {
+    const save = read('lib/caller/save.ts');
+    expect(save).toMatch(/validateDisposition\(/);
+    expect(save).toMatch(/from '\.\/discovery'/);
+    // Ownership is asked of the database before anything is written.
+    expect(save.indexOf('packetItem.findFirst')).toBeLessThan(save.indexOf('validateDisposition('));
+  });
+
+  it('raises an incident when a save fails, rather than blaming the caller', () => {
+    const save = read('lib/caller/save.ts');
+    expect(save).toMatch(/workIncident\.create\(/);
+    expect(save).toMatch(/kind:\s*'SAVE_FAILURE'/);
+    // What they typed is kept with the failure.
+    expect(save).toMatch(/preserved:/);
+  });
+
+  it('holds a caller on an open save failure and says it is ours', () => {
+    const packets = read('lib/caller/packets.ts');
+    expect(packets).toMatch(/workIncident\.findFirst\(/);
+    expect(packets).toMatch(/systemFault:\s*true/);
+  });
+
+  it('goes through the canonical save rather than writing attempts itself', () => {
+    const save = read('lib/caller/save.ts');
+    expect(save).toMatch(/saveDisposition\(/);
+    expect(save).not.toMatch(/outreachAttempt\.create\(/);
+  });
+
+  it('keeps the ownership invariants in the database, not in a convention', () => {
+    const migrations = [
+      read('prisma/migrations/20260812160000_caller_execution/migration.sql'),
+      read('prisma/migrations/20260812170000_one_live_record_per_caller/migration.sql'),
+    ].join('\n');
+    // One caller per route, and one live record per caller. Application checks
+    // lose both races.
+    expect(migrations).toMatch(/CREATE UNIQUE INDEX "PacketItem_active_owner_key"/);
+    expect(migrations).toMatch(/CREATE UNIQUE INDEX "PacketItem_one_live_per_caller_key"/);
+    expect(migrations).toMatch(/WHERE "status" IN \('PENDING', 'IN_PROGRESS'\)/);
+    expect(migrations).toMatch(/WHERE "status" = 'IN_PROGRESS'/);
+  });
+
+  it('never stores a PIN in the clear', () => {
+    const identity = read('lib/caller/identity.ts');
+    expect(identity).toMatch(/hashSecret\(/);
+    expect(identity).not.toMatch(/pinHash:\s*pin\b/);
+    // And no endpoint reads one back.
+    expect(read('app/api/work/pin/route.ts')).not.toMatch(/findFirst[\s\S]{0,200}pinHash/);
+  });
+});
+
 describe('every job kind is either reachable or declared dormant', () => {
   /**
    * Handlers with no enqueue site anywhere.

@@ -484,6 +484,9 @@ export function DemandQueue({
                         <button className="btn secondary tiny" onClick={() => openEvidence(row.routeId)}>
                           {expanded === row.routeId ? 'Hide' : 'Evidence'}
                         </button>
+                        <Link className="btn secondary tiny" href={`/demand/opportunity/${row.routeId}`}>
+                          Record
+                        </Link>
                         <Link className="btn tiny" href={`/demand/call?route=${row.routeId}`}>
                           Work
                         </Link>

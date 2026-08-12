@@ -31,6 +31,14 @@ export type DispositionInput = {
   incumbentStatus?: string;
   preferredRoute?: SignalCategory | null;
   disqualifyReason?: string;
+  /**
+   * Route-specific structured answers.
+   *
+   * Written onto the append-only attempt rather than the mutable state,
+   * because it is what was learned on *that* call. A later call correcting it
+   * adds a row; it does not rewrite the first conversation.
+   */
+  discovery?: Record<string, string | number | boolean>;
 };
 
 /**
@@ -94,6 +102,54 @@ export function transitionFor(input: {
         status: 'IN_CONVERSATION',
         snoozeUntil: new Date(now.getTime() + 2 * 86_400_000),
         effect: 'Back in two days. Ask for the named person next time.',
+      };
+
+    case 'REACHED_RELEVANT_PERSON':
+      // Somebody who can speak to the requirement, even if they do not sign.
+      // Worth returning to sooner than a cold record, and it is not a close.
+      return {
+        status: 'IN_CONVERSATION',
+        snoozeUntil: new Date(now.getTime() + 2 * 86_400_000),
+        effect: 'Back in two days with what they told you.',
+      };
+
+    case 'DECISION_MAKER_IDENTIFIED':
+      // The name is the finding. The next call is a different call, and it is
+      // worth making quickly while the referral is fresh.
+      return {
+        status: 'IN_CONVERSATION',
+        snoozeUntil: new Date(now.getTime() + 86_400_000),
+        effect: 'Back tomorrow. Ask for the person by name.',
+      };
+
+    case 'NEED_CONFIRMED':
+      // The strongest thing a call can establish. It stays in the working
+      // queue rather than being closed or qualified — confirming a need is
+      // not the same as agreeing a deal.
+      return {
+        status: 'FOLLOW_UP',
+        snoozeUntil: input.followUpAt ?? new Date(now.getTime() + 2 * 86_400_000),
+        effect: input.followUpAt
+          ? `Need confirmed. Follow up on ${input.followUpAt.toISOString().slice(0, 10)}.`
+          : 'Need confirmed. Back in two days to move it forward.',
+      };
+
+    case 'NEED_UNCONFIRMED':
+      // They told us the hypothesis was wrong. That is a finding about our
+      // inference, not a rejection by them, and the wording says so.
+      return {
+        status: 'CLOSED_BAD_FIT',
+        snoozeUntil: null,
+        effect: 'Closed — they told us the need we inferred is not there. Our hypothesis was wrong, not their answer.',
+      };
+
+    case 'QUOTE_REQUESTED':
+      // They asked for a price. This is the first point at which economics are
+      // real, so it leaves cold calling the same way a qualification does.
+      return {
+        status: 'QUALIFIED',
+        snoozeUntil: input.followUpAt ?? null,
+        effect: 'Quote requested. Out of cold calling and into the deal.',
       };
 
     case 'WRONG_NUMBER':
@@ -210,6 +266,7 @@ export async function saveDisposition(params: {
         userId: params.userId ?? null,
         disposition: input.disposition,
         notes: input.notes?.slice(0, 4000) ?? null,
+        discovery: (input.discovery ?? {}) as Prisma.InputJsonValue,
         contextSnapshot: (params.contextSnapshot ?? {}) as Prisma.InputJsonValue,
         occurredAt: now,
       },

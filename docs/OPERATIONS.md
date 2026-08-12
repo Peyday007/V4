@@ -104,6 +104,33 @@ Retention fields exist and are populated: `CallRecording.retentionUntil` (one ye
 
 **A deal will not configure.** The workspace lists the exact missing terms. This is intended: the system reports what is unknown rather than assuming it. The next-action engine will have created the calls to obtain them.
 
+## The caller workspace
+
+A separate surface at `/work`, with its own permission boundary. Callers sign in with a personal PIN — one per person, never one shared code — which resolves to the same `Session` every other user gets, so every read and write is attributable.
+
+**The flow.** Sign in → readiness check → one opportunity → call → outcome and route-specific discovery → save → the next one. Never a board: a caller choosing from a list of two hundred is doing the routing engine's job badly.
+
+**What decides the order**, at serve time, every time:
+
+1. A promised callback that is due
+2. Tier A, then the nearest buying window, then Tier B the same way
+3. A verified contact and a named decision-maker
+4. Lower friction, then supply readiness, then attempt fatigue
+
+**Local business hours are a hard exclusion, not a ranking factor.** A record outside 8:00–18:00 on a weekday *in the prospect's timezone* is removed from the servable set, because a bonus large enough to outrank everything else is exactly how a 4 a.m. call happens. An unknown timezone lowers preference rather than being assumed. Set `CALLING_WINDOW_START` / `CALLING_WINDOW_END` to change it.
+
+**Ownership is a database invariant, twice over.** Two partial unique indexes: one route may be actively owned by one packet, and one caller may hold one live record. Application checks lose both races — two browser tabs each asking for "next" is a real event, not a hypothetical.
+
+**The after-call gate** requires the caller's *last* worked record to carry its outcome's minimum before another is served. Enforced server-side, so a refresh does not walk past it. It is narrow on purpose: one incomplete record blocks new work and nothing else does.
+
+**A failed save is ours.** It raises a `WorkIncident`, preserves everything the caller typed, does not mark the record worked, and holds them with a message that says whose fault it is. System health is evaluated before caller compliance — always.
+
+**Two outcomes are never gated:** do-not-contact and wrong number. Making either harder to record than to ignore is the one requirement that would cause harm.
+
+**Owner side:** `/callers` issues PINs (shown once, never readable again), assigns packets, and lists any system failure blocking somebody. `/demand/opportunity/<routeId>` is the canonical record — assembled from existing rows, with what the source said, what a person said, what was calculated, what we inferred and what is still unknown kept structurally apart.
+
+**Verifying it.** `npm run audit:workspace` drives the real HTTP routes with real cookies. `node scripts/browserCallerWorkspaceCheck.mjs` drives the whole flow through a browser.
+
 ## Contact resolution
 
 Demand sources publish licences, permits and solicitations; almost none of them publish a phone number. Contact resolution is the step that turns a routed opportunity into one somebody can ring, and it runs on its own.
