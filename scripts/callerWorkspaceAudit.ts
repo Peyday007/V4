@@ -66,6 +66,69 @@ function openStateNow(now: Date): string | null {
   return null;
 }
 
+/**
+ * Tops the callable set up to `wanted` routes, creating them where needed.
+ *
+ * Only companies that already hold a phone number are used, because "callable"
+ * means reachable and inventing a number to make a test pass is the exact thing
+ * this system is not allowed to do anywhere else either.
+ */
+async function ensureCallableRoutes(orgId: string, existing: string[], wanted: number): Promise<string[]> {
+  const routeIds = [...existing];
+  if (routeIds.length >= wanted) return routeIds;
+
+  const event = await prisma.demandEvent.upsert({
+    where: { orgId_dedupeKey: { orgId, dedupeKey: 'audit_fixture:caller-workspace' } },
+    create: {
+      orgId,
+      type: 'CONTRACT_EXPIRATION',
+      connector: 'audit_fixture',
+      sourceRecordId: 'caller-workspace-audit',
+      dedupeKey: 'audit_fixture:caller-workspace',
+      eventDate: new Date(),
+      headline: 'Audit fixture: callable work for the caller workspace',
+      summary: 'A fixture for scripts/callerWorkspaceAudit.ts. Not a real demand event.',
+      cityName: 'Chicago',
+      stateCode: 'IL',
+    },
+    update: {},
+  });
+
+  const companies = await prisma.company.findMany({
+    where: { orgId, phone: { not: null } },
+    orderBy: { createdAt: 'asc' },
+    select: { id: true, legalName: true },
+  });
+  if (companies.length === 0) throw new Error('No company holds a phone number; nothing can be callable.');
+
+  for (let index = 0; routeIds.length < wanted && index < companies.length * 4; index += 1) {
+    const company = companies[index % companies.length];
+    const playbookKey = `audit-callable-${index}`;
+    const route = await prisma.routeHypothesis.upsert({
+      where: { eventId_companyId_playbookKey: { eventId: event.id, companyId: company.id, playbookKey } },
+      create: {
+        orgId,
+        eventId: event.id,
+        companyId: company.id,
+        route: ['BROKERAGE', 'DISTRIBUTION', 'SUBCONTRACTING'][index % 3] as 'BROKERAGE',
+        playbookKey,
+        headline: `Audit fixture: callable route ${index + 1} — ${company.legalName}`,
+        rationale: 'Created by scripts/callerWorkspaceAudit.ts so the audit does not depend on ambient demand.',
+        // Supply resolution skips a route with no required capability, so a
+        // fixture without one is invisible to it and reads as "nothing to check".
+        requiredCapability: 'Janitorial',
+        tier: 'ACTIVE_DEMAND',
+        status: 'RESEARCH',
+      },
+      update: { tier: 'ACTIVE_DEMAND', status: 'RESEARCH' },
+      select: { id: true },
+    });
+    if (!routeIds.includes(route.id)) routeIds.push(route.id);
+  }
+
+  return routeIds;
+}
+
 async function main() {
   const org = await prisma.organization.findFirst({ orderBy: { createdAt: 'asc' } });
   const orgId = org!.id;
@@ -121,8 +184,16 @@ async function main() {
       AND r."tier" IN ('ACTIVE_DEMAND','STRONG_TRIGGER') AND c."phone" IS NOT NULL
     LIMIT 8
   `;
-  check('there is callable work to assign', callable.length >= 4, `${callable.length} route(s)`);
-  const routeIds = callable.map((r) => r.routeId);
+  // Enough callable work to assign, whether or not discovery has run.
+  //
+  // This used to read whatever demand happened to be in the database, so the
+  // audit passed on a workspace with a week of discovery behind it and fell
+  // over on a fresh one — reporting a fixture shortage as a workspace failure.
+  // The routes it needs are now its own.
+  const routeIds = callable.length >= 8
+    ? callable.map((r) => r.routeId)
+    : await ensureCallableRoutes(orgId, callable.map((r) => r.routeId), 8);
+  check('there is callable work to assign', routeIds.length >= 4, `${routeIds.length} route(s)`);
 
   // Business hours are a hard exclusion, so the fixture companies are moved
   // into a state where it is currently the working day. Nothing about the rule
@@ -204,12 +275,38 @@ async function main() {
   check('another caller’s opportunity cannot be saved by naming its id',
     stolen.status === 403 && stolen.body.kind === 'not_yours', `HTTP ${stolen.status}`);
 
+  // A route that exists and is in nobody's packet.
+  //
+  // Taken from outside the fixture set where the workspace has one, and created
+  // otherwise: relying on whatever demand happened to be lying around made this
+  // check pass or crash depending on how much discovery had run, which is not a
+  // property of the thing under test.
   const strangerRoute = await prisma.routeHypothesis.findFirst({
     where: { orgId, id: { notIn: routeIds } }, select: { id: true },
-  });
+  }) ?? await (async () => {
+    const source = await prisma.routeHypothesis.findUniqueOrThrow({
+      where: { id: routeIds[0] },
+      select: { eventId: true, companyId: true, route: true },
+    });
+    return prisma.routeHypothesis.create({
+      data: {
+        orgId,
+        eventId: source.eventId,
+        companyId: source.companyId,
+        route: source.route,
+        playbookKey: `audit-stranger-${Date.now()}`,
+        headline: 'Audit fixture: an opportunity in nobody’s packet',
+        rationale: 'Created by scripts/callerWorkspaceAudit.ts to test the unassigned refusal.',
+        tier: 'ACTIVE_DEMAND',
+        status: 'RESEARCH',
+      },
+      select: { id: true },
+    });
+  })();
+
   const unassigned = await asCaller(cookieA!, '/api/work/save', {
     method: 'POST',
-    body: JSON.stringify({ routeId: strangerRoute!.id, disposition: 'NO_ANSWER' }),
+    body: JSON.stringify({ routeId: strangerRoute.id, disposition: 'NO_ANSWER' }),
   });
   check('an opportunity in nobody’s packet cannot be saved either',
     unassigned.status === 403, `HTTP ${unassigned.status}`);

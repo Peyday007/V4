@@ -3,6 +3,7 @@ import { prisma } from '@/lib/db';
 import { saveDisposition } from '@/lib/demand/outreach';
 import { sanitiseDiscovery, validateDisposition } from './discovery';
 import { markWorked } from './packets';
+import { progressFromCall, type ProgressResult } from '@/lib/deal/fromCall';
 
 /**
  * Saving a caller's call.
@@ -39,6 +40,12 @@ export type CallerSaveResult =
       status: string;
       effect: string;
       attempts: number;
+      /**
+       * What the call did to the deal underneath it. Reported back so the
+       * caller sees that their answers went somewhere, rather than
+       * disappearing into a form.
+       */
+      progress?: ProgressResult;
     }
   | {
       ok: false;
@@ -144,12 +151,28 @@ export async function saveCallerCall(params: {
 
     await markWorked({ orgId: params.orgId, callerId: params.callerId, routeId: input.routeId, now });
 
+    // Downstream of the attempt, and deliberately after `markWorked`: the call
+    // is recorded and the caller is released whatever happens next. This step
+    // raises its own incident rather than throwing, so a failure here can never
+    // hold a caller at a gate for something that is not theirs to fix.
+    const progress = await progressFromCall({
+      orgId: params.orgId,
+      routeId: input.routeId,
+      route: item.route.route,
+      disposition: input.disposition,
+      discovery,
+      attemptId: saved.attemptId,
+      actorId: params.callerId,
+      now,
+    });
+
     return {
       ok: true,
       attemptId: saved.attemptId,
       status: saved.status,
       effect: saved.effect,
       attempts: saved.attempts,
+      progress,
     };
   } catch (error) {
     // --- ours, not theirs -------------------------------------------------

@@ -6,6 +6,7 @@ import { enqueue } from './queue';
 import { processJobs } from './runner';
 import { drainContactResolution } from '@/lib/enrichment/schedule';
 import { resolveSupplyIfCatalogueChanged } from '@/lib/enrichment/supply';
+import { expireQuotes } from '@/lib/deal/quote';
 import { handleRouteError, json } from '@/lib/api';
 
 export type CronMode = 'tick' | 'daily';
@@ -61,6 +62,7 @@ export async function runCron(request: Request, mode: CronMode) {
       unscheduled: number;
       /** Routes whose supply status moved because the catalogue changed. */
       supplyRematched?: number;
+      quotesExpired?: number;
     }> = [];
 
     for (const org of orgs) {
@@ -119,6 +121,14 @@ export async function runCron(request: Request, mode: CronMode) {
       if (supply.changed && supply.outcome) {
         enrichment[enrichment.length - 1].supplyRematched = supply.outcome.changed;
       }
+
+      // A price with a passed validity date is worse than no price: somebody
+      // reads it as current and commits to it. Retiring them is two indexed
+      // queries and belongs on the tick rather than the daily sweep, because
+      // the window between "expired" and "shown as expired" is the window in
+      // which the mistake gets made.
+      const expired = await expireQuotes({ orgId: org.id });
+      if (expired > 0) enrichment[enrichment.length - 1].quotesExpired = expired;
 
       if (mode === 'daily') {
         // Idempotency keys are date-stamped so a retried cron on the same day

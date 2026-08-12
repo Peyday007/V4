@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { requirePermission } from '@/lib/auth/session';
 import { audit, recordActivity } from '@/lib/audit';
+import { recordDealEvent } from '@/lib/deal/events';
 import { determineNextAction } from '@/lib/ai/nextAction';
 import { handleRouteError, json } from '@/lib/api';
 
@@ -35,6 +36,41 @@ export async function POST(request: Request, { params }: { params: { id: string 
         where: { id: approval.documentId },
         data: { status: body.decision === 'APPROVED' ? 'APPROVED' : 'DRAFT' },
       });
+    }
+
+    // Deal-progression approvals sit on the live route path and have their own
+    // append-only trail. Recorded here rather than left to the quote screen,
+    // because the decision is the event — a decision only visible on the page
+    // where it was made is a decision nobody can reconstruct afterwards.
+    if (approval.routeId) {
+      await prisma.$transaction(async (tx) => {
+        await recordDealEvent(tx, {
+          orgId: user.orgId,
+          routeId: approval.routeId as string,
+          kind: `approval.${body.decision.toLowerCase()}`,
+          actorId: user.id,
+          subjectType: 'Approval',
+          subjectId: approval.id,
+          summary: `${approval.title} — ${body.decision.toLowerCase().replace(/_/g, ' ')}${body.note ? `: ${body.note}` : ''}`,
+          before: { status: 'PENDING' },
+          after: { status: body.decision },
+          evidence: body.note ?? null,
+        });
+      });
+
+      // An approved quote becomes sendable. Anything else leaves it exactly
+      // where it was, so a rejection cannot be walked past by reloading.
+      if (approval.routeQuoteId && body.decision === 'APPROVED') {
+        const stillPending = await prisma.approval.count({
+          where: { routeQuoteId: approval.routeQuoteId, status: 'PENDING' },
+        });
+        if (stillPending === 0) {
+          await prisma.routeQuote.updateMany({
+            where: { id: approval.routeQuoteId, state: 'PENDING_APPROVAL' },
+            data: { state: 'APPROVED' },
+          });
+        }
+      }
     }
 
     if (approval.opportunityId) {

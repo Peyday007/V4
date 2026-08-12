@@ -432,6 +432,11 @@ enum ApprovalType {
   EXCLUSIVITY
   FULFILLMENT_RELEASE
   DOCUMENT_SEND
+  /// Cash we would have out before the buyer pays.
+  WORKING_CAPITAL
+  /// Fulfilment we cannot yet stand behind — unverified provider, expired
+  /// cost, missing credentials.
+  HIGH_RISK_FULFILMENT
 }
 
 enum MovabilityClass {
@@ -613,6 +618,12 @@ model Organization {
   workPackets            WorkPacket[]
   packetItems            PacketItem[]
   workIncidents          WorkIncident[]
+  buyerRequirements      BuyerRequirement[]
+  providerCandidates     ProviderCandidate[]
+  routeQuotes            RouteQuote[]
+  routeDeals             RouteDeal[]
+  dealPayments           DealPayment[]
+  dealEvents             DealEvent[]
 }
 
 model Permission {
@@ -685,6 +696,11 @@ model User {
   outreachAttempts OutreachAttempt[]
   workPackets      WorkPacket[]      @relation("PacketCaller")
   incidents        WorkIncident[]    @relation("IncidentCaller")
+
+  requirementsCaptured BuyerRequirement[] @relation("RequirementCapturedBy")
+  quotesCreated        RouteQuote[]       @relation("QuoteCreatedBy")
+  dealsCreated         RouteDeal[]        @relation("DealCreatedBy")
+  paymentsRecorded     DealPayment[]      @relation("PaymentRecordedBy")
 
   @@unique([orgId, email])
   @@index([orgId])
@@ -1183,6 +1199,7 @@ model Company {
   routeHypotheses    RouteHypothesis[]
   opportunityParties OpportunityParty[]
   matchesAsCandidate Match[]                 @relation("MatchCandidate")
+  providerCandidacies ProviderCandidate[]    @relation("ProviderCandidateCompany")
   callAssignments    CallAssignment[]
   facts              ExtractedFact[]
   documents          Document[]
@@ -1317,6 +1334,8 @@ model Contact {
   suppressions     SuppressionEntry[]
   activityEvents   ActivityEvent[]
   decisionMakerFor PathHypothesis[]   @relation("HypothesisDecisionMaker")
+  requirementsDecided BuyerRequirement[] @relation("RequirementDecisionMaker")
+  dealsCommitted      RouteDeal[]        @relation("DealBuyerContact")
 
   @@index([orgId, companyId])
   @@index([orgId, lastName])
@@ -2126,6 +2145,10 @@ model Task {
   id               String     @id @default(cuid())
   orgId            String
   opportunityId    String?
+  /// Set for work raised against a live route — supply sourcing, chiefly.
+  /// Nullable because the older signal-promotion path raises tasks against the
+  /// legacy Opportunity instead, and both kinds belong in one owner list.
+  routeId          String?
   ownerId          String?
   title            String
   description      String?
@@ -2138,10 +2161,12 @@ model Task {
   createdAt        DateTime   @default(now())
   updatedAt        DateTime   @updatedAt
 
-  opportunity Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
-  owner       User?        @relation("TaskOwner", fields: [ownerId], references: [id], onDelete: SetNull)
+  opportunity Opportunity?     @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  route       RouteHypothesis? @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  owner       User?            @relation("TaskOwner", fields: [ownerId], references: [id], onDelete: SetNull)
 
   @@index([orgId, status, dueDate])
+  @@index([routeId, status])
 }
 
 model NextAction {
@@ -2200,6 +2225,10 @@ model Approval {
   opportunityId String?
   dealId        String?
   documentId    String?
+  /// Deal-progression approvals on the live route path. Added rather than
+  /// duplicated: the owner should have one approvals queue, not two.
+  routeId       String?
+  routeQuoteId  String?
   type          ApprovalType
   status        ApprovalStatus @default(PENDING)
   title         String
@@ -2213,13 +2242,16 @@ model Approval {
   expiresAt     DateTime?
   createdAt     DateTime       @default(now())
 
-  opportunity Opportunity? @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
-  deal        Deal?        @relation(fields: [dealId], references: [id], onDelete: Cascade)
-  document    Document?    @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  requestedBy User?        @relation("ApprovalRequester", fields: [requestedById], references: [id], onDelete: SetNull)
-  decidedBy   User?        @relation("ApprovalDecider", fields: [decidedById], references: [id], onDelete: SetNull)
+  opportunity Opportunity?     @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+  deal        Deal?            @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  document    Document?        @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  route       RouteHypothesis? @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  routeQuote  RouteQuote?      @relation(fields: [routeQuoteId], references: [id], onDelete: Cascade)
+  requestedBy User?            @relation("ApprovalRequester", fields: [requestedById], references: [id], onDelete: SetNull)
+  decidedBy   User?            @relation("ApprovalDecider", fields: [decidedById], references: [id], onDelete: SetNull)
 
   @@index([orgId, status])
+  @@index([routeQuoteId, status])
 }
 
 model Document {
@@ -2802,6 +2834,14 @@ model RouteHypothesis {
   packetItems      PacketItem[]
   incidents        WorkIncident[]
 
+  requirements       BuyerRequirement[]
+  providerCandidates ProviderCandidate[]
+  quotes             RouteQuote[]
+  deal               RouteDeal?
+  dealEvents         DealEvent[]
+  tasks              Task[]
+  approvals          Approval[]
+
   @@unique([eventId, companyId, playbookKey])
   @@index([orgId, tier, friction])
   @@index([orgId, route, status])
@@ -3030,6 +3070,10 @@ model OutreachAttempt {
   org   Organization    @relation(fields: [orgId], references: [id], onDelete: Cascade)
   route RouteHypothesis @relation(fields: [routeId], references: [id], onDelete: Cascade)
   user  User?           @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  /// Requirement versions this call produced. A requirement traces back to the
+  /// conversation it came from, or it is ours rather than theirs.
+  requirements BuyerRequirement[]
 
   @@index([orgId, occurredAt])
   @@index([routeId, occurredAt])
@@ -3368,4 +3412,474 @@ model WorkIncident {
 
   @@index([orgId, status, createdAt])
   @@index([orgId, callerId, status])
+}
+
+// ---------------------------------------------------------------------------
+// Deal progression: buyer requirement, provider workstream, economics, money
+//
+// Built on RouteHypothesis, which is the live opportunity in this system. The
+// older Opportunity/Deal/Quote layer is fed by DiscoverySignal promotion and is
+// not on the demand-engine path; nothing here writes to it, and nothing here
+// reads it as truth.
+//
+// The organising principle of this whole section is that a fact and a hope are
+// stored in different columns. An estimate never lands in a realised field, a
+// provider candidate never lands in a committed field, and an invoice is never
+// counted as money. Every place those could blur, the schema splits them.
+// ---------------------------------------------------------------------------
+
+/// How the buyer's money decision actually gets made.
+///
+/// "No budget" and "unknown" are different answers and both are useful: the
+/// first closes a route, the second names the next question.
+enum BudgetMechanism {
+  UNKNOWN
+  NO_BUDGET
+  BUDGET_STATED
+  QUOTE_REQUESTED
+  FORMAL_BID
+  RENEWAL_CYCLE
+}
+
+enum RequirementState {
+  /// Captured but not yet enough to price.
+  DRAFT
+  /// The live requirement. At most one per route.
+  CURRENT
+  /// Replaced by a newer version. Kept forever.
+  SUPERSEDED
+  /// The buyer told us there is no requirement.
+  WITHDRAWN
+}
+
+/// What the buyer said they need, as a version rather than a moving row.
+///
+/// Requirements change during a deal, and a quote priced against the January
+/// scope is not wrong because the scope changed in March — it is a quote for a
+/// different requirement. Versioning is what lets both statements be true, and
+/// it is why nothing here is ever updated in place once it has been priced.
+model BuyerRequirement {
+  id      String @id @default(cuid())
+  orgId   String
+  routeId String
+  version Int
+
+  state RequirementState @default(CURRENT)
+
+  /// The requirement in one line, for a person scanning a list.
+  summary       String
+  specification String?
+  quantity      String?
+  unit          String?
+  frequency     String?
+  locationCount Int?
+  locations     String?
+  startsAt      DateTime?
+  decisionBy    DateTime?
+  /// Timing exactly as the buyer put it. "Sometime after budget season" is a
+  /// real answer and it is not a date; parsing it into one would invent a
+  /// precision they did not give us, and dropping it would lose the answer.
+  timingNote    String?
+  processNotes  String?
+  constraints   String[]  @default([])
+
+  incumbent      String?
+  incumbentNotes String?
+
+  decisionMakerContactId String?
+  decisionMakerRole      String?
+  /// Whether we know who signs, as opposed to having a plausible name.
+  authorityConfirmed     Boolean @default(false)
+
+  budgetMechanism BudgetMechanism @default(UNKNOWN)
+  budgetAmount    Decimal?        @db.Decimal(14, 2)
+  budgetBasis     String?
+
+  /// Field names the buyer actually stated. Anything absent from this list is
+  /// our inference, and the UI is required to label it as ours. Without it a
+  /// requirement reads as though the buyer confirmed every line of it.
+  confirmedFields String[] @default([])
+
+  /// Where this version came from.
+  sourceAttemptId String?
+  capturedById    String?
+  capturedBy      String    @default("caller")
+  supersededById  String?   @unique
+  supersededAt    DateTime?
+  supersedeReason String?
+  withdrawnReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org            Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  route          RouteHypothesis   @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  sourceAttempt  OutreachAttempt?  @relation(fields: [sourceAttemptId], references: [id], onDelete: SetNull)
+  capturedByUser User?             @relation("RequirementCapturedBy", fields: [capturedById], references: [id], onDelete: SetNull)
+  decisionMaker  Contact?          @relation("RequirementDecisionMaker", fields: [decisionMakerContactId], references: [id], onDelete: SetNull)
+  supersededBy   BuyerRequirement? @relation("RequirementVersions", fields: [supersededById], references: [id], onDelete: SetNull)
+  supersedes     BuyerRequirement? @relation("RequirementVersions")
+  quotes         RouteQuote[]
+
+  @@unique([routeId, version])
+  @@index([orgId, state])
+}
+
+/// How far one provider has got on one route.
+///
+/// The whole point of an explicit ladder is that "we found somebody who might
+/// be able to do this" and "somebody has agreed to do this" are eight steps
+/// apart, and a single `matched` boolean presents them as the same thing.
+enum ProviderWorkState {
+  CANDIDATE_FOUND
+  CONTACTED
+  CAPABILITY_VERIFIED
+  AVAILABILITY_VERIFIED
+  COST_RECEIVED
+  SELECTED
+  COMMITTED
+  REJECTED
+  WITHDRAWN
+}
+
+model ProviderCandidate {
+  id                String @id @default(cuid())
+  orgId             String
+  routeId           String
+  providerCompanyId String
+
+  state          ProviderWorkState @default(CANDIDATE_FOUND)
+  stateReason    String?
+  stateChangedAt DateTime          @default(now())
+
+  /// Why this provider is a candidate at all, in words. A score is not a reason.
+  matchBasis      String
+  capabilityNotes String?
+  geographyNotes  String?
+
+  capabilityVerifiedAt   DateTime?
+  capabilityEvidence     String?
+  credentialsVerifiedAt  DateTime?
+  credentialsEvidence    String?
+  availabilityVerifiedAt DateTime?
+  availableFrom          DateTime?
+  availableUntil         DateTime?
+  capacityNotes          String?
+
+  /// Cost as quoted by the provider, with the date it stops being true.
+  /// A cost without an expiry silently becomes a guess.
+  costAmount     Decimal?  @db.Decimal(14, 2)
+  costUnit       String?
+  costBasis      String?
+  costTerms      String?
+  costReceivedAt DateTime?
+  costExpiresAt  DateTime?
+
+  promiseText   String?
+  promiseDueAt  DateTime?
+  promiseKeptAt DateTime?
+
+  /// Set when this company is also the buyer on this route, or is the buyer on
+  /// another live route. Surfaced rather than blocked: it is sometimes correct
+  /// and always worth knowing before a caller phones them.
+  conflictNote String?
+
+  rejectedReason String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org      Organization    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  route    RouteHypothesis @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  provider Company         @relation("ProviderCandidateCompany", fields: [providerCompanyId], references: [id], onDelete: Cascade)
+
+  quotes RouteQuote[]
+  deals  RouteDeal[]
+
+  @@unique([routeId, providerCompanyId])
+  @@index([orgId, state])
+}
+
+enum QuoteState {
+  DRAFT
+  PENDING_APPROVAL
+  APPROVED
+  SENT
+  ACCEPTED
+  DECLINED
+  EXPIRED
+  SUPERSEDED
+  WITHDRAWN
+}
+
+/// Where a number came from. Not how much we like it.
+///
+/// Kept separate from confidence because they answer different questions: a
+/// PRIOR can be held confidently and a QUOTE can be shaky, and collapsing the
+/// two is how an engine estimate ends up in a revenue report.
+enum EconomicsBasis {
+  /// The engine's own estimate before anybody spoke to anybody.
+  PRIOR
+  /// At least one side is real, the other is still assumed.
+  ESTIMATE
+  /// Provider cost received and buyer price set.
+  QUOTE
+  /// Both sides committed at agreed numbers.
+  COMMITMENT
+  /// Money that actually moved.
+  REALISED
+}
+
+enum EconomicsConfidence {
+  UNKNOWN
+  LOW
+  MEDIUM
+  HIGH
+}
+
+/// A priced offer to the buyer, versioned.
+///
+/// Revisions never overwrite: a new version is written and the old one is
+/// marked superseded, so "what did we send them in March" survives every later
+/// negotiation.
+model RouteQuote {
+  id                  String  @id @default(cuid())
+  orgId               String
+  routeId             String
+  version             Int
+  requirementId       String
+  providerCandidateId String?
+
+  state QuoteState @default(DRAFT)
+
+  currency     String   @default("USD")
+  providerCost Decimal? @db.Decimal(14, 2)
+  freight      Decimal? @db.Decimal(14, 2)
+  fees         Decimal? @db.Decimal(14, 2)
+  contingency  Decimal? @db.Decimal(14, 2)
+  buyerPrice   Decimal? @db.Decimal(14, 2)
+
+  grossProfit    Decimal?            @db.Decimal(14, 2)
+  grossMarginPct Float?
+  basis          EconomicsBasis      @default(ESTIMATE)
+  confidence     EconomicsConfidence @default(UNKNOWN)
+  /// True when no real provider cost backs this. Ranking must exclude these
+  /// rather than treat a missing cost as a zero cost.
+  costSideMissing Boolean            @default(true)
+
+  workingCapitalAmount Decimal? @db.Decimal(14, 2)
+  workingCapitalDays   Int?
+
+  paymentTerms  String?
+  deliveryTerms String?
+  downsideNotes String?
+  assumptions   String[] @default([])
+
+  validUntil      DateTime?
+  sentAt          DateTime?
+  respondedAt     DateTime?
+  acceptedAt      DateTime?
+  declinedAt      DateTime?
+  declineReason   String?
+  negotiationNote String?
+
+  /// Computed at save time, so the gate does not depend on a screen being open.
+  approvalRequired Boolean  @default(false)
+  approvalReasons  String[] @default([])
+
+  supersededById String?   @unique
+  supersededAt   DateTime?
+
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  org               Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  route             RouteHypothesis    @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  requirement       BuyerRequirement   @relation(fields: [requirementId], references: [id], onDelete: Restrict)
+  providerCandidate ProviderCandidate? @relation(fields: [providerCandidateId], references: [id], onDelete: SetNull)
+  createdBy         User?              @relation("QuoteCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  supersededBy      RouteQuote?        @relation("QuoteVersions", fields: [supersededById], references: [id], onDelete: SetNull)
+  supersedes        RouteQuote?        @relation("QuoteVersions")
+  approvals         Approval[]
+  deal              RouteDeal?
+
+  @@unique([routeId, version])
+  @@index([orgId, state])
+}
+
+enum DealStage {
+  COMMITTED
+  IN_DELIVERY
+  DELIVERED
+  INVOICED
+  PAID
+  CLOSED
+  CANCELLED
+  DISPUTED
+  LOST
+}
+
+/// How a commitment was actually made. A verbal yes is a commitment and it is
+/// not a signed contract, and the difference decides how much capital we risk.
+enum CommitmentBasis {
+  VERBAL
+  EMAIL
+  PURCHASE_ORDER
+  SIGNED_CONTRACT
+}
+
+/// A deal that exists because the buyer committed.
+///
+/// Buyer commitment and provider commitment are separate dated facts, and so
+/// are delivery, invoicing and payment. Nothing in this model lets "they said
+/// yes" render as "we were paid".
+model RouteDeal {
+  id      String @id @default(cuid())
+  orgId   String
+  routeId String @unique
+  quoteId String @unique
+
+  stage DealStage @default(COMMITTED)
+
+  buyerCommittedAt        DateTime
+  buyerCommitmentBasis    CommitmentBasis
+  buyerCommitmentEvidence String
+  buyerContactId          String?
+  /// The agreed number, which is not the quoted number once anybody negotiates.
+  contractedValue         Decimal?        @db.Decimal(14, 2)
+
+  providerCandidateId        String?
+  providerCommittedAt        DateTime?
+  providerCommitmentBasis    CommitmentBasis?
+  providerCommitmentEvidence String?
+  contractedCost             Decimal?         @db.Decimal(14, 2)
+
+  deliveryStartedAt   DateTime?
+  deliveryCompletedAt DateTime?
+  completionEvidence  String?
+
+  cancelledAt     DateTime?
+  cancelReason    String?
+  disputeOpenedAt DateTime?
+  disputeNotes    String?
+  /// ours | provider | buyer | external. Who carried the failure, when one happened.
+  responsibility  String?
+  lostReason      String?
+
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  org               Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  route             RouteHypothesis    @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  quote             RouteQuote         @relation(fields: [quoteId], references: [id], onDelete: Restrict)
+  buyerContact      Contact?           @relation("DealBuyerContact", fields: [buyerContactId], references: [id], onDelete: SetNull)
+  providerCandidate ProviderCandidate? @relation(fields: [providerCandidateId], references: [id], onDelete: SetNull)
+  createdBy         User?              @relation("DealCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+
+  milestones DealMilestone[]
+  payments   DealPayment[]
+
+  @@index([orgId, stage])
+}
+
+model DealMilestone {
+  id     String @id @default(cuid())
+  dealId String
+
+  label       String
+  dueAt       DateTime?
+  completedAt DateTime?
+  /// What proves it happened. A tick with no evidence is an opinion.
+  evidence    String?
+  sortOrder   Int       @default(0)
+
+  createdAt DateTime @default(now())
+
+  deal RouteDeal @relation(fields: [dealId], references: [id], onDelete: Cascade)
+
+  @@index([dealId, sortOrder])
+}
+
+enum PaymentDirection {
+  /// From the buyer to us.
+  INBOUND
+  /// From us to the provider.
+  OUTBOUND
+}
+
+enum PaymentKind {
+  INVOICE
+  PAYMENT
+  REFUND
+  CHARGEBACK
+  WRITE_OFF
+}
+
+/// One money line. An invoice is a claim; only a settled payment is money.
+///
+/// `settledAt` is the field that decides whether a row counts toward collected
+/// gross profit, which is why it is nullable and separate from `dueAt`.
+model DealPayment {
+  id     String @id @default(cuid())
+  orgId  String
+  dealId String
+
+  direction PaymentDirection
+  kind      PaymentKind
+  amount    Decimal          @db.Decimal(14, 2)
+  currency  String           @default("USD")
+  dueAt     DateTime?
+  settledAt DateTime?
+  reference String?
+  notes     String?
+
+  recordedById String?
+  createdAt    DateTime @default(now())
+
+  org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  deal       RouteDeal    @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  recordedBy User?        @relation("PaymentRecordedBy", fields: [recordedById], references: [id], onDelete: SetNull)
+
+  @@index([orgId, direction, settledAt])
+  @@index([dealId, createdAt])
+}
+
+/// Append-only trail for every material deal transition.
+///
+/// Written inside the same transaction as the change it describes, unlike the
+/// security audit log, which is deliberately best-effort so it can never fail a
+/// user's request. Here the event is part of the change: a state transition
+/// nobody can reconstruct is how a deal ends up with numbers no one can defend.
+model DealEvent {
+  id      String @id @default(cuid())
+  orgId   String
+  routeId String
+
+  kind      String
+  actorType String  @default("user")
+  actorId   String?
+
+  subjectType String
+  subjectId   String?
+
+  summary String
+  before  Json    @default("{}")
+  after   Json    @default("{}")
+  /// What backs the change — a call, a document, an email, a payment reference.
+  evidence String?
+  /// The confidence claimed at the time, so a later revision cannot rewrite it.
+  confidence String?
+  /// Groups the events produced by one operator action.
+  correlationId String?
+
+  occurredAt DateTime @default(now())
+
+  org   Organization    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  route RouteHypothesis @relation(fields: [routeId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, occurredAt])
+  @@index([routeId, occurredAt])
+  @@index([subjectType, subjectId])
 }

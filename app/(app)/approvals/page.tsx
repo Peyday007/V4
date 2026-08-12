@@ -19,6 +19,11 @@ export default async function ApprovalsPage({ searchParams }: { searchParams: { 
       deal: true,
       document: true,
       decidedBy: true,
+      // Deal-progression approvals live on the route path. Included here rather
+      // than given a queue of their own: an owner should have one list of
+      // decisions waiting on them, not two that each look complete.
+      route: { select: { id: true, headline: true, company: { select: { legalName: true } } } },
+      routeQuote: { select: { id: true, version: true, buyerPrice: true, grossProfit: true, grossMarginPct: true, costSideMissing: true } },
     },
     orderBy: { createdAt: 'asc' },
     take: 200,
@@ -62,14 +67,52 @@ export default async function ApprovalsPage({ searchParams }: { searchParams: { 
                   <span className="tiny dim">requested {relativeDays(approval.createdAt)}</span>
                 </div>
               </div>
-              {approval.opportunityId && (
+              {approval.routeId ? (
+                <Link href={`/demand/opportunity/${approval.routeId}`} className="btn sm">
+                  Open the opportunity
+                </Link>
+              ) : approval.opportunityId ? (
                 <Link href={`/opportunities/${approval.opportunityId}`} className="btn sm">
                   Open deal
                 </Link>
-              )}
+              ) : null}
             </div>
 
             <p className="small">{approval.summary}</p>
+
+            {approval.route && (
+              <p className="tiny dim">
+                {approval.route.company.legalName} — {approval.route.headline}
+              </p>
+            )}
+
+            {approval.routeQuote && (
+              <div className="grid grid-4 mb">
+                <div className="stat">
+                  <div className="stat-label">Buyer price</div>
+                  <div className="stat-value">{money(approval.routeQuote.buyerPrice)}</div>
+                </div>
+                <div className="stat">
+                  <div className="stat-label">Gross profit</div>
+                  <div className="stat-value">
+                    {approval.routeQuote.grossProfit === null ? '—' : money(approval.routeQuote.grossProfit)}
+                  </div>
+                  <div className="tiny dim">
+                    {approval.routeQuote.costSideMissing ? 'no provider cost — unknown, not thin' : 'estimated, not realised'}
+                  </div>
+                </div>
+                <div className="stat">
+                  <div className="stat-label">Margin</div>
+                  <div className="stat-value">
+                    {approval.routeQuote.grossMarginPct === null ? '—' : `${approval.routeQuote.grossMarginPct.toFixed(1)}%`}
+                  </div>
+                </div>
+                <div className="stat">
+                  <div className="stat-label">Quote version</div>
+                  <div className="stat-value">v{approval.routeQuote.version}</div>
+                </div>
+              </div>
+            )}
 
             {approval.deal && (
               <div className="grid grid-4 mb">

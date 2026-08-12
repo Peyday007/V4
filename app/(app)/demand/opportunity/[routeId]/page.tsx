@@ -2,6 +2,9 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { requirePagePermission } from '@/lib/auth/page';
 import { loadOpportunityRecord } from '@/lib/demand/opportunityRecord';
+import { loadDealRecord } from '@/lib/deal/record';
+import { DealProgress } from '@/components/DealProgress';
+import { can } from '@/lib/auth/session';
 import { Badge } from '@/components/ui';
 
 export const dynamic = 'force-dynamic';
@@ -23,6 +26,10 @@ export default async function OpportunityRecordPage({ params }: { params: { rout
   const user = await requirePagePermission('discovery.read');
   const record = await loadOpportunityRecord({ orgId: user.orgId, routeId: params.routeId });
   if (!record) notFound();
+
+  // Loaded after the record exists, so a bad route id is a 404 rather than an
+  // empty deal panel on a page for an opportunity that is not on this account.
+  const deal = await loadDealRecord({ orgId: user.orgId, routeId: params.routeId });
 
   return (
     <>
@@ -126,6 +133,8 @@ export default async function OpportunityRecordPage({ params }: { params: { rout
           </div>
         </div>
       </div>
+
+      <DealProgress record={deal} canSeeMargin={can(user, 'finance.margin.read')} />
 
       <div className="card">
         <h2 style={{ marginTop: 0 }}>Contact, and where it came from</h2>

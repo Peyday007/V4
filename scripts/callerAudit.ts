@@ -219,8 +219,17 @@ async function main() {
     seen.join(',') === full.rows.map((r) => r.routeId).join(','));
 
   console.log('\n--- filters and search -----------------------------------------');
-  const searched = await queryQueue({ orgId, filters: { view: 'all', search: 'ironside' } });
-  check('search matches an organisation', searched.total > 0, `${searched.total} rows`);
+  // Searched for a name that is actually in the queue rather than a hard-coded
+  // one. The literal here used to be a company from a live discovery run, so
+  // the check reported "search is broken" on any workspace that had not made
+  // that exact run — which is a fixture shortage wearing a bug's clothes.
+  const searchable = full.rows.find((r) => r.organisation && r.organisation.length > 4);
+  const term = searchable ? searchable.organisation.split(/\s+/)[0] : null;
+  const searched = term
+    ? await queryQueue({ orgId, filters: { view: 'all', search: term } })
+    : { total: 0 };
+  check('search matches an organisation', term !== null && searched.total > 0,
+    term ? `"${term}" → ${searched.total} rows` : 'no organisation in the queue to search for');
   const byRoute = await queryQueue({ orgId, filters: { view: 'all', route: ['DISTRIBUTION'] } });
   check('a route filter narrows the set', byRoute.rows.every((r) => r.route === 'DISTRIBUTION'), `${byRoute.total} rows`);
   const byContact = await queryQueue({ orgId, filters: { view: 'all', contactable: 'no' } });
