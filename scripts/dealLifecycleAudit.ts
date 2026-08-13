@@ -45,7 +45,7 @@ function check(label: string, passed: boolean, detail = '') {
 }
 
 /** How many checks a complete run produces. A short run must not read as clean. */
-const EXPECTED_CHECKS = 58;
+const EXPECTED_CHECKS = 60;
 
 async function signIn(email: string): Promise<string> {
   const response = await fetch(`${BASE}/api/auth/login`, {
@@ -76,7 +76,7 @@ async function post(path: string, body: unknown, cookie?: string | null) {
 
 /** The production figures this run must not move. */
 async function productionCounts(orgId: string) {
-  const [requirements, candidates, quotes, deals, payments, settled] = await Promise.all([
+  const [requirements, candidates, quotes, deals, payments, settled, milestones] = await Promise.all([
     prisma.buyerRequirement.count({ where: { orgId, dataMode: 'PRODUCTION' } }),
     prisma.providerCandidate.count({ where: { orgId, dataMode: 'PRODUCTION' } }),
     prisma.routeQuote.count({ where: { orgId, dataMode: 'PRODUCTION' } }),
@@ -86,9 +86,13 @@ async function productionCounts(orgId: string) {
       where: { orgId, dataMode: 'PRODUCTION', direction: 'INBOUND', settledAt: { not: null } },
       _sum: { amount: true },
     }),
+    // The learning side. Every stage of this walkthrough writes funnel
+    // milestones, and a practice deal that moved the source scorecards would
+    // be teaching the business from a rehearsal.
+    prisma.demandOutcome.count({ where: { orgId, dataMode: 'PRODUCTION' } }),
   ]);
   return {
-    requirements, candidates, quotes, deals, payments,
+    requirements, candidates, quotes, deals, payments, milestones,
     collected: Number(settled._sum.amount ?? 0),
   };
 }
@@ -437,21 +441,28 @@ async function main() {
   // -----------------------------------------------------------------------
   console.log('\n--- production never moved ---------------------------------------');
   const after = await productionCounts(org.id);
-  for (const key of ['requirements', 'candidates', 'quotes', 'deals', 'payments', 'collected'] as const) {
+  for (const key of ['requirements', 'candidates', 'quotes', 'deals', 'payments', 'collected', 'milestones'] as const) {
     check(`production ${key} unchanged`, before[key] === after[key], `${before[key]} then ${after[key]}`);
   }
+
+  const practiceMilestones = await prisma.demandOutcome.count({
+    where: { orgId: org.id, dataMode: 'TEST' },
+  });
+  check('the walkthrough did record learning milestones, in the test world',
+    practiceMilestones > 0, `${practiceMilestones} practice milestones`);
 
   // -----------------------------------------------------------------------
   console.log('\n--- and the reset takes the whole practice deal with it ----------');
   await resetSandbox({ orgId: org.id, actorId: owner.id });
   const leftovers = await Promise.all([
+    prisma.demandOutcome.count({ where: { orgId: org.id, dataMode: 'TEST' } }),
     prisma.buyerRequirement.count({ where: { orgId: org.id, dataMode: 'TEST' } }),
     prisma.providerCandidate.count({ where: { orgId: org.id, dataMode: 'TEST' } }),
     prisma.routeQuote.count({ where: { orgId: org.id, dataMode: 'TEST' } }),
     prisma.routeDeal.count({ where: { orgId: org.id, dataMode: 'TEST' } }),
     prisma.dealPayment.count({ where: { orgId: org.id, dataMode: 'TEST' } }),
   ]);
-  check('no practice requirement, candidate, quote, deal or payment survives',
+  check('no practice milestone, requirement, candidate, quote, deal or payment survives',
     leftovers.every((n) => n === 0), leftovers.join('/'));
 
   const afterReset = await productionCounts(org.id);
