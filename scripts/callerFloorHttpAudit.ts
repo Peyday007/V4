@@ -25,7 +25,7 @@ function check(label: string, passed: boolean, detail = '') {
 }
 
 /** How many checks this audit runs when nothing is skipped. */
-const EXPECTED_CHECKS = 25;
+const EXPECTED_CHECKS = 32;
 
 /** Throws rather than skipping. A partial run must not read as a clean one. */
 async function signIn(email: string): Promise<string> {
@@ -175,6 +175,64 @@ async function main() {
   await post('/api/callers', { action: 'revoke_pin', callerId: newCallerId }, ownerCookie);
   const signInAfter = await post('/api/work/signin', { identifier: email, pin: pin.body.pin }, null);
   check('and stops the moment it is revoked', signInAfter.status === 401, `got ${signInAfter.status}`);
+
+  // -----------------------------------------------------------------------
+  console.log('\n--- clearing a system failure is a management action ---------------');
+
+  // The incident that blocks a caller is the one they have the strongest
+  // reason to want gone. Clearing it must be somebody else's decision, or the
+  // gate is advisory.
+  const incident = await prisma.workIncident.create({
+    data: {
+      orgId: org.id, callerId: newCallerId, kind: 'SAVE_FAILURE',
+      detail: 'HTTP audit fixture: proving a caller cannot clear their own blocker.',
+      preserved: {},
+    },
+    select: { id: true },
+  });
+
+  const bySelf = await post('/api/callers', {
+    action: 'resolve_incident', callerId: newCallerId,
+    incidentId: incident.id, resolution: 'Nothing. I would just like to keep working.',
+  }, caller);
+  check('a caller cannot clear the failure that is blocking them',
+    bySelf.status === 403 || bySelf.status === 401, `got ${bySelf.status}`);
+  check('and it is still open afterwards',
+    (await prisma.workIncident.count({ where: { id: incident.id, status: 'OPEN' } })) === 1);
+
+  const anonymous = await post('/api/callers', {
+    action: 'resolve_incident', callerId: newCallerId,
+    incidentId: incident.id, resolution: 'Signed out and helpful.',
+  }, null);
+  check('nor can somebody with no session at all',
+    anonymous.status === 401 || anonymous.status === 403, `got ${anonymous.status}`);
+
+  const wrongCaller = await post('/api/callers', {
+    action: 'resolve_incident', callerId: someCaller.id,
+    incidentId: incident.id, resolution: 'Owner, but naming the wrong person.',
+  }, ownerCookie);
+  check('and an owner cannot close it against a different caller',
+    wrongCaller.status === 409, `got ${wrongCaller.status}`);
+
+  const byOwner = await post('/api/callers', {
+    action: 'resolve_incident', callerId: newCallerId,
+    incidentId: incident.id, resolution: 'Queue driver restarted; the save path was fine.',
+  }, ownerCookie);
+  check('the owner can close it, and has to say what was done', byOwner.status === 200,
+    `got ${byOwner.status}`);
+  const closed = await prisma.workIncident.findUnique({
+    where: { id: incident.id }, select: { status: true, resolution: true, resolvedBy: true },
+  });
+  check('and the resolution names the person and what they did',
+    closed?.status === 'RESOLVED' && Boolean(closed.resolvedBy) && /queue driver/i.test(closed.resolution ?? ''),
+    `${closed?.status}`);
+
+  const empty = await post('/api/callers', {
+    action: 'resolve_incident', callerId: newCallerId, incidentId: incident.id, resolution: '',
+  }, ownerCookie);
+  check('an empty resolution is refused', empty.status === 400, `got ${empty.status}`);
+
+  await prisma.workIncident.deleteMany({ where: { id: incident.id } });
 
   // -----------------------------------------------------------------------
   await prisma.packetItem.deleteMany({ where: { callerId: newCallerId } });
