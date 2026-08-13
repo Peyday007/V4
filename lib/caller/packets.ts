@@ -55,6 +55,14 @@ export async function buildPacket(params: {
   name: string;
   /** Routes to include. Ordering within the packet is not the serve order. */
   routeIds: string[];
+  /**
+   * Which world this packet belongs to.
+   *
+   * Passed explicitly rather than inferred, and checked against the caller and
+   * every route by database triggers. A packet is the object that joins a
+   * person to real companies, so it is the last place to be relaxed about it.
+   */
+  dataMode?: 'PRODUCTION' | 'TEST';
   expiresAt?: Date | null;
   scriptVersion?: string | null;
   processVersion?: string | null;
@@ -66,9 +74,22 @@ export async function buildPacket(params: {
 }): Promise<PacketPlan> {
   const caller = await prisma.user.findFirst({
     where: { id: params.callerId, orgId: params.orgId, isActive: true },
-    select: { id: true, name: true },
+    select: { id: true, name: true, callerProfile: { select: { dataMode: true } } },
   });
   if (!caller) throw new Error('That caller is not in your organisation.');
+  if (!caller.callerProfile) {
+    throw new Error('That account is not a caller. Create a caller rather than assigning work to a user.');
+  }
+
+  // The caller's own world wins over anything the request asked for. A packet
+  // built in the wrong mode is refused by a trigger anyway; taking it from the
+  // profile means the refusal never has to fire.
+  const dataMode = caller.callerProfile.dataMode;
+  if (params.dataMode && params.dataMode !== dataMode) {
+    throw new Error(
+      `That caller works ${dataMode.toLowerCase()} opportunities, so a ${params.dataMode.toLowerCase()} packet cannot be handed to them.`,
+    );
+  }
 
   const routes = await prisma.routeHypothesis.findMany({
     where: { id: { in: params.routeIds }, orgId: params.orgId },
@@ -81,6 +102,7 @@ export async function buildPacket(params: {
       orgId: params.orgId,
       callerId: params.callerId,
       name: params.name.slice(0, 200),
+      dataMode,
       expiresAt: params.expiresAt ?? null,
       scriptVersion: params.scriptVersion ?? null,
       processVersion: params.processVersion ?? null,
@@ -109,7 +131,10 @@ export async function buildPacket(params: {
 
     try {
       await prisma.packetItem.create({
-        data: { orgId: params.orgId, packetId: packet.id, callerId: params.callerId, routeId, position: index },
+        data: {
+          orgId: params.orgId, packetId: packet.id, callerId: params.callerId,
+          routeId, position: index, dataMode,
+        },
       });
       added += 1;
     } catch (error) {

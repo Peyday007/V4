@@ -64,23 +64,39 @@ describe('the deployed routes exist and carry the mode in the path', () => {
     expect(read('app/api/cron/daily/route.ts')).toMatch(/runCron\(request,\s*'daily'\)/);
   });
 
-  it('schedules both of them in vercel.json, by path', () => {
+  it('schedules the daily sweep in vercel.json, by path', () => {
     const vercel = JSON.parse(read('vercel.json')) as { crons?: Array<{ path: string; schedule: string }> };
     const paths = (vercel.crons ?? []).map((c) => c.path);
+    expect(paths).toContain('/api/cron/daily');
     // A query string is the thing a scheduler is most likely to drop, and
     // dropping it silently downgrades `daily` to `tick`.
-    expect(paths).toContain('/api/cron/tick');
-    expect(paths).toContain('/api/cron/daily');
     for (const path of paths) expect(path).not.toContain('?');
   });
 
-  it('schedules the tick more often than once a day', () => {
+  it('drives the tick more often than once a day, from somewhere', () => {
+    // Deliberately not "from vercel.json". This assertion used to require the
+    // ten-minute entry there, and that requirement was wrong in a way that cost
+    // ten commits: the Hobby plan rejects any cron firing more than once a day
+    // *at deploy time*, so the entry did not schedule a tick — it stopped the
+    // application being deployed at all. The real invariant is that something
+    // drives the loop.
     const vercel = JSON.parse(read('vercel.json')) as { crons?: Array<{ path: string; schedule: string }> };
     const tick = (vercel.crons ?? []).find((c) => c.path === '/api/cron/tick');
-    expect(tick).toBeDefined();
-    // Daily is not a tick. This is the schedule Vercel's Hobby plan refuses,
-    // which is why the repository also carries a GitHub Actions trigger.
-    expect(tick!.schedule).not.toMatch(/^\d+\s+\d+\s+\*\s+\*\s+\*$/);
+    const daily = /^\d+\s+\d+\s+\*\s+\*\s+\*$/;
+
+    if (tick) {
+      // A deployment on Pro may schedule it directly, and then it must be
+      // more often than daily or it is not a tick.
+      expect(tick.schedule).not.toMatch(daily);
+      return;
+    }
+
+    // Otherwise the GitHub Actions workflow is the scheduler, and it has to be
+    // both present and frequent.
+    const workflow = read('.github/workflows/cron-tick.yml');
+    const cron = workflow.match(/cron:\s*'([^']+)'/)?.[1];
+    expect(cron, 'no tick in vercel.json and no schedule in the workflow').toBeDefined();
+    expect(cron!).not.toMatch(daily);
   });
 
   it('ships a plan-independent trigger for deployments that cannot run it', () => {

@@ -83,6 +83,18 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           </NavLink>
         )}
 
+        {/* The floor. Its own section, because "where are my callers" is not a
+            question anybody thinks to ask under Graph — and because the caller
+            workspace had no link into it at all, so an owner had to remember
+            the URL. */}
+        {(can(user, 'call.assignment.read.all') || can(user, 'admin.users')) && (
+          <>
+            <div className="nav-section">Floor</div>
+            <NavLink href="/callers">Callers</NavLink>
+            <NavLink href="/work">Caller workspace</NavLink>
+          </>
+        )}
+
         {(can(user, 'company.read') || can(user, 'discovery.read')) && (
           <>
             <div className="nav-section">Graph</div>

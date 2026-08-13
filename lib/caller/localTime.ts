@@ -31,7 +31,7 @@ export type LocalHours = {
  * presented as the business's timezone, which is why nothing displays it as a
  * fact about them.
  */
-const STATE_TIMEZONES: Record<string, string> = {
+export const STATE_TIMEZONES: Record<string, string> = {
   AL: 'America/Chicago', AK: 'America/Anchorage', AZ: 'America/Phoenix', AR: 'America/Chicago',
   CA: 'America/Los_Angeles', CO: 'America/Denver', CT: 'America/New_York', DE: 'America/New_York',
   DC: 'America/New_York', FL: 'America/New_York', GA: 'America/New_York', HI: 'Pacific/Honolulu',

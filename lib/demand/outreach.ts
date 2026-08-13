@@ -237,6 +237,7 @@ export async function saveDisposition(params: {
       id: true,
       playbookKey: true,
       route: true,
+      dataMode: true,
       eventId: true,
       companyId: true,
       event: { select: { connector: true } },
@@ -264,6 +265,11 @@ export async function saveDisposition(params: {
         orgId,
         routeId: input.routeId,
         userId: params.userId ?? null,
+        // Taken from the route rather than defaulted, so a sandbox call is
+        // recorded as sandbox and never reaches production measurement. A
+        // trigger refuses the mismatch, so this is the value that makes the
+        // write succeed rather than a hint the write can ignore.
+        dataMode: route.dataMode,
         disposition: input.disposition,
         notes: input.notes?.slice(0, 4000) ?? null,
         discovery: (input.discovery ?? {}) as Prisma.InputJsonValue,

@@ -79,7 +79,12 @@ export async function callerScorecards(params: {
 
   for (const caller of callers) {
     const attempts = await prisma.outreachAttempt.findMany({
-      where: { orgId: params.orgId, userId: caller.id, occurredAt: window },
+      where: {
+        orgId: params.orgId, userId: caller.id, occurredAt: window,
+        // Sandbox calls are practice. Counting them would let an owner
+        // improve a caller's numbers by handing them test work.
+        dataMode: 'PRODUCTION',
+      },
       select: {
         routeId: true, disposition: true, discovery: true,
         route: { select: { tier: true, route: true } },

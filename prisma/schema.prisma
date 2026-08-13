@@ -730,6 +730,7 @@ model User {
   casesResolved           ConsistencyCase[] @relation("CaseResolvedBy")
   breakersClosed          CircuitBreaker[]  @relation("BreakerClosedBy")
   readinessChecks         ShiftReadiness[]  @relation("ReadinessCaller")
+  pinsIssued              CallerProfile[]   @relation("PinIssuedBy")
 
   @@unique([orgId, email])
   @@index([orgId])
@@ -749,6 +750,18 @@ model Session {
   @@index([userId])
 }
 
+/// Production work or sandbox work. Never both, and never mixed.
+///
+/// The one distinction in this schema that a bug must not be able to blur. A
+/// test opportunity that reaches a production caller wastes a real buyer; a
+/// production opportunity that reaches a test caller is a real company being
+/// rung by somebody practising. Both are enforced by triggers below rather
+/// than by whichever query happened to remember.
+enum DataMode {
+  PRODUCTION
+  TEST
+}
+
 model CallerProfile {
   id     String @id @default(cuid())
   userId String @unique
@@ -765,6 +778,14 @@ model CallerProfile {
   pinLockedUntil     DateTime?
   /// Revoked without deleting the person, their assignments or their history.
   pinRevokedAt       DateTime?
+  /// Who handed it over, so a credential always has a person behind it. The
+  /// PIN itself is never stored, here or anywhere.
+  pinIssuedById      String?
+  /// Whether this caller works real opportunities or sandbox ones.
+  dataMode           DataMode  @default(PRODUCTION)
+  /// Free-text note for the owner: shift, agency, what they are being trained
+  /// on. Shown on the floor, never to the caller's prospects.
+  label              String?
   timezone           String    @default("America/New_York")
   languages          String[]  @default(["en"])
   industryStrengths  String[]  @default([])
@@ -779,7 +800,10 @@ model CallerProfile {
   notes              String?
   updatedAt          DateTime  @updatedAt
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user        User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  pinIssuedBy User? @relation("PinIssuedBy", fields: [pinIssuedById], references: [id], onDelete: SetNull)
+
+  @@index([dataMode])
 }
 
 // ---------------------------------------------------------------------------
@@ -1161,6 +1185,9 @@ model ScriptTemplate {
 model Company {
   id                     String          @id @default(cuid())
   orgId                  String
+  /// Sandbox companies exist so an owner can practise. They are never real
+  /// businesses and must never be rung, emailed or quoted.
+  dataMode               DataMode        @default(PRODUCTION)
   legalName              String
   operatingName          String?
   website                String?
@@ -2678,8 +2705,11 @@ enum EventPartyRole {
 }
 
 model DemandEvent {
-  id    String @id @default(cuid())
-  orgId String
+  id       String   @id @default(cuid())
+  orgId    String
+  /// PRODUCTION or TEST. Enforced against the caller and the route by
+  /// triggers, so no query has to remember.
+  dataMode DataMode @default(PRODUCTION)
 
   type         DemandEventType
   lifecycle    EventLifecycle     @default(DISCOVERED)
@@ -2785,9 +2815,12 @@ model DemandEventParty {
 /// consumables order and a replenishment (distribution). It creates a
 /// subcontracting route only when a prime or a capacity request is in evidence.
 model RouteHypothesis {
-  id        String  @id @default(cuid())
+  id        String   @id @default(cuid())
   orgId     String
   eventId   String
+  /// PRODUCTION or TEST. Enforced against the caller and the route by
+  /// triggers, so no query has to remember.
+  dataMode  DataMode @default(PRODUCTION)
   /// The account this route is for. One account, many routes beneath it.
   companyId String
   pathId    String?
@@ -2885,6 +2918,7 @@ model RouteHypothesis {
   consistencyCases   ConsistencyCase[]
 
   @@unique([eventId, companyId, playbookKey])
+  @@index([orgId, dataMode, status], map: "RouteHypothesis_dataMode_idx")
   @@index([orgId, tier, friction])
   @@index([orgId, route, status])
 }
@@ -3099,11 +3133,14 @@ model OutreachState {
 /// notes field cannot answer "how many buyers named a reorder cycle"; these
 /// can, and they are what the after-call gate checks.
 model OutreachAttempt {
-  id      String  @id @default(cuid())
-  orgId   String
-  routeId String
+  id       String   @id @default(cuid())
+  orgId    String
+  routeId  String
+  /// PRODUCTION or TEST. Enforced against the caller and the route by
+  /// triggers, so no query has to remember.
+  dataMode DataMode @default(PRODUCTION)
   /// Null when the operator could not be identified, rather than guessed at.
-  userId  String?
+  userId   String?
 
   disposition     CallDisposition
   notes           String?
@@ -3130,6 +3167,7 @@ model OutreachAttempt {
   callSession  CallSession?
 
   @@index([orgId, occurredAt])
+  @@index([orgId, dataMode, occurredAt], map: "OutreachAttempt_dataMode_idx")
   @@index([routeId, occurredAt])
 }
 
@@ -3340,9 +3378,12 @@ enum PacketItemStatus {
 /// Comparing this month's conversion against last month's without them
 /// compares two different experiments and calls the difference performance.
 model WorkPacket {
-  id       String @id @default(cuid())
+  id       String   @id @default(cuid())
   orgId    String
   callerId String
+  /// PRODUCTION or TEST. Enforced against the caller and the route by
+  /// triggers, so no query has to remember.
+  dataMode DataMode @default(PRODUCTION)
 
   name   String
   status PacketStatus @default(OPEN)
@@ -3384,10 +3425,13 @@ model WorkPacket {
 /// index, written by hand in the migration, because "two callers must not both
 /// be told this is theirs" is a database invariant and not a convention.
 model PacketItem {
-  id       String @id @default(cuid())
+  id       String   @id @default(cuid())
   orgId    String
   packetId String
   routeId  String
+  /// PRODUCTION or TEST. Enforced against the caller and the route by
+  /// triggers, so no query has to remember.
+  dataMode DataMode @default(PRODUCTION)
   /// Copied from the packet so the "one live record per caller" invariant can
   /// be a partial unique index rather than a query somebody has to remember.
   /// A caller holding two records at once has one of them going cold behind a
@@ -3417,6 +3461,7 @@ model PacketItem {
 
   @@unique([packetId, routeId])
   @@index([orgId, status])
+  @@index([orgId, dataMode, status], map: "PacketItem_dataMode_idx")
   @@index([routeId, status])
   @@index([callerId, status])
 }

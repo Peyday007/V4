@@ -57,22 +57,36 @@ export async function issuePin(params: {
   orgId: string;
   userId: string;
   issuedByUserId: string;
-}): Promise<{ pin: string }> {
+}): Promise<{ pin: string; issuedAt: Date }> {
+  // Only somebody who is already a caller. This used to upsert a profile,
+  // which meant that issuing a PIN to any user id — the owner, the finance
+  // reviewer — silently turned them into a caller. A calling credential is not
+  // something an account should acquire as a side effect of a button.
   const user = await prisma.user.findFirst({
     where: { id: params.userId, orgId: params.orgId },
-    select: { id: true, name: true },
+    select: { id: true, name: true, isActive: true, callerProfile: { select: { id: true } } },
   });
   if (!user) throw new CallerAuthError('That person is not in your organisation.', 404);
+  if (!user.callerProfile) {
+    throw new CallerAuthError(
+      'That account is not a caller, so it cannot be given a calling PIN. Create a caller instead.',
+      409,
+    );
+  }
+  if (!user.isActive) {
+    throw new CallerAuthError('That caller is deactivated. Reactivate them before issuing a PIN.', 409);
+  }
 
   const pin = generatePin();
   const pinHash = await hashSecret(pin, PIN_LENGTH);
+  const issuedAt = new Date();
 
-  await prisma.callerProfile.upsert({
+  await prisma.callerProfile.update({
     where: { userId: params.userId },
-    create: { userId: params.userId, pinHash, pinSetAt: new Date() },
-    update: {
+    data: {
       pinHash,
-      pinSetAt: new Date(),
+      pinSetAt: issuedAt,
+      pinIssuedById: params.issuedByUserId,
       pinFailedCount: 0,
       pinLockedUntil: null,
       pinRevokedAt: null,
@@ -89,7 +103,7 @@ export async function issuePin(params: {
     metadata: { caller: user.name },
   });
 
-  return { pin };
+  return { pin, issuedAt };
 }
 
 /** Takes a caller's PIN away without touching them, their packets or history. */

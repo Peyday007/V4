@@ -177,6 +177,16 @@ const TERMINAL_STATUSES = Prisma.sql`('DO_NOT_CONTACT','CLOSED_HANDLED','CLOSED_
 /** Engine statuses that are not work regardless of what the operator did. */
 const DEAD_ROUTE_STATUSES = Prisma.sql`('EXPIRED','REJECTED','COLD')`;
 
+
+/**
+ * The demand board is production only.
+ *
+ * Sandbox opportunities are invented companies. One of them in "call now" is a
+ * caller ringing a number that does not exist, and one of them in a conversion
+ * rate is a measurement nobody can trust.
+ */
+const PRODUCTION_ONLY = Prisma.sql`r."dataMode" = 'PRODUCTION'`;
+
 function viewClause(view: QueueView): Prisma.Sql {
   switch (view) {
     case 'call_now':
@@ -373,7 +383,7 @@ export async function queryQueue(params: {
   const offset = Math.max(filters.cursor ?? 0, 0);
 
   const where = Prisma.sql`
-    WHERE r."orgId" = ${orgId}
+    WHERE r."orgId" = ${orgId} AND ${PRODUCTION_ONLY}
       AND (${viewClause(filters.view)})
       ${filterClauses(filters).length > 0 ? Prisma.sql`AND ${Prisma.join(filterClauses(filters), ' AND ')}` : Prisma.empty}
   `;
@@ -504,7 +514,7 @@ export async function queueSummary(orgId: string): Promise<QueueSummary> {
           AND r."status" NOT IN ('EXPIRED','REJECTED')
       ) AS expiring_soon
     ${BASE_FROM}
-    WHERE r."orgId" = ${orgId}
+    WHERE r."orgId" = ${orgId} AND ${PRODUCTION_ONLY}
   `;
 
   const num = (key: string) => Number(row?.[key] ?? 0);
@@ -560,7 +570,7 @@ export async function nextCallable(params: {
       0 AS "routesForAccount", 0 AS "routesForEvent",
       ${ENRICHMENT_COLUMNS}
     ${BASE_FROM}
-    WHERE r."orgId" = ${params.orgId}
+    WHERE r."orgId" = ${params.orgId} AND ${PRODUCTION_ONLY}
       AND (${viewClause('call_now')})
       ${exclude}
     ${ORDER_BY}
@@ -586,7 +596,7 @@ export async function isCallable(orgId: string, routeId: string): Promise<{ call
       os."snoozeUntil" AS "snoozeUntil",
       ${PHONE_EXPR} AS "phone"
     ${BASE_FROM}
-    WHERE r."orgId" = ${orgId} AND r."id" = ${routeId}
+    WHERE r."orgId" = ${orgId} AND ${PRODUCTION_ONLY} AND r."id" = ${routeId}
   `;
 
   const row = rows[0];
@@ -621,7 +631,7 @@ export async function callableRouteCount(orgId: string, companyId: string): Prom
   const [row] = await prisma.$queryRaw<Array<{ count: bigint }>>`
     SELECT COUNT(*)::bigint AS count
     ${BASE_FROM}
-    WHERE r."orgId" = ${orgId} AND r."companyId" = ${companyId} AND (${viewClause('call_now')})
+    WHERE r."orgId" = ${orgId} AND ${PRODUCTION_ONLY} AND r."companyId" = ${companyId} AND (${viewClause('call_now')})
   `;
   return Number(row?.count ?? 0);
 }
@@ -638,7 +648,7 @@ export async function filterOptions(orgId: string): Promise<{
     FROM "RouteHypothesis" r
     JOIN "DemandEvent" e ON e."id" = r."eventId"
     JOIN "Company" c ON c."id" = r."companyId"
-    WHERE r."orgId" = ${orgId}
+    WHERE r."orgId" = ${orgId} AND ${PRODUCTION_ONLY}
   `;
   return {
     eventTypes: [...new Set(rows.map((r) => r.eventType))].sort(),

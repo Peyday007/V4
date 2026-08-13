@@ -121,7 +121,7 @@ export async function chainHealth(orgId: string): Promise<ChainHealth> {
     prisma.demandEventParty.count({
       where: { companyId: null, event: { orgId, lifecycle: 'VERIFIED' } },
     }),
-    prisma.routeHypothesis.count({ where: { orgId, status: { notIn: ['EXPIRED', 'REJECTED'] } } }),
+    prisma.routeHypothesis.count({ where: { orgId, dataMode: 'PRODUCTION', status: { notIn: ['EXPIRED', 'REJECTED'] } } }),
     prisma.$queryRaw<Array<{ count: bigint }>>`
       SELECT COUNT(*)::bigint AS count FROM "DemandEvent" e
       LEFT JOIN "RouteHypothesis" r ON r."eventId" = e."id"
@@ -138,8 +138,8 @@ export async function chainHealth(orgId: string): Promise<ChainHealth> {
       WHERE r."orgId" = ${orgId} AND r."status" NOT IN ('EXPIRED','REJECTED') AND cr."id" IS NULL
     `,
     queueSummary(orgId),
-    prisma.outreachAttempt.findFirst({ where: { orgId }, orderBy: { occurredAt: 'desc' } }),
-    prisma.outreachAttempt.count({ where: { orgId, occurredAt: { gte: new Date(now - 7 * DAY) } } }),
+    prisma.outreachAttempt.findFirst({ where: { orgId, dataMode: 'PRODUCTION' }, orderBy: { occurredAt: 'desc' } }),
+    prisma.outreachAttempt.count({ where: { orgId, dataMode: 'PRODUCTION', occurredAt: { gte: new Date(now - 7 * DAY) } } }),
     prisma.outreachState.count({ where: { orgId, status: 'QUALIFIED' } }),
     prisma.routeHypothesis.count({
       where: { orgId, status: { notIn: ['EXPIRED', 'REJECTED'] }, fulfilmentStatus: { not: 'AVAILABLE' } },

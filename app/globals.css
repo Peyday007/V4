@@ -296,3 +296,29 @@ label { display: block; font-size: 0.75rem; color: var(--text-muted); margin-bot
 .question { padding: 0.4rem 0; border-bottom: 1px solid var(--border); font-size: 0.85rem; }
 .question:last-child { border-bottom: none; }
 .question .factkey { font-family: var(--mono); font-size: 0.68rem; color: var(--text-dim); }
+
+/* The calling floor.
+   Cards rather than a table: an owner scanning the floor is asking a different
+   question of each caller, and a wide table forces the narrowest one. The grid
+   collapses to a single column well before a laptop gets uncomfortable, so
+   nothing needs horizontal scrolling to reach a control. */
+.caller-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(19rem, 1fr));
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.caller-card {
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  min-width: 0;
+}
+
+.caller-card .row { min-width: 0; }
+.caller-card code { font-size: 1.1em; letter-spacing: 0.08em; }
+
+@media (max-width: 720px) {
+  .caller-grid { grid-template-columns: 1fr; }
+}

@@ -29,6 +29,8 @@
     "audit:manager": "tsx scripts/systemManagerAudit.ts",
     "audit:manager:http": "tsx scripts/systemManagerHttpAudit.ts",
     "check:cron": "node scripts/cronTickCheck.mjs",
+    "audit:floor": "tsx scripts/callerFloorAudit.ts",
+    "audit:floor:http": "tsx scripts/callerFloorHttpAudit.ts",
     "vercel-build": "prisma generate && node scripts/deployMigrate.mjs && next build",
     "db:seed:prod": "tsx prisma/seed.ts",
     "db:migrate:new": "prisma migrate dev --create-only",
