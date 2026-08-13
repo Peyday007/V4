@@ -4,6 +4,8 @@ import { requirePagePermission } from '@/lib/auth/page';
 import { loadOpportunityRecord } from '@/lib/demand/opportunityRecord';
 import { loadDealRecord } from '@/lib/deal/record';
 import { DealProgress } from '@/components/DealProgress';
+import { DealPlanPanel } from '@/components/DealPlanPanel';
+import { loadDealPlan } from '@/lib/deal/plan';
 import { can } from '@/lib/auth/session';
 import { Badge } from '@/components/ui';
 
@@ -31,6 +33,10 @@ export default async function OpportunityRecordPage({ params }: { params: { rout
   // empty deal panel on a page for an opportunity that is not on this account.
   const deal = await loadDealRecord({ orgId: user.orgId, routeId: params.routeId });
 
+  // The chain, decided from the record that was just loaded. Everything below
+  // the plan is evidence for it rather than a second opinion.
+  const plan = await loadDealPlan({ orgId: user.orgId, routeId: params.routeId, record: deal });
+
   return (
     <>
       <div className="page-header">
@@ -46,6 +52,16 @@ export default async function OpportunityRecordPage({ params }: { params: { rout
       </div>
 
       {record.standing.statusReason && <div className="alert small">{record.standing.statusReason}</div>}
+
+      {plan && <DealPlanPanel plan={plan} />}
+
+      <DealProgress record={deal} canSeeMargin={can(user, 'finance.margin.read')} />
+
+      <details className="card" data-testid="evidence-detail">
+        <summary>
+          <strong>Why we believe any of this</strong>
+          <span className="tiny dim"> — the source, what a person confirmed, our hypothesis, and the gaps</span>
+        </summary>
 
       <div className="grid grid-2">
         <div className="card">
@@ -134,8 +150,6 @@ export default async function OpportunityRecordPage({ params }: { params: { rout
         </div>
       </div>
 
-      <DealProgress record={deal} canSeeMargin={can(user, 'finance.margin.read')} />
-
       <div className="card">
         <h2 style={{ marginTop: 0 }}>Contact, and where it came from</h2>
         {record.contacts.phone ? (
@@ -165,6 +179,8 @@ export default async function OpportunityRecordPage({ params }: { params: { rout
           </table>
         )}
       </div>
+
+      </details>
 
       {record.siblingRoutes.length > 0 && (
         <div className="card">
