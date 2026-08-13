@@ -48,9 +48,13 @@ export async function resolveSupply(params: { orgId: string; now?: Date }): Prom
     tasksCreated: 0,
   };
 
-  // Loaded once. A catalogue lookup per route would be hundreds of round trips
-  // against a set that does not change during the pass.
-  const providers = await loadProviders(params.orgId);
+  // Loaded once per world. A catalogue lookup per route would be hundreds of
+  // round trips against a set that does not change during the pass, and mixing
+  // the two worlds would match practice routes to real subcontractors.
+  const catalogue = {
+    PRODUCTION: await loadProviders(params.orgId, 'PRODUCTION'),
+    TEST: await loadProviders(params.orgId, 'TEST'),
+  };
 
   const routes = await prisma.routeHypothesis.findMany({
     where: {
@@ -61,6 +65,7 @@ export async function resolveSupply(params: { orgId: string; now?: Date }): Prom
     select: {
       id: true,
       status: true,
+      dataMode: true,
       fulfilmentStatus: true,
       requiredCapability: true,
       windowClosesAt: true,
@@ -74,6 +79,8 @@ export async function resolveSupply(params: { orgId: string; now?: Date }): Prom
   for (const route of routes) {
     if (!route.requiredCapability) continue;
     outcome.routesConsidered += 1;
+
+    const providers = catalogue[route.dataMode];
 
     const assessment = assessFulfilment({
       requiredCapability: route.requiredCapability,

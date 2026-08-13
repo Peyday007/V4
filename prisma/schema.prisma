@@ -3565,6 +3565,10 @@ enum RequirementState {
 /// it is why nothing here is ever updated in place once it has been priced.
 model BuyerRequirement {
   id      String @id @default(cuid())
+
+  /// The world this belongs to. Set from the route by a database trigger,
+  /// because five tables and a dozen write paths will not all remember.
+  dataMode DataMode @default(PRODUCTION)
   orgId   String
   routeId String
   version Int
@@ -3629,6 +3633,7 @@ model BuyerRequirement {
 
   @@unique([routeId, version])
   @@index([orgId, state])
+  @@index([orgId, dataMode], map: "BuyerRequirement_orgId_dataMode_idx")
 }
 
 /// How far one provider has got on one route.
@@ -3650,6 +3655,10 @@ enum ProviderWorkState {
 
 model ProviderCandidate {
   id                String @id @default(cuid())
+
+  /// The world this belongs to. Set from the route by a database trigger,
+  /// because five tables and a dozen write paths will not all remember.
+  dataMode DataMode @default(PRODUCTION)
   orgId             String
   routeId           String
   providerCompanyId String
@@ -3704,6 +3713,7 @@ model ProviderCandidate {
 
   @@unique([routeId, providerCompanyId])
   @@index([orgId, state])
+  @@index([orgId, dataMode], map: "ProviderCandidate_orgId_dataMode_idx")
 }
 
 enum QuoteState {
@@ -3750,6 +3760,10 @@ enum EconomicsConfidence {
 /// negotiation.
 model RouteQuote {
   id                  String  @id @default(cuid())
+
+  /// The world this belongs to. Set from the route by a database trigger,
+  /// because five tables and a dozen write paths will not all remember.
+  dataMode DataMode @default(PRODUCTION)
   orgId               String
   routeId             String
   version             Int
@@ -3813,6 +3827,7 @@ model RouteQuote {
 
   @@unique([routeId, version])
   @@index([orgId, state])
+  @@index([orgId, dataMode], map: "RouteQuote_orgId_dataMode_idx")
 }
 
 enum DealStage {
@@ -3843,6 +3858,10 @@ enum CommitmentBasis {
 /// yes" render as "we were paid".
 model RouteDeal {
   id      String @id @default(cuid())
+
+  /// The world this belongs to. Set from the route by a database trigger,
+  /// because five tables and a dozen write paths will not all remember.
+  dataMode DataMode @default(PRODUCTION)
   orgId   String
   routeId String @unique
   quoteId String @unique
@@ -3889,6 +3908,7 @@ model RouteDeal {
   payments   DealPayment[]
 
   @@index([orgId, stage])
+  @@index([orgId, dataMode], map: "RouteDeal_orgId_dataMode_idx")
 }
 
 model DealMilestone {
@@ -3930,6 +3950,10 @@ enum PaymentKind {
 /// gross profit, which is why it is nullable and separate from `dueAt`.
 model DealPayment {
   id     String @id @default(cuid())
+
+  /// The world this belongs to. Set from the route by a database trigger,
+  /// because five tables and a dozen write paths will not all remember.
+  dataMode DataMode @default(PRODUCTION)
   orgId  String
   dealId String
 
@@ -3951,6 +3975,7 @@ model DealPayment {
 
   @@index([orgId, direction, settledAt])
   @@index([dealId, createdAt])
+  @@index([orgId, dataMode], map: "DealPayment_orgId_dataMode_idx")
 }
 
 /// Append-only trail for every material deal transition.

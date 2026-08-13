@@ -293,7 +293,19 @@ export async function advanceCandidate(options: {
     // Apply the incoming fields to a copy, then check the evidence against what
     // the row *would* be. Checking the row as it stands would refuse a
     // transition whose evidence arrives in the same request.
-    const proposed = { ...candidate, ...stamped(options.to, options.fields ?? {}, now) };
+    //
+    // The reason has to be in that projection too. It is a separate parameter
+    // rather than one of `fields`, and leaving it out meant CONTACTED — whose
+    // whole evidence requirement *is* the reason — was checked against the
+    // candidate's existing `stateReason`, which is null on every new candidate.
+    // The effect was that the first rung of the provider ladder could not be
+    // climbed at all: every attempt was refused for missing the account of the
+    // conversation that the request had just supplied.
+    const proposed = {
+      ...candidate,
+      ...stamped(options.to, options.fields ?? {}, now),
+      stateReason: options.reason,
+    };
     const missing = missingEvidence(proposed as ProviderCandidateRow, options.to);
     if (missing.length > 0) {
       return {

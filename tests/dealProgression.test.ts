@@ -452,6 +452,32 @@ describe('money: an invoice is a claim, not money', () => {
     expect(money.fullySettled).toBe(true);
   });
 
+  it('is not fully settled while the provider is still owed', () => {
+    // The case that made this rule necessary: money in, provider unpaid. The
+    // old rule looked only at the inbound side and reported the whole invoice
+    // as gross profit on a deal that would net a third of it.
+    const money = moneyPosition([
+      { direction: 'INBOUND', kind: 'INVOICE', amount: 6_800, settledAt: null },
+      { direction: 'INBOUND', kind: 'PAYMENT', amount: 6_800, settledAt: new Date('2026-08-10') },
+      { direction: 'OUTBOUND', kind: 'INVOICE', amount: 4_200, settledAt: null },
+    ]);
+    expect(money.collected).toBe(6_800);
+    expect(money.outstandingOutbound).toBe(4_200);
+    expect(money.fullySettled).toBe(false);
+  });
+
+  it('settles once the provider has actually been paid', () => {
+    const money = moneyPosition([
+      { direction: 'INBOUND', kind: 'INVOICE', amount: 6_800, settledAt: null },
+      { direction: 'INBOUND', kind: 'PAYMENT', amount: 6_800, settledAt: new Date('2026-08-10') },
+      { direction: 'OUTBOUND', kind: 'INVOICE', amount: 4_200, settledAt: null },
+      { direction: 'OUTBOUND', kind: 'PAYMENT', amount: 4_200, settledAt: new Date('2026-08-15') },
+    ]);
+    expect(money.outstandingOutbound).toBe(0);
+    expect(money.collectedGrossProfit).toBe(2_600);
+    expect(money.fullySettled).toBe(true);
+  });
+
   it('subtracts a refund and a chargeback from what we collected', () => {
     const money = moneyPosition([
       { direction: 'INBOUND', kind: 'PAYMENT', amount: 10_000, settledAt: new Date('2026-08-10') },

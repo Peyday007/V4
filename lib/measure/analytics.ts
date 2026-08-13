@@ -120,7 +120,10 @@ export async function callerScorecards(params: {
 
     const deals = routeIds.length > 0
       ? await prisma.routeDeal.findMany({
-          where: { orgId: params.orgId, routeId: { in: routeIds } },
+          // Practice deals are excluded here for the same reason practice calls
+          // are excluded from the funnel: a scorecard that counts them is a
+          // scorecard about somebody rehearsing.
+          where: { orgId: params.orgId, dataMode: 'PRODUCTION', routeId: { in: routeIds } },
           include: { payments: { select: { direction: true, kind: true, amount: true, settledAt: true } } },
         })
       : [];

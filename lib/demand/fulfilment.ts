@@ -77,9 +77,22 @@ export type FulfilmentAssessment = {
  */
 const CAPACITY_FRESH_DAYS = 45;
 
-export async function loadProviders(orgId: string): Promise<ProviderCandidate[]> {
+export async function loadProviders(
+  orgId: string,
+  /**
+   * Which world to draw providers from. A practice route matched to a real
+   * subcontractor would put a real business into a rehearsal, and a real route
+   * matched to a practice one would promise work to a company that does not
+   * exist. Same-world matching is the only correct answer, so the caller has to
+   * say which world it is asking about.
+   */
+  dataMode: 'PRODUCTION' | 'TEST' = 'PRODUCTION',
+): Promise<ProviderCandidate[]> {
   const rows = await prisma.company.findMany({
-    where: { orgId, companyRole: { in: ['SUBCONTRACTOR', 'SUPPLIER', 'DISTRIBUTOR', 'MANUFACTURER', 'CARRIER'] } },
+    where: {
+      orgId, dataMode,
+      companyRole: { in: ['SUBCONTRACTOR', 'SUPPLIER', 'DISTRIBUTOR', 'MANUFACTURER', 'CARRIER'] },
+    },
     select: {
       id: true,
       legalName: true,

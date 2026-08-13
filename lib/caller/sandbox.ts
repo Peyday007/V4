@@ -80,6 +80,28 @@ const FIXTURES = [
   },
 ];
 
+/**
+ * One practice provider, so the sandbox can exercise the other half of a deal.
+ *
+ * Without it the sandbox could only ever rehearse a phone call: sourcing,
+ * verification, cost and commitment all need somebody on the supply side, and
+ * matching a practice route to a real subcontractor is exactly what the data
+ * mode exists to prevent. Its capabilities cover all three fixture routes so
+ * every practice opportunity has a plausible counterparty.
+ */
+const PROVIDER_FIXTURE = {
+  key: 'provider',
+  company: 'Lakeside Facility Services',
+  stateCode: 'IL',
+  cityName: 'Chicago',
+  phone: '+1 555 0190',
+  capabilities: [
+    'Janitorial consumables distribution',
+    'Commercial cleaning brokerage',
+    'Post-construction cleaning',
+  ],
+};
+
 export type SandboxState = {
   companies: number;
   routes: number;
@@ -182,6 +204,8 @@ export async function ensureSandbox(params: {
     });
   }
 
+  await ensureSandboxProvider(params.orgId);
+
   await audit({
     orgId: params.orgId, userId: params.actorId, action: 'sandbox.created',
     entityType: 'Organization', entityId: params.orgId,
@@ -189,6 +213,63 @@ export async function ensureSandbox(params: {
   });
 
   return sandboxState(params.orgId);
+}
+
+/**
+ * The practice provider, created once.
+ *
+ * Capabilities are joined through the shared catalogue rather than invented as
+ * free text, so the same matching code that runs against real providers runs
+ * against this one. A fixture that bypassed the matcher would prove nothing
+ * about whether the matcher works.
+ */
+async function ensureSandboxProvider(orgId: string): Promise<void> {
+  const existing = await prisma.company.findFirst({
+    where: { orgId, dataMode: 'TEST', companyRole: 'SUBCONTRACTOR' },
+    select: { id: true },
+  });
+  if (existing) return;
+
+  const company = await prisma.company.create({
+    data: {
+      orgId,
+      dataMode: 'TEST',
+      legalName: `${TEST_MARK} ${PROVIDER_FIXTURE.company}`,
+      operatingName: `${TEST_MARK} ${PROVIDER_FIXTURE.company}`,
+      stateCode: PROVIDER_FIXTURE.stateCode,
+      cityName: PROVIDER_FIXTURE.cityName,
+      phone: PROVIDER_FIXTURE.phone,
+      companyRole: 'SUBCONTRACTOR',
+      origin: 'SEED_DEMO',
+      serviceTerritories: ['IL', 'TX', 'CA'],
+      // Enough to clear the credentials check, so the sandbox exercises a
+      // provider that can actually be verified rather than one that always
+      // fails for a reason unrelated to what is being practised.
+      insurance: { generalLiability: 'Practice policy — sandbox fixture' },
+      lastVerifiedAt: new Date(),
+    },
+    select: { id: true },
+  });
+
+  for (const name of PROVIDER_FIXTURE.capabilities) {
+    const key = `sandbox.${name.toLowerCase().replace(/[^a-z0-9]+/g, '_')}`;
+    const capability = await prisma.capability.upsert({
+      where: { orgId_key: { orgId, key } },
+      update: {},
+      create: { orgId, key, name, category: 'sandbox' },
+      select: { id: true },
+    });
+    await prisma.companyCapability.upsert({
+      where: { companyId_capabilityId: { companyId: company.id, capabilityId: capability.id } },
+      update: {},
+      // Verified rather than merely claimed: the practice provider exists to be
+      // worked through, not to fail the credentials check on its first use.
+      create: {
+        companyId: company.id, capabilityId: capability.id,
+        status: 'CONFIRMED', confidence: 1, verifiedAt: new Date(),
+      },
+    });
+  }
 }
 
 /**
@@ -223,6 +304,16 @@ export async function resetSandbox(params: {
       await tx.callInsight.deleteMany({ where: { session: { routeId: { in: routeIds } } } });
       await tx.callTranscript.deleteMany({ where: { session: { routeId: { in: routeIds } } } });
       await tx.callSession.deleteMany({ where: { routeId: { in: routeIds } } });
+      // The commercial side of a practice route. These carry their own data
+      // mode now, so the reset can find them without guessing from the route
+      // ids alone — but the route scope is kept as well, because a payment
+      // belonging to a deleted deal is exactly the orphan this used to leave.
+      await tx.dealPayment.deleteMany({ where: { orgId: params.orgId, dataMode: 'TEST' } });
+      await tx.dealMilestone.deleteMany({ where: { deal: { routeId: { in: routeIds } } } });
+      await tx.routeDeal.deleteMany({ where: { orgId: params.orgId, dataMode: 'TEST' } });
+      await tx.approval.deleteMany({ where: { orgId: params.orgId, routeId: { in: routeIds } } });
+      await tx.routeQuote.deleteMany({ where: { orgId: params.orgId, dataMode: 'TEST' } });
+      await tx.providerCandidate.deleteMany({ where: { orgId: params.orgId, dataMode: 'TEST' } });
       await tx.consistencyCase.deleteMany({ where: { routeId: { in: routeIds } } });
       await tx.intervention.deleteMany({ where: { routeId: { in: routeIds } } });
       await tx.workIncident.deleteMany({ where: { routeId: { in: routeIds } } });

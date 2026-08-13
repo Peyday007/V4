@@ -450,8 +450,14 @@ export function buildDealPlan(input: { record: DealRecord; demand: DemandContext
     state: money?.fullySettled && gp !== 0 ? 'DONE' : invoiced ? 'BLOCKED' : 'NOT_STARTED',
     because: money?.fullySettled
       ? `${gp.toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })} collected minus paid out.`
-      : 'Not every line has settled, so there is no collected figure yet — only claims.',
-    nextAction: money?.fullySettled ? null : invoiced ? 'Settle the outbound side once the provider invoices us.' : null,
+      : (money?.outstandingOutbound ?? 0) > 0
+        ? `The provider is still owed ${(money?.outstandingOutbound ?? 0).toLocaleString('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 })}, so the margin on this is not final.`
+        : 'Not every line has settled, so there is no collected figure yet — only claims.',
+    nextAction: money?.fullySettled
+      ? null
+      : (money?.outstandingOutbound ?? 0) > 0
+        ? 'Pay the provider, then this figure is real.'
+        : invoiced ? 'Settle the outbound side once the provider invoices us.' : null,
     owner: OWNER_FINANCE,
     deadline: null,
     completionCondition: 'Inbound and outbound both settled, nothing disputed.',

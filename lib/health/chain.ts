@@ -500,28 +500,32 @@ type MoneyCounts = {
 };
 
 async function moneyCounts(orgId: string): Promise<MoneyCounts> {
+  // Production only, at every one of these. Chain health is what an owner reads
+  // to decide where the business is losing money; a sandbox lifecycle driven
+  // for practice must not be able to move a single one of these figures.
+  const world = { dataMode: 'PRODUCTION' } as const;
   const [
     requirements, priceable, quotes, quotesWithCost, sent, accepted,
     deals, providerCommitted, delivered, invoiced, inbound, outbound,
   ] = await Promise.all([
-    prisma.buyerRequirement.count({ where: { orgId, state: 'CURRENT' } }),
+    prisma.buyerRequirement.count({ where: { orgId, ...world, state: 'CURRENT' } }),
     prisma.buyerRequirement.count({
-      where: { orgId, state: 'CURRENT', specification: { not: null }, quantity: { not: null } },
+      where: { orgId, ...world, state: 'CURRENT', specification: { not: null }, quantity: { not: null } },
     }),
-    prisma.routeQuote.count({ where: { orgId } }),
-    prisma.routeQuote.count({ where: { orgId, providerCost: { not: null } } }),
-    prisma.routeQuote.count({ where: { orgId, state: { in: ['SENT', 'ACCEPTED', 'DECLINED', 'EXPIRED'] } } }),
-    prisma.routeQuote.count({ where: { orgId, state: 'ACCEPTED' } }),
-    prisma.routeDeal.count({ where: { orgId } }),
-    prisma.routeDeal.count({ where: { orgId, providerCommittedAt: { not: null } } }),
-    prisma.routeDeal.count({ where: { orgId, deliveryCompletedAt: { not: null } } }),
-    prisma.dealPayment.count({ where: { orgId, direction: 'INBOUND' } }),
+    prisma.routeQuote.count({ where: { orgId, ...world } }),
+    prisma.routeQuote.count({ where: { orgId, ...world, providerCost: { not: null } } }),
+    prisma.routeQuote.count({ where: { orgId, ...world, state: { in: ['SENT', 'ACCEPTED', 'DECLINED', 'EXPIRED'] } } }),
+    prisma.routeQuote.count({ where: { orgId, ...world, state: 'ACCEPTED' } }),
+    prisma.routeDeal.count({ where: { orgId, ...world } }),
+    prisma.routeDeal.count({ where: { orgId, ...world, providerCommittedAt: { not: null } } }),
+    prisma.routeDeal.count({ where: { orgId, ...world, deliveryCompletedAt: { not: null } } }),
+    prisma.dealPayment.count({ where: { orgId, ...world, direction: 'INBOUND' } }),
     prisma.dealPayment.aggregate({
-      where: { orgId, direction: 'INBOUND', settledAt: { not: null } },
+      where: { orgId, ...world, direction: 'INBOUND', settledAt: { not: null } },
       _sum: { amount: true }, _count: true,
     }),
     prisma.dealPayment.aggregate({
-      where: { orgId, direction: 'OUTBOUND', settledAt: { not: null } },
+      where: { orgId, ...world, direction: 'OUTBOUND', settledAt: { not: null } },
       _sum: { amount: true },
     }),
   ]);

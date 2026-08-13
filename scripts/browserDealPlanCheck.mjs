@@ -127,6 +127,35 @@ try {
     check(`the evidence still has "${section}"`, evidence.includes(section));
   }
 
+  console.log('\n--- the page can actually move the deal ---------------------------');
+  // The gap this whole slice existed to close: the endpoints were complete and
+  // nothing rendered by the product called them.
+  await page.waitForSelector('[data-testid="deal-actions"]', { timeout: 20000 });
+  check('the page offers controls that change the deal', true);
+
+  const suggested = await page.locator('[data-testid="suggested-actions"] button').count();
+  const noAction = await page.locator('[data-testid="no-suggested-action"]').count();
+  check('and leads with the action the plan says is next', suggested > 0 || noAction > 0,
+    suggested > 0 ? `${suggested} offered` : 'nothing is ours to move');
+
+  await page.locator('[data-testid="all-actions"] summary').click();
+  await page.waitForTimeout(300);
+  const everything = await page.locator('[data-testid="all-actions"] button').count();
+  check('with the rest of the board one disclosure away', everything > 5, `${everything} actions`);
+
+  // A form has to demand its evidence in the browser, not only at the endpoint.
+  const capture = page.locator('[data-testid="action-capture"]');
+  if (await capture.count() > 0) {
+    await capture.first().click();
+    await page.waitForSelector('[data-testid="form-capture"]');
+    const required = await page.locator('[data-testid="field-capture-summary"]').getAttribute('required');
+    check('and the evidence field is required before the request is made', required !== null);
+  }
+
+  // Authority-gated actions are marked as such on the page.
+  const authorityText = await page.locator('[data-testid="deal-actions"]').innerText();
+  check('actions needing authority say so', /needs authority/i.test(authorityText));
+
   await context.close();
   console.log(`\n${checks - failures}/${checks} checks passed.`);
 } finally {

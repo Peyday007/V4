@@ -560,11 +560,26 @@ export type MoneyPosition = {
   /** Owed to us and not yet settled. */
   outstanding: number;
   /**
+   * Billed to us by the provider and not yet paid.
+   *
+   * Kept separate because it is the difference between gross profit and a
+   * number that flatters us. Money in with the provider still unpaid looks
+   * like the whole invoice was margin, and it is not.
+   */
+  outstandingOutbound: number;
+  /**
    * Collected minus paid out. The only profit figure in this system that
    * describes money rather than intent.
    */
   collectedGrossProfit: number;
-  /** True only when every inbound line has settled and nothing is disputed. */
+  /**
+   * True only when nothing is outstanding on either side.
+   *
+   * It used to look only at the inbound side, which meant a deal reported
+   * itself fully settled — and its gross profit final — while the provider's
+   * bill was still sitting unpaid. On a deal invoiced at 6,800 against a 4,200
+   * cost that is the difference between reporting 6,800 of profit and 2,600.
+   */
   fullySettled: boolean;
 };
 
@@ -599,13 +614,23 @@ export function moneyPosition(
 
   const outstanding = Math.max(invoiced - collected, 0);
 
+  // Anything the provider has billed us for and we have not paid. An unsettled
+  // outbound line is an obligation whether or not it has been chased.
+  const outstandingOutbound = payments
+    .filter((line) => line.direction === 'OUTBOUND' && line.kind === 'INVOICE' && !line.settledAt)
+    .reduce((sum, line) => sum + Number(line.amount), 0)
+    - payments
+      .filter((line) => line.direction === 'OUTBOUND' && line.kind === 'PAYMENT' && line.settledAt)
+      .reduce((sum, line) => sum + Number(line.amount), 0);
+
   return {
     invoiced: round(invoiced),
     collected: round(collected),
     paidOut: round(paidOut),
     outstanding: round(outstanding),
+    outstandingOutbound: round(Math.max(outstandingOutbound, 0)),
     collectedGrossProfit: round(collected - paidOut),
-    fullySettled: invoiced > 0 && outstanding === 0,
+    fullySettled: invoiced > 0 && outstanding === 0 && outstandingOutbound <= 0,
   };
 }
 

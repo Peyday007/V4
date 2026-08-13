@@ -6,6 +6,7 @@ import { loadDealRecord } from '@/lib/deal/record';
 import { DealProgress } from '@/components/DealProgress';
 import { DealPlanPanel } from '@/components/DealPlanPanel';
 import { loadDealPlan } from '@/lib/deal/plan';
+import { DealActions } from '@/components/DealActions';
 import { can } from '@/lib/auth/session';
 import { Badge } from '@/components/ui';
 
@@ -54,6 +55,25 @@ export default async function OpportunityRecordPage({ params }: { params: { rout
       {record.standing.statusReason && <div className="alert small">{record.standing.statusReason}</div>}
 
       {plan && <DealPlanPanel plan={plan} />}
+
+      <DealActions
+        context={{
+          routeId: params.routeId,
+          quoteId: deal.quotes.live?.id ?? null,
+          quoteState: deal.quotes.live?.state ?? null,
+          dealId: deal.deal.record?.id ?? null,
+          candidates: deal.supply.candidates.map((c) => ({
+            id: c.id, name: c.providerName, state: c.state,
+          })),
+          // The action offered first is the one the plan says is next, so the
+          // screen and the instruction above it cannot disagree.
+          nextStageKey: plan?.firstBroken?.key ?? null,
+          nextAction: plan?.firstBroken?.nextAction ?? null,
+          nextOwner: plan?.firstBroken?.owner ?? null,
+          canWrite: can(user, 'deal.write'),
+          canSend: can(user, 'document.send'),
+        }}
+      />
 
       <DealProgress record={deal} canSeeMargin={can(user, 'finance.margin.read')} />
 
