@@ -162,6 +162,34 @@ let browser;
 let createdCallerId = null;
 let practiceRouteId = null;
 
+/**
+ * Set the moment anything crosses the line between practice and production.
+ *
+ * When it is set, the cleanup is deliberately skipped. A broken isolation
+ * boundary is evidence, and the first instinct — tidy up and re-run — destroys
+ * the only copy of what actually happened.
+ */
+let isolationBroken = null;
+
+/** What sandbox records exist right now, as the deployment itself reports them. */
+async function testInventory(cookie) {
+  const response = await api('/api/callers?inactive=true', { cookie });
+  const sandbox = response.body?.sandbox ?? {};
+  const callers = response.body?.callers ?? [];
+  const mine = callers.find((c) => c.email === callerEmail) ?? null;
+  return {
+    companies: sandbox.companies ?? null,
+    routes: sandbox.routes ?? null,
+    callers: sandbox.callers ?? null,
+    waitingItems: sandbox.waiting ?? null,
+    activeTestCallers: callers.filter((c) => c.mode === 'TEST' && c.isActive).length,
+    // Scoped to this run. A deployment may keep a test caller of its own on
+    // purpose, and failing on somebody else's would be this check overreaching.
+    thisRunActive: mine ? mine.isActive : null,
+    thisRunWaiting: mine ? mine.waiting : null,
+  };
+}
+
 try {
   // -------------------------------------------------------------------------
   console.log(`--- what is actually deployed at ${BASE} ----------------`);
@@ -221,6 +249,9 @@ try {
   const before = await productionNumbers(owner);
   check('the floor reports its production numbers', Object.keys(before.buckets).length > 0,
     `${Object.keys(before.buckets).length} buckets — ${before.summary.slice(0, 80)}`);
+  const testBefore = await testInventory(ownerCookie);
+  console.log(`       production baseline: ${JSON.stringify(before.buckets)}`);
+  console.log(`       sandbox inventory before: ${JSON.stringify(testBefore)}`);
 
   // -------------------------------------------------------------------------
   console.log('\n--- the owner creates a test caller and hands over a PIN ----------');
@@ -389,9 +420,13 @@ try {
       },
     });
     const message = dial.body?.error ?? '';
+    const refusedProperly = dial.status >= 400 && /sandbox|practice/i.test(message);
+    if (!refusedProperly) {
+      isolationBroken = `a provider call on practice route ${practiceRouteId} was not refused `
+        + `(HTTP ${dial.status})`;
+    }
     check('the deployment refuses to place a provider call on a practice record',
-      dial.status >= 400 && /sandbox|practice/i.test(message),
-      `HTTP ${dial.status} — ${message.slice(0, 90)}`);
+      refusedProperly, `HTTP ${dial.status} — ${message.slice(0, 90)}`);
     check('and says so in words rather than as a database error',
       !/P2002|prisma|constraint|SQLSTATE/i.test(message), message.slice(0, 70));
   } else {
@@ -415,8 +450,13 @@ try {
   // -------------------------------------------------------------------------
   console.log('\n--- production is untouched --------------------------------------');
   const after = await productionNumbers(owner);
+  console.log(`       production after: ${JSON.stringify(after.buckets)}`);
   for (const [bucket, count] of Object.entries(before.buckets)) {
-    check(`production "${bucket}" is unchanged`, after.buckets[bucket] === count,
+    const same = after.buckets[bucket] === count;
+    if (!same) {
+      isolationBroken = `production "${bucket}" moved from ${count} to ${after.buckets[bucket]}`;
+    }
+    check(`production "${bucket}" is unchanged`, same,
       `${count} then ${after.buckets[bucket]}`);
   }
 } catch (error) {
@@ -425,33 +465,63 @@ try {
   checks += 1;
 } finally {
   // -------------------------------------------------------------------------
-  console.log('\n--- putting the deployment back ----------------------------------');
-  try {
-    const cookieJar = await (async () => {
-      const response = await fetch(`${BASE}/api/auth/login`, {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ email: OWNER_EMAIL, password: OWNER_PASSWORD }),
-      });
-      const raw = response.headers.get('set-cookie');
-      return raw ? raw.split(';')[0] : null;
-    })();
+  if (isolationBroken) {
+    // Deliberately no cleanup. The boundary between practice and production
+    // failed, and the state that proves it is worth more than a tidy database.
+    console.log('\n--- ISOLATION FAILED: preserving evidence -------------------------');
+    console.log(`       what broke: ${isolationBroken}`);
+    console.log(`       walkthrough caller: ${callerEmail} (${createdCallerId ?? 'id unknown'})`);
+    console.log(`       practice route used: ${practiceRouteId ?? 'none'}`);
+    console.log('       Nothing has been deactivated, deleted or reset. Inspect the deployment');
+    console.log('       as it stands, then clean up by hand once the cause is understood.');
+    check('cleanup was skipped so the evidence survives', true);
+  } else {
+    console.log('\n--- putting the deployment back ----------------------------------');
+    try {
+      const cookieJar = await (async () => {
+        const response = await fetch(`${BASE}/api/auth/login`, {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ email: OWNER_EMAIL, password: OWNER_PASSWORD }),
+        });
+        const raw = response.headers.get('set-cookie');
+        return raw ? raw.split(';')[0] : null;
+      })();
 
-    if (cookieJar && createdCallerId) {
-      const off = await api('/api/callers', {
-        method: 'POST', cookie: cookieJar,
-        body: { action: 'deactivate', callerId: createdCallerId, reason: 'Deployed walkthrough finished.' },
-      });
-      check('the walkthrough caller is deactivated and their work returned',
-        off.status === 200, `HTTP ${off.status}`);
+      if (cookieJar && createdCallerId) {
+        const off = await api('/api/callers', {
+          method: 'POST', cookie: cookieJar,
+          body: { action: 'deactivate', callerId: createdCallerId, reason: 'Deployed walkthrough finished.' },
+        });
+        check('the walkthrough caller is deactivated and their work returned',
+          off.status === 200,
+          off.status === 200
+            ? `${off.body?.released ?? 0} opportunit(ies) returned to the pool`
+            : `HTTP ${off.status}`);
+      }
+      if (cookieJar) {
+        const reset = await api('/api/callers', {
+          method: 'POST', cookie: cookieJar, body: { action: 'sandbox_reset' },
+        });
+        check('the sandbox is reset to its starting state', reset.status === 200,
+          reset.status === 200 ? JSON.stringify(reset.body?.sandbox ?? {}) : `HTTP ${reset.status}`);
+
+        // The two things that must not be left behind, asked of the deployment
+        // rather than assumed from the calls above having returned 200.
+        const testAfter = await testInventory(cookieJar);
+        console.log(`       sandbox inventory after: ${JSON.stringify(testAfter)}`);
+        check('the caller this run created is no longer active',
+          testAfter.thisRunActive === false,
+          testAfter.thisRunActive === null
+            ? 'not found in the roster at all'
+            : `isActive=${testAfter.thisRunActive}`);
+        check('and is holding nothing', (testAfter.thisRunWaiting ?? 0) === 0,
+          `${testAfter.thisRunWaiting} waiting`);
+        check('no practice work is left waiting in any packet', testAfter.waitingItems === 0,
+          `${testAfter.waitingItems} items`);
+      }
+    } catch (error) {
+      check('the deployment was put back', false, String(error).slice(0, 120));
     }
-    if (cookieJar) {
-      const reset = await api('/api/callers', {
-        method: 'POST', cookie: cookieJar, body: { action: 'sandbox_reset' },
-      });
-      check('the sandbox is reset to its starting state', reset.status === 200, `HTTP ${reset.status}`);
-    }
-  } catch (error) {
-    check('the deployment was put back', false, String(error).slice(0, 120));
   }
 
   if (browser) await browser.close();
