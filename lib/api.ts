@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { ZodError } from 'zod';
 import { AuthError } from '@/lib/auth/session';
+import { SandboxBlockedError } from '@/lib/safety/outbound';
 import { redactForLogs } from '@/lib/audit';
 
 /**
@@ -9,6 +10,11 @@ import { redactForLogs } from '@/lib/audit';
  */
 export function handleRouteError(error: unknown): NextResponse {
   if (error instanceof AuthError) {
+    return NextResponse.json({ error: error.message }, { status: error.statusCode });
+  }
+  // A sandbox refusal is not a malformed request, and saying 400 invites the
+  // caller to go and fix their input. It declares its own status; honour it.
+  if (error instanceof SandboxBlockedError) {
     return NextResponse.json({ error: error.message }, { status: error.statusCode });
   }
   if (error instanceof ZodError) {
