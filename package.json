@@ -28,6 +28,7 @@
     "audit:workspace": "tsx scripts/callerWorkspaceAudit.ts",
     "audit:manager": "tsx scripts/systemManagerAudit.ts",
     "audit:manager:http": "tsx scripts/systemManagerHttpAudit.ts",
+    "check:cron": "node scripts/cronTickCheck.mjs",
     "vercel-build": "prisma generate && node scripts/deployMigrate.mjs && next build",
     "db:seed:prod": "tsx prisma/seed.ts",
     "db:migrate:new": "prisma migrate dev --create-only",

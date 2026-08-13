@@ -19,6 +19,10 @@
 # they are disabled automatically after 60 days without repository activity —
 # so this is the fallback for Hobby, not the better option. On Pro, delete this
 # file and let vercel.json do it.
+#
+# The `run:` script below is executed verbatim by scripts/cronTickCheck.mjs
+# against a local HTTPS server, so the thing that is tested is this file rather
+# than a copy of it. Run `npm run check:cron` after editing.
 
 name: Cron tick
 
@@ -46,31 +50,217 @@ jobs:
           APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
         run: |
           set -euo pipefail
+
           if [ -z "${CRON_SECRET:-}" ] || [ -z "${APP_BASE_URL:-}" ]; then
             echo "CRON_SECRET and APP_BASE_URL must both be set as repository secrets." >&2
             exit 1
           fi
 
-          # --fail-with-body so a 401 or 503 fails the run loudly and still
-          # prints what the server said. A scheduler that reports success while
-          # being rejected is the failure mode this whole file is fixing.
-          response=$(curl --silent --show-error --fail-with-body \
-            --max-time 120 \
-            --header "Authorization: Bearer ${CRON_SECRET}" \
-            "${APP_BASE_URL}/api/cron/tick")
+          # A trailing slash produces `//api/cron/tick`, which Vercel answers
+          # with a redirect — the exact thing this run has to survive, and
+          # cheaper to remove than to follow.
+          base="${APP_BASE_URL%/}"
 
-          echo "$response"
+          # The bearer token is only ever sent to an https host. curl's
+          # --proto-redir below stops a redirect downgrading the scheme
+          # mid-flight; this stops the first request being cleartext at all.
+          case "$base" in
+            https://*) ;;
+            *)
+              echo "APP_BASE_URL must be an https:// URL. The tick sends a bearer token and will not send it in cleartext." >&2
+              exit 1
+              ;;
+          esac
 
-          # The run is only useful if the contact backlog is shrinking. Surfaced
-          # in the job summary so somebody scanning the Actions tab can see
-          # whether opportunities are becoming callable without opening the app.
-          echo "$response" | python3 -c '
-          import json, sys
-          body = json.load(sys.stdin)
-          for row in body.get("enrichment", []):
-              print(
-                  f"{row[\"org\"]}: scheduled {row[\"scheduled\"]}, attempted {row[\"attempted\"]}, "
-                  f"resolved {row[\"resolved\"]}, released {row[\"released\"]} route(s), "
-                  f"{row[\"unscheduled\"]} organisation(s) still unscheduled"
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+
+          cat > "$work/summary.py" <<'PY'
+          """Decide whether a tick actually happened, then say what it did.
+
+          Everything here runs against the response body on disk. The bearer
+          token never reaches this program, so nothing it prints can leak one.
+
+          The order matters: a body is proved to be our tick's JSON *before* any
+          number is read out of it. A redirect page, an HTML error page, an
+          empty body and a truncated one all reach this point looking like a
+          successful request, and each of them means no tick ran.
+          """
+          import json
+          import sys
+
+          raw = open(sys.argv[1], "rb").read()
+          text = raw.decode("utf-8", "replace").strip()
+
+          if not text:
+              sys.exit("The tick returned an empty body, so nothing ran.")
+
+          head = text[:400].lower()
+          if text[:1] == "<" or "<html" in head:
+              hint = ""
+              if "redirecting" in head:
+                  hint = (
+                      " This is a redirect page, which means the request never reached"
+                      " the tick endpoint. Check APP_BASE_URL is the exact deployment"
+                      " host, with no trailing slash and no www/apex mismatch."
+                  )
+              sys.exit("The tick returned HTML rather than JSON, so no tick ran." + hint)
+
+          try:
+              body = json.loads(text)
+          except json.JSONDecodeError as error:
+              sys.exit(
+                  "The tick returned a body that is not valid JSON (%s). "
+                  "First 200 characters: %r" % (error, text[:200])
               )
-          ' >> "$GITHUB_STEP_SUMMARY"
+
+          if not isinstance(body, dict) or "ok" not in body:
+              sys.exit(
+                  "The response is JSON but is not a tick result — no `ok` field. "
+                  "Something other than /api/cron/tick answered. First 200 characters: %r"
+                  % (text[:200],)
+              )
+
+          if body.get("ok") is not True:
+              sys.exit("The tick ran and reported failure: %r" % (text[:400],))
+
+
+          def cell(row, key):
+              """A missing count is shown as unknown rather than as zero."""
+              value = row.get(key)
+              return "—" if value is None else str(value)
+
+
+          out = []
+          duration = body.get("durationMs")
+          out.append(
+              "### Tick: %s%s"
+              % (
+                  body.get("mode", "unknown mode"),
+                  "" if duration is None else " (%.1fs)" % (duration / 1000.0),
+              )
+          )
+          out.append("")
+
+          results = body.get("results") or []
+          if results:
+              out.append("| Organisation | Queued | Processed | Failed |")
+              out.append("| --- | ---: | ---: | ---: |")
+              for row in results:
+                  out.append(
+                      "| %s | %s | %s | %s |"
+                      % (
+                          row.get("org", "?"),
+                          cell(row, "queued"),
+                          cell(row, "processed"),
+                          cell(row, "failed"),
+                      )
+                  )
+              out.append("")
+
+          enrichment = body.get("enrichment") or []
+          if enrichment:
+              out.append("| Organisation | Scheduled | Attempted | Resolved | Released | Still unscheduled |")
+              out.append("| --- | ---: | ---: | ---: | ---: | ---: |")
+              for row in enrichment:
+                  out.append(
+                      "| %s | %s | %s | %s | %s | %s |"
+                      % (
+                          row.get("org", "?"),
+                          cell(row, "scheduled"),
+                          cell(row, "attempted"),
+                          cell(row, "resolved"),
+                          cell(row, "released"),
+                          cell(row, "unscheduled"),
+                      )
+                  )
+              out.append("")
+              out.append(
+                  "`Still unscheduled` above zero means the contact backlog is not yet "
+                  "covered and the next tick has organisations left to bring in."
+              )
+          else:
+              out.append(
+                  "No contact-resolution work this tick. That is a healthy idle run only "
+                  "if there is no live demand waiting — the chain-health screen says which."
+              )
+
+          print("\n".join(out))
+          PY
+
+          # --config on stdin, so the token never appears in the process list,
+          # in argv, or in a file on disk.
+          #
+          # `oauth2-bearer` rather than a hand-built `header` line. curl's
+          # config parser mis-reads `header = Authorization: Bearer x` — the
+          # colon in the value confuses it and the header is dropped silently,
+          # which is the worst possible failure for an auth header. The token
+          # is quoted and its backslashes and quotes escaped, which is curl's
+          # documented form and survives any value a secret store can hold.
+          #
+          # --location is what fixes the reported failure: without it Vercel's
+          # 307/308 comes back as a "Redirecting..." page with a 3xx status,
+          # which --fail-with-body does not treat as an error, so the run went
+          # green having done nothing.
+          #
+          # --location and not --location-trusted, deliberately. On a redirect
+          # to a different host curl drops the Authorization header rather than
+          # handing our bearer token to whatever answered. That produces a 401
+          # and a failed run, which is the correct outcome: the secret stays
+          # with the host we configured.
+          escaped="${CRON_SECRET//\\/\\\\}"
+          escaped="${escaped//\"/\\\"}"
+
+          set +e
+          printf 'oauth2-bearer = "%s"\n' "$escaped" \
+            | curl --silent --show-error --fail-with-body \
+                --config - \
+                --location --max-redirs 5 --proto-redir =https \
+                --max-time 120 \
+                --output "$work/body" \
+                --write-out '%{http_code}\n%{num_redirects}\n%{url_effective}\n' \
+                "$base/api/cron/tick" > "$work/meta"
+          rc=$?
+          set -e
+
+          http_code="$(sed -n 1p "$work/meta" 2>/dev/null || true)"
+          redirects="$(sed -n 2p "$work/meta" 2>/dev/null || true)"
+          # Any credentials embedded in the URL are removed before it is logged.
+          final_url="$(sed -n 3p "$work/meta" 2>/dev/null | sed 's#://[^/@]*@#://***@#' || true)"
+
+          if [ -n "${redirects:-}" ] && [ "${redirects}" != "0" ]; then
+            echo "Followed ${redirects} redirect(s), ending at ${final_url:-an unknown URL}."
+          fi
+
+          if [ "$rc" -ne 0 ]; then
+            echo "The tick request failed: curl exit ${rc}, HTTP ${http_code:-none}, at ${final_url:-none}." >&2
+            if [ "${http_code:-}" = "401" ] && [ -n "${redirects:-}" ] && [ "${redirects}" != "0" ]; then
+              echo "A 401 after a redirect means curl dropped the Authorization header because the redirect crossed to a different host. Point APP_BASE_URL at the host that serves the app directly." >&2
+            fi
+            echo "--- response body (first 2000 bytes) ---" >&2
+            head -c 2000 "$work/body" >&2 || true
+            echo >&2
+            exit 1
+          fi
+
+          # Belt and braces behind --fail-with-body: a 3xx that survived the
+          # redirect limit, or a 304, arrives here with rc 0.
+          case "${http_code:-000}" in
+            2??) ;;
+            *)
+              echo "Expected a 2xx from the tick, got ${http_code:-none} at ${final_url:-none}." >&2
+              head -c 2000 "$work/body" >&2 || true
+              echo >&2
+              exit 1
+              ;;
+          esac
+
+          echo "--- response body ---"
+          cat "$work/body"
+          echo
+
+          # Validates before it summarises, and fails the run if the body is not
+          # a tick result. A scheduler that reports success while the endpoint
+          # is redirecting, erroring or returning HTML is the failure mode this
+          # whole file exists to prevent.
+          python3 "$work/summary.py" "$work/body" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
