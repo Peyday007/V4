@@ -25,7 +25,7 @@ export function CallerDetailActions({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [pin, setPin] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<'idle' | 'done' | 'failed'>('idle');
 
   async function act(body: Record<string, unknown>, onOk?: (payload: Record<string, unknown>) => void) {
     setBusy(true); setError(null); setNotice(null);
@@ -45,6 +45,17 @@ export function CallerDetailActions({
     }
   }
 
+  /** Reports what actually happened. See the note on the floor's copy control. */
+  async function copyPin(value: string) {
+    try {
+      if (!navigator.clipboard) throw new Error('no clipboard');
+      await navigator.clipboard.writeText(value);
+      setCopied('done');
+    } catch {
+      setCopied('failed');
+    }
+  }
+
   return (
     <div className="card" data-testid="detail-actions">
       <h2 style={{ marginTop: 0 }}>Access and status</h2>
@@ -59,12 +70,18 @@ export function CallerDetailActions({
             <button
               className="btn tiny"
               data-testid="detail-copy-pin"
-              onClick={() => { void navigator.clipboard?.writeText(pin); setCopied(true); }}
+              onClick={() => void copyPin(pin)}
             >
-              {copied ? 'Copied' : 'Copy PIN'}
+              {copied === 'done' ? 'Copied' : copied === 'failed' ? 'Copy it by hand' : 'Copy PIN'}
             </button>
             <button className="btn secondary tiny" onClick={() => { setPin(null); window.location.reload(); }}>Done</button>
           </div>
+          {copied === 'failed' && (
+            <div className="tiny mt warn" data-testid="detail-copy-pin-failed">
+              The browser refused clipboard access, so nothing was copied. Read the PIN above and pass it on
+              yourself.
+            </div>
+          )}
           <div className="tiny mt">
             Hand it over now. It cannot be read again by anybody, including you. Rotating replaces it and the old
             one stops working immediately.
@@ -77,7 +94,7 @@ export function CallerDetailActions({
           className="btn" disabled={busy || !isActive}
           data-testid="detail-issue-pin"
           title={isActive ? undefined : 'Reactivate them first'}
-          onClick={() => void act({ action: 'issue_pin' }, (p) => { setPin(String(p.pin)); setCopied(false); })}
+          onClick={() => void act({ action: 'issue_pin' }, (p) => { setPin(String(p.pin)); setCopied('idle'); })}
         >
           {pinStatus === 'ACTIVE' ? 'Rotate PIN' : 'Issue PIN'}
         </button>

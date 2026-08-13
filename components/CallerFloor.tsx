@@ -96,7 +96,7 @@ export function CallerFloor({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [issued, setIssued] = useState<{ name: string; pin: string } | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState<'idle' | 'done' | 'failed'>('idle');
   const [showAdd, setShowAdd] = useState(false);
   const [addMode, setAddMode] = useState<'PRODUCTION' | 'TEST'>('PRODUCTION');
   const [preview, setPreview] = useState<Preview | null>(null);
@@ -147,7 +147,26 @@ export function CallerFloor({
 
   async function issuePin(caller: Caller) {
     const payload = await call({ action: 'issue_pin', callerId: caller.callerId }, caller.callerId);
-    if (payload) { setIssued({ name: caller.name, pin: String(payload.pin) }); setCopied(false); }
+    if (payload) { setIssued({ name: caller.name, pin: String(payload.pin) }); setCopied('idle'); }
+  }
+
+  /**
+   * Copy the PIN, and be honest when the browser refuses.
+   *
+   * This used to set "Copied" without waiting for the write, so a clipboard
+   * the browser had blocked still reported success. That is a bad lie to tell
+   * about a PIN in particular: it is shown exactly once, and an owner who
+   * believes it is on their clipboard closes the panel and has nothing to hand
+   * over.
+   */
+  async function copyPin(pin: string) {
+    try {
+      if (!navigator.clipboard) throw new Error('no clipboard');
+      await navigator.clipboard.writeText(pin);
+      setCopied('done');
+    } catch {
+      setCopied('failed');
+    }
   }
 
   async function runPreview(caller: Caller) {
@@ -204,15 +223,18 @@ export function CallerFloor({
             <button
               className="btn tiny"
               data-testid="copy-pin"
-              onClick={() => {
-                void navigator.clipboard?.writeText(issued.pin);
-                setCopied(true);
-              }}
+              onClick={() => void copyPin(issued.pin)}
             >
-              {copied ? 'Copied' : 'Copy PIN'}
+              {copied === 'done' ? 'Copied' : copied === 'failed' ? 'Copy it by hand' : 'Copy PIN'}
             </button>
             <button className="btn secondary tiny" onClick={() => setIssued(null)}>Done</button>
           </div>
+          {copied === 'failed' && (
+            <div className="tiny mt warn" data-testid="copy-pin-failed">
+              The browser refused clipboard access, so nothing was copied. Read the PIN above and pass it on
+              yourself — do not close this until you have.
+            </div>
+          )}
           <div className="tiny mt">
             Give it to them now. Nobody can read it again — not you, not an administrator, not the database.
             If it is lost, issue a new one; the old one stops working the moment you do.

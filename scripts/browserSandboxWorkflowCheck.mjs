@@ -177,8 +177,13 @@ try {
   const pin = (await owner.locator('[data-testid="pin-value"]').innerText()).trim();
   check('a PIN is shown exactly once', /^\d{6}$/.test(pin), `${pin.length} digits`);
   await owner.click('[data-testid="copy-pin"]');
-  check('and there is a copy button that reports success',
-    (await owner.locator('[data-testid="copy-pin"]').innerText()).includes('Copied'));
+  await owner.waitForTimeout(500);
+  const copyLabel = (await owner.locator('[data-testid="copy-pin"]').innerText()).trim();
+  const copyWarned = await owner.locator('[data-testid="copy-pin-failed"]').count();
+  check('and the copy button reports what actually happened',
+    (copyLabel.includes('Copied') && copyWarned === 0)
+    || (/by hand/i.test(copyLabel) && copyWarned > 0),
+    `${copyLabel}${copyWarned > 0 ? ' + a warning' : ''}`);
 
   // -------------------------------------------------------------------------
   console.log('\n--- the owner assigns the practice packet -------------------------');

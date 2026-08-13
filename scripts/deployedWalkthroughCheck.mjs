@@ -205,8 +205,16 @@ try {
   const pin = (await owner.locator('[data-testid="pin-value"]').innerText()).trim();
   check('a PIN is shown exactly once', /^\d{6}$/.test(pin), `${pin.length} digits`);
   await owner.click('[data-testid="copy-pin"]');
-  check('and the copy control reports success',
-    (await owner.locator('[data-testid="copy-pin"]').innerText()).includes('Copied'));
+  await owner.waitForTimeout(500);
+  // Truthfulness, not success. A headless browser often refuses clipboard
+  // access, and the only wrong answer is claiming to have copied a PIN that is
+  // shown exactly once and then closing the panel over it.
+  const copyLabel = (await owner.locator('[data-testid="copy-pin"]').innerText()).trim();
+  const copyWarned = await owner.locator('[data-testid="copy-pin-failed"]').count();
+  check('the copy control reports what actually happened',
+    (copyLabel.includes('Copied') && copyWarned === 0)
+    || (/by hand/i.test(copyLabel) && copyWarned > 0),
+    `${copyLabel}${copyWarned > 0 ? ' + a warning' : ''}`);
 
   const roster = await api('/api/callers', { cookie: ownerCookie });
   const mine = (roster.body?.callers ?? roster.body?.roster ?? [])
