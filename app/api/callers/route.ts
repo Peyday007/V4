@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { prisma } from '@/lib/db';
 import { handleRouteError, json, rateLimit } from '@/lib/api';
 import { requirePermission, requireUser } from '@/lib/auth/session';
 import {
@@ -7,6 +8,7 @@ import {
 import { CallerAuthError, issuePin, revokePin } from '@/lib/caller/identity';
 import { confirmAssignment, previewAssignment } from '@/lib/caller/assignment';
 import { ensureSandbox, resetSandbox, sandboxState } from '@/lib/caller/sandbox';
+import { resolveIncident } from '@/lib/caller/save';
 import { audit } from '@/lib/audit';
 
 export const dynamic = 'force-dynamic';
@@ -77,8 +79,20 @@ const Sandbox = z.object({
   action: z.enum(['sandbox_create', 'sandbox_reset']),
 });
 
+const ResolveIncident = z.object({
+  action: z.literal('resolve_incident'),
+  callerId: z.string().min(1),
+  incidentId: z.string().min(1),
+  /**
+   * What was actually done about it. Required, and not from a dropdown: the
+   * caller was held by this, and "resolved" on its own tells the next person
+   * reading the record nothing about whether it can happen again.
+   */
+  resolution: z.string().min(4).max(2000),
+});
+
 const Schema = z.discriminatedUnion('action', [
-  Create, Update, SetStatus, Pin, Preview, Assign, Sandbox,
+  Create, Update, SetStatus, Pin, Preview, Assign, Sandbox, ResolveIncident,
 ]);
 
 /** Actions that change who can sign in. */
@@ -199,6 +213,38 @@ export async function POST(request: Request) {
           ok: true,
           sandbox: state,
           message: 'Sandbox back to its starting state. Only test records were touched — production data is a different mode and cannot be reached from here.',
+        });
+      }
+
+      case 'resolve_incident': {
+        // The far end of the save-failure path. Without this, a caller whose
+        // save broke on our side is held out of new work permanently: the gate
+        // blocks on any open incident, and nothing in the product could close
+        // one. Somebody has to say what they did, and only then is the caller
+        // released.
+        const incident = await prisma.workIncident.findFirst({
+          where: {
+            id: body.incidentId, orgId: user.orgId,
+            callerId: body.callerId, status: 'OPEN',
+          },
+          select: { id: true },
+        });
+        if (!incident) {
+          return json({ error: 'That incident is not open, or does not belong to this caller.' }, 409);
+        }
+
+        await resolveIncident({
+          orgId: user.orgId, incidentId: body.incidentId,
+          resolvedByUserId: user.id, resolution: body.resolution,
+        });
+        await audit({
+          orgId: user.orgId, userId: user.id, action: 'work.incident.resolved',
+          entityType: 'WorkIncident', entityId: body.incidentId,
+          metadata: { callerId: body.callerId },
+        });
+        return json({
+          ok: true,
+          message: 'Marked fixed. They can be handed new work again, and what they typed is still on the record.',
         });
       }
     }

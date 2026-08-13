@@ -192,6 +192,29 @@ describe('what may be dialled, and when', () => {
     expect(unknown.reason).toMatch(/not assumed/i);
   });
 
+  it('prefers the contact\'s own timezone over the company\'s state', () => {
+    // The bug this locks down: the demand board and the assignment preview
+    // resolve the zone as "the contact's timezone, then the state's", and the
+    // serve loop resolved it as "the state's" only. A contact in Chicago at a
+    // company registered in California was callable on one screen and refused
+    // on the other, and the caller was told it was outside business hours for
+    // something the owner had just been shown as callable now.
+    const contactWins = localHours({
+      stateCode: 'CA', timezone: 'Europe/London',
+      now: new Date('2026-08-13T10:00:00Z'),
+    });
+    expect(contactWins.timezone).toBe('Europe/London');
+    expect(contactWins.open).toBe(true);
+
+    const stateFallback = localHours({
+      stateCode: 'CA', timezone: null,
+      now: new Date('2026-08-13T10:00:00Z'),
+    });
+    expect(stateFallback.timezone).toBe('America/Los_Angeles');
+    // 03:00 in Los Angeles.
+    expect(stateFallback.open).toBe(false);
+  });
+
   it('defaults to ordinary commercial hours', () => {
     // Configurable, but the default is the conservative one — a deployment has
     // to decide to widen it rather than inherit a permissive default.
@@ -210,6 +233,9 @@ function row(overrides: Partial<ServableRow> = {}): ServableRow {
     companyId: 'c1',
     organisation: 'Test Co',
     stateCode: 'IL',
+    // The contact's own zone wins over the company's state, exactly as the
+    // canonical eligibility expression does. Null here means "fall back".
+    contactTimezone: null,
     cityName: 'Chicago',
     tier: 'STRONG_TRIGGER',
     route: 'BROKERAGE',

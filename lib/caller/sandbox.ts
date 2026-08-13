@@ -214,6 +214,11 @@ export async function resetSandbox(params: {
     if (routeIds.length > 0) {
       // Order matters only because of foreign keys; every one of these is
       // filtered to the test world.
+      // Deal rooms first: they hang off the route and nothing else here
+      // removes them, so a practice room would keep its route alive and turn
+      // the reset into a foreign-key failure the owner has no way to read.
+      await tx.dealRoomEvent.deleteMany({ where: { room: { routeId: { in: routeIds } } } });
+      await tx.dealRoom.deleteMany({ where: { routeId: { in: routeIds } } });
       await tx.callReview.deleteMany({ where: { session: { routeId: { in: routeIds } } } });
       await tx.callInsight.deleteMany({ where: { session: { routeId: { in: routeIds } } } });
       await tx.callTranscript.deleteMany({ where: { session: { routeId: { in: routeIds } } } });
@@ -228,6 +233,11 @@ export async function resetSandbox(params: {
       await tx.routeHypothesis.deleteMany({ where: { id: { in: routeIds } } });
     }
 
+    // Practice milestones. These are written by the funnel behind every saved
+    // call, so a sandbox shift produces them whether anybody thought about
+    // measurement or not, and a reset that left them behind would let practice
+    // accumulate in the one place accumulation is the whole point.
+    await tx.demandOutcome.deleteMany({ where: { orgId: params.orgId, dataMode: 'TEST' } });
     await tx.workPacket.deleteMany({ where: { orgId: params.orgId, dataMode: 'TEST' } });
     await tx.demandEvent.deleteMany({ where: { orgId: params.orgId, dataMode: 'TEST' } });
     await tx.contact.deleteMany({ where: { orgId: params.orgId, company: { dataMode: 'TEST' } } });

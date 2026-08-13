@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { HANDLERS } from '@/lib/jobs/handlers';
 
@@ -301,5 +302,101 @@ describe('every job kind is either reachable or declared dormant', () => {
     for (const kind of enqueued) {
       expect(HANDLERS[kind], `enqueued with no handler: "${kind}"`).toBeTypeOf('function');
     }
+  });
+});
+
+describe('nothing sandbox can leave the building', () => {
+  /**
+   * Every file that performs an outbound action must consult the guard.
+   *
+   * Scanned rather than listed, so an entry point added next year fails this
+   * test rather than quietly becoming the first way out. The patterns are the
+   * verbs that reach the world: a provider send, a dial, an external lookup.
+   */
+  const OUTBOUND_CALLS = /\.send\(|\.placeCall\(|getTelephony\(\)|getEmail\(\)|getSms\(\)/;
+
+  /**
+   * Files that mention a provider without acting through it — the provider
+   * modules themselves, which are the implementations being guarded, and
+   * read-only reporting of which providers are configured.
+   */
+  const NOT_ENTRY_POINTS = [
+    'lib/providers/',
+    'lib/env.ts',
+    'lib/enrichment/sources.ts',
+  ];
+
+  function walk(dir: string): string[] {
+    const out: string[] = [];
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === 'node_modules' || entry.name === '.next') continue;
+        out.push(...walk(path));
+      } else if (/\.tsx?$/.test(entry.name)) {
+        out.push(path);
+      }
+    }
+    return out;
+  }
+
+  it('every outbound entry point calls the sandbox guard', () => {
+    const files = [...walk('lib'), ...walk('app')]
+      .filter((f) => !NOT_ENTRY_POINTS.some((skip) => f.startsWith(skip)));
+
+    const unguarded: string[] = [];
+    for (const file of files) {
+      const source = readFileSync(file, 'utf8');
+      if (!OUTBOUND_CALLS.test(source)) continue;
+      // Import lines are stripped first. Deleting the guard's *call* while
+      // leaving its import behind used to satisfy this test — the one shape
+      // the mutation actually takes, since nobody removes an import by hand.
+      const body = source.replace(/^\s*import[\s\S]*?from\s+'[^']+';$/gm, '');
+      // Reaching a provider is fine as long as this file, or something it
+      // calls first in the same request, refuses sandbox data.
+      if (/assertProductionOnly\(|isSandbox\(/.test(body)) continue;
+      unguarded.push(file);
+    }
+
+    expect(
+      unguarded,
+      `these files reach an external provider without consulting lib/safety/outbound: ${unguarded.join(', ')}`,
+    ).toEqual([]);
+  });
+
+  /**
+   * The same argument, one layer further in.
+   *
+   * Measurement is an outbound action of a different kind: nothing leaves the
+   * building, but a practice call that lands in a scorecard changes what the
+   * business decides to do next, and cannot be taken back once somebody has
+   * acted on the number. Sixteen sandbox milestones were sitting in the
+   * production funnel before this was checked.
+   */
+  it('every read of the funnel is scoped to one world', () => {
+    const files = [...walk('lib')].filter((f) => /measure|performance/.test(f));
+    const unscoped: string[] = [];
+
+    for (const file of files) {
+      const source = readFileSync(file, 'utf8');
+      // Each read of the outcomes table, with the query that follows it.
+      for (const match of source.matchAll(/prisma\.demandOutcome\.(groupBy|findMany|findFirst|count|aggregate)\(([\s\S]{0,400})/g)) {
+        if (!/dataMode/.test(match[2])) unscoped.push(`${file}: ${match[1]}`);
+      }
+    }
+
+    expect(
+      unscoped,
+      `these milestone reads do not say which world they mean: ${unscoped.join(', ')}`,
+    ).toEqual([]);
+  });
+
+  it('the guard refuses rather than returning a falsy value', () => {
+    const guard = readFileSync('lib/safety/outbound.ts', 'utf8');
+    // A boolean that a caller can ignore is not a boundary.
+    expect(guard).toMatch(/throw new SandboxBlockedError/);
+    // And it reads the mode from the database rather than trusting an argument.
+    expect(guard).toMatch(/prisma\.routeHypothesis\.findUnique/);
+    expect(guard).not.toMatch(/params\.isTest|options\.sandbox/);
   });
 });

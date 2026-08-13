@@ -173,6 +173,17 @@ export type ServableRow = {
   companyId: string;
   organisation: string;
   stateCode: string | null;
+  /**
+   * The contact's own timezone, when they have one.
+   *
+   * Here because the canonical eligibility expression prefers it over the
+   * company's state, and the two must not disagree. They did: a record whose
+   * contact sits in a different zone from the company's registered address was
+   * callable on the demand board and refused by this serve loop, and the caller
+   * saw "outside business hours" for something the owner had just been told was
+   * callable now.
+   */
+  contactTimezone: string | null;
   cityName: string | null;
   tier: string;
   route: string;
@@ -207,6 +218,7 @@ async function servableRows(params: { orgId: string; callerId: string; now: Date
       r."companyId"      AS "companyId",
       c."legalName"      AS organisation,
       COALESCE(c."stateCode", e."stateCode") AS "stateCode",
+      NULLIF(ct."timezone", '')              AS "contactTimezone",
       COALESCE(c."cityName", e."cityName")   AS "cityName",
       r."tier"::text     AS tier,
       r."route"::text    AS route,
@@ -229,7 +241,7 @@ async function servableRows(params: { orgId: string; callerId: string; now: Date
     LEFT JOIN "OutreachState" os ON os."routeId" = r."id"
     LEFT JOIN "ContactResolution" cr ON cr."companyId" = c."id"
     LEFT JOIN LATERAL (
-      SELECT "phone", "mobile", "isDecisionMaker"
+      SELECT "phone", "mobile", "isDecisionMaker", "timezone"
       FROM "Contact" WHERE "companyId" = c."id"
       ORDER BY "isDecisionMaker" DESC, "createdAt" ASC LIMIT 1
     ) ct ON TRUE
@@ -274,7 +286,7 @@ const FRICTION_RANK: Record<string, number> = { LOW: 0, MODERATE: 1, HIGH: 2, UN
  */
 export function orderServable(rows: ServableRow[], now: Date): ServableRow[] {
   const open = rows.filter((row) => {
-    const hours = localHours({ stateCode: row.stateCode, now });
+    const hours = localHours({ stateCode: row.stateCode, timezone: row.contactTimezone, now });
     // Unknown location loses preference below, but is not excluded — a record
     // that can never be served is worse than one served at an odd hour.
     return hours.open || hours.timezone === null;
@@ -294,8 +306,8 @@ export function orderServable(rows: ServableRow[], now: Date): ServableRow[] {
     if (aDue && bDue) return (a.snoozeUntil!.getTime() ?? 0) - (b.snoozeUntil!.getTime() ?? 0);
 
     // 3. Known local hours before unknown ones.
-    const aKnown = localHours({ stateCode: a.stateCode, now }).timezone !== null;
-    const bKnown = localHours({ stateCode: b.stateCode, now }).timezone !== null;
+    const aKnown = localHours({ stateCode: a.stateCode, timezone: a.contactTimezone, now }).timezone !== null;
+    const bKnown = localHours({ stateCode: b.stateCode, timezone: b.contactTimezone, now }).timezone !== null;
     if (aKnown !== bKnown) return aKnown ? -1 : 1;
 
     // 4. Tier, then the closest buying window.
@@ -369,7 +381,7 @@ export async function serveNext(params: {
       served: true,
       item: held,
       because: reasonFor(held, now),
-      localTime: localHours({ stateCode: held.stateCode, now }).reason,
+      localTime: localHours({ stateCode: held.stateCode, timezone: held.contactTimezone, now }).reason,
       remaining: rows.length,
     };
   }
@@ -403,7 +415,7 @@ export async function serveNext(params: {
           served: true,
           item: { ...candidate, itemStatus: 'IN_PROGRESS' },
           because: reasonFor(candidate, now),
-          localTime: localHours({ stateCode: candidate.stateCode, now }).reason,
+          localTime: localHours({ stateCode: candidate.stateCode, timezone: candidate.contactTimezone, now }).reason,
           remaining: ordered.length,
         };
       }
@@ -419,7 +431,7 @@ export async function serveNext(params: {
             served: true,
             item: theirs,
             because: reasonFor(theirs, now),
-            localTime: localHours({ stateCode: theirs.stateCode, now }).reason,
+            localTime: localHours({ stateCode: theirs.stateCode, timezone: theirs.contactTimezone, now }).reason,
             remaining: ordered.length,
           };
         }

@@ -236,18 +236,32 @@ export async function confirmAssignment(params: {
     assignedByUserId: params.actorId,
   });
 
+  // What the packet builder refused at write time, folded in with what the
+  // pre-check refused. Losing a race is the commonest one: two owners assign
+  // the same record within the same second and the partial unique index
+  // arbitrates. The loser used to be told "assigned 0" with no reason, which
+  // reads as a broken button rather than as somebody else getting there first.
+  if (plan.alreadyOwned > 0) {
+    droppedBy.set('ALREADY_ASSIGNED', (droppedBy.get('ALREADY_ASSIGNED') ?? 0) + plan.alreadyOwned);
+  }
+  const otherSkips = plan.skipped.length - plan.alreadyOwned;
+  if (otherSkips > 0) droppedBy.set('NOT_ASSIGNABLE', otherSkips);
+
   const dropped: ExclusionReason[] = [...droppedBy.entries()].map(([key, count]) => ({
     bucket: key as ExclusionReason['bucket'],
     count,
-    label: key === 'ALREADY_ASSIGNED' ? 'Claimed by somebody else since the preview'
+    label: key === 'ALREADY_ASSIGNED' ? 'Claimed by somebody else'
       : key === 'WRONG_MODE' ? 'The wrong world'
         : key === 'MISSING' ? 'No longer on this account'
-          : BUCKET_LABELS[key as EligibilityBucket] ?? key,
+          : key === 'NOT_ASSIGNABLE' ? 'Refused when the packet was written'
+            : BUCKET_LABELS[key as EligibilityBucket] ?? key,
     because: key === 'ALREADY_ASSIGNED'
-      ? 'Another caller took it between the preview and the confirmation.'
+      ? 'Another caller is already working this organisation. Two people ringing one company is the failure the ownership lock exists to prevent, so the second assignment is refused rather than queued.'
       : key === 'WRONG_MODE'
         ? 'A test caller cannot be handed real opportunities, and a production caller cannot be handed sandbox ones.'
-        : BUCKET_EXPLANATIONS[key as EligibilityBucket] ?? 'Not callable at the moment of assignment.',
+        : key === 'NOT_ASSIGNABLE'
+          ? 'The opportunity changed between the preview and the write.'
+          : BUCKET_EXPLANATIONS[key as EligibilityBucket] ?? 'Not callable at the moment of assignment.',
   }));
 
   return { ok: true, plan, dropped };

@@ -489,7 +489,7 @@ function CallerList({
           <div className="caller-card" key={c.callerId} data-testid="caller-card">
             <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
               <div>
-                <strong>{c.name}</strong>
+                <strong data-testid="caller-name">{c.name}</strong>
                 {c.mode === 'TEST' && <> <Badge tone="warning">TEST</Badge></>}
                 <div className="dim tiny">{c.email}</div>
                 {c.label && <div className="dim tiny">{c.label}</div>}
@@ -519,6 +519,9 @@ function CallerList({
             )}
 
             <div className="row" style={{ gap: '0.3rem', marginTop: '0.6rem', flexWrap: 'wrap' }}>
+              <Link href={`/callers/${c.callerId}`} className="btn secondary tiny" data-testid="manage-caller">
+                Manage
+              </Link>
               {canAssign && (
                 <button
                   className="btn tiny" disabled={busy === c.callerId}

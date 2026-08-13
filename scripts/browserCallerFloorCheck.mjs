@@ -68,13 +68,16 @@ try {
       const cards = await page.locator('[data-testid="caller-card"]').count();
       check('caller cards render', cards > 0, `${cards}`);
 
-      // Scoped to the caller cards, not the whole document: the signed-in
-      // owner's own name is in the sidebar footer, and matching on that would
-      // fail for the wrong reason every time an owner opened their own floor.
-      const cardText = (await page.locator('[data-testid="caller-card"]').allInnerTexts()).join(' | ');
+      // Scoped to the *name* on each card, not the card's whole text. Two
+      // things put a non-caller's name inside a card legitimately: the sidebar
+      // is outside it, but "PIN issued 2h ago by Alex Reyes" is inside it, and
+      // that line is provenance worth keeping. Matching the card's full text
+      // failed on the audit trail rather than on a wrongly listed account.
+      const names = (await page.locator('[data-testid="caller-name"]').allInnerTexts()).join(' | ');
       check('no owner, finance, admin or research account is listed as a caller',
-        !/Alex Reyes|Wei Zhang|Sam Okafor|Jordan Blake|Priya Raman/.test(cardText),
-        (cardText.match(/Alex Reyes|Wei Zhang|Sam Okafor|Jordan Blake|Priya Raman/) ?? ['none'])[0]);
+        !/Alex Reyes|Wei Zhang|Sam Okafor|Jordan Blake|Priya Raman/.test(names),
+        (names.match(/Alex Reyes|Wei Zhang|Sam Okafor|Jordan Blake|Priya Raman/) ?? ['none'])[0]);
+      const cardText = (await page.locator('[data-testid="caller-card"]').allInnerTexts()).join(' | ');
       check('and every card belongs to somebody with a caller profile',
         cardText.split('|').every((t) => t.includes('@')), `${cards} cards`);
 

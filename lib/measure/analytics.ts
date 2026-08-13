@@ -330,7 +330,10 @@ export async function sourcePerformance(params: {
 }): Promise<SourceRow[]> {
   const grouped = await prisma.demandOutcome.groupBy({
     by: ['connector', 'stage'],
-    where: { orgId: params.orgId, ...(params.since ? { occurredAt: { gte: params.since } } : {}) },
+    where: {
+      orgId: params.orgId, dataMode: 'PRODUCTION',
+      ...(params.since ? { occurredAt: { gte: params.since } } : {}),
+    },
     _count: true,
     _sum: { collectedGrossProfit: true },
   });
@@ -387,7 +390,10 @@ export type RouteRow = {
 export async function routePerformance(params: { orgId: string; since?: Date }): Promise<RouteRow[]> {
   const grouped = await prisma.demandOutcome.groupBy({
     by: ['route', 'stage'],
-    where: { orgId: params.orgId, route: { not: null }, ...(params.since ? { occurredAt: { gte: params.since } } : {}) },
+    where: {
+      orgId: params.orgId, dataMode: 'PRODUCTION', route: { not: null },
+      ...(params.since ? { occurredAt: { gte: params.since } } : {}),
+    },
     _count: true,
     _sum: { collectedGrossProfit: true },
   });

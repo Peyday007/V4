@@ -4,6 +4,7 @@ import { buildIdentity } from '@/lib/discovery/identity';
 import { callableRouteCount } from '@/lib/demand/queue';
 import { decideContact, mayReplace, releasesToCallQueue, type ContactCandidate } from './candidates';
 import { fingerprintOf, isStale, nextAttemptFor } from './policy';
+import { assertProductionOnly } from '@/lib/safety/outbound';
 import {
   CONTACT_SOURCES,
   SourceNotConfiguredError,
@@ -60,6 +61,11 @@ export async function resolveCompanyContact(params: {
   force?: boolean;
   now?: Date;
 }): Promise<ResolutionResult> {
+  // An external directory lookup is an outbound request with a cost and a
+  // rate limit attached. Sandbox companies do not exist, so asking about them
+  // spends real quota to learn nothing.
+  await assertProductionOnly({ companyId: params.companyId }, 'resolving a contact from external sources');
+
   const now = params.now ?? new Date();
   const { orgId, companyId } = params;
 

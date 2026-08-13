@@ -245,7 +245,7 @@ export async function readOut(params: { orgId: string; experimentId: string }): 
   const routeIds = assignments.filter((a) => a.subjectType === 'route').map((a) => a.subjectId);
   const outcomes = routeIds.length > 0
     ? await prisma.demandOutcome.findMany({
-        where: { orgId: params.orgId, routeId: { in: routeIds } },
+        where: { orgId: params.orgId, dataMode: 'PRODUCTION', routeId: { in: routeIds } },
         select: { routeId: true, stage: true },
       })
     : [];

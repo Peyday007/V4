@@ -1,4 +1,4 @@
-import type { OutcomeStage, Prisma, SignalCategory } from '@prisma/client';
+import type { DataMode, OutcomeStage, Prisma, SignalCategory } from '@prisma/client';
 import { prisma } from '@/lib/db';
 
 /**
@@ -31,6 +31,13 @@ export async function recordOutcome(input: {
   route?: SignalCategory | null;
   eventId?: string | null;
   routeId?: string | null;
+  /**
+   * The world this milestone belongs to.
+   *
+   * Only consulted when there is no route to ask. When there is one, the route
+   * decides — see below.
+   */
+  dataMode?: DataMode;
   stage: OutcomeStage;
   occurredAt?: Date;
   collectedRevenue?: number | null;
@@ -41,6 +48,18 @@ export async function recordOutcome(input: {
   // Milestones, not activity: a lead contacted three times has one contacted
   // milestone, so the funnel counts leads rather than phone calls.
   if (input.routeId) {
+    // The route decides which world this belongs to, not the caller.
+    //
+    // Six places record milestones and each of them would have had to remember
+    // to pass the mode down. One did not, and the result was a practice call
+    // failing a caller's save with a constraint error — the guard firing
+    // correctly on a bug one layer up. Asking the route here means a new
+    // recording path is correct without knowing this rule exists.
+    const owner = await prisma.routeHypothesis.findUnique({
+      where: { id: input.routeId },
+      select: { dataMode: true },
+    });
+    const dataMode = owner?.dataMode ?? input.dataMode ?? 'PRODUCTION';
     await prisma.demandOutcome.upsert({
       where: { routeId_stage: { routeId: input.routeId, stage: input.stage } },
       create: {
@@ -50,6 +69,7 @@ export async function recordOutcome(input: {
         route: input.route ?? null,
         eventId: input.eventId ?? null,
         routeId: input.routeId,
+        dataMode,
         stage: input.stage,
         occurredAt: input.occurredAt ?? new Date(),
         collectedRevenue: input.collectedRevenue ?? null,
@@ -74,6 +94,7 @@ export async function recordOutcome(input: {
       playbookKey: input.playbookKey ?? null,
       route: input.route ?? null,
       eventId: input.eventId ?? null,
+      dataMode: input.dataMode ?? 'PRODUCTION',
       stage: input.stage,
       occurredAt: input.occurredAt ?? new Date(),
       collectedRevenue: input.collectedRevenue ?? null,
@@ -115,7 +136,7 @@ const STAGES: OutcomeStage[] = [
 export async function sourceScorecards(orgId: string): Promise<SourceScorecard[]> {
   const rows = await prisma.demandOutcome.groupBy({
     by: ['connector', 'stage'],
-    where: { orgId },
+    where: { orgId, dataMode: 'PRODUCTION' },
     _count: true,
     _sum: { collectedRevenue: true, collectedGrossProfit: true, humanMinutes: true },
   });
@@ -176,7 +197,7 @@ function verdictFor(input: { leads: number; paid: number; profit: number; enough
 export async function funnelTotals(orgId: string): Promise<Array<{ stage: OutcomeStage; count: number }>> {
   const rows = await prisma.demandOutcome.groupBy({
     by: ['stage'],
-    where: { orgId },
+    where: { orgId, dataMode: 'PRODUCTION' },
     _count: true,
   });
   const counts = new Map(rows.map((r) => [r.stage, r._count]));

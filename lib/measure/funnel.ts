@@ -1,4 +1,4 @@
-import type { OutcomeStage, CallDisposition } from '@prisma/client';
+import type { OutcomeStage, CallDisposition, DataMode } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { recordOutcome } from '@/lib/demand/performance';
 import { moneyPosition } from '@/lib/deal/commit';
@@ -90,11 +90,12 @@ async function attribution(routeId: string): Promise<{
   playbookKey: string;
   route: string;
   eventId: string;
+  dataMode: DataMode;
 } | null> {
   const row = await prisma.routeHypothesis.findUnique({
     where: { id: routeId },
     select: {
-      orgId: true, playbookKey: true, route: true, eventId: true,
+      orgId: true, playbookKey: true, route: true, eventId: true, dataMode: true,
       event: { select: { connector: true } },
     },
   });
@@ -105,6 +106,9 @@ async function attribution(routeId: string): Promise<{
     playbookKey: row.playbookKey,
     route: row.route,
     eventId: row.eventId,
+    // Carried from the route rather than defaulted, so a practice call cannot
+    // land in the numbers the business is steered by.
+    dataMode: row.dataMode,
   };
 }
 
@@ -136,6 +140,7 @@ export async function recordStage(input: {
       route: where.route as never,
       eventId: where.eventId,
       routeId: input.routeId,
+      dataMode: where.dataMode,
       stage: input.stage,
       occurredAt: input.occurredAt,
       collectedRevenue: input.collectedRevenue ?? null,
@@ -333,7 +338,7 @@ export async function funnelReport(params: {
   route?: string;
   since?: Date;
 }): Promise<FunnelReport> {
-  const where = {
+  const filters = {
     orgId: params.orgId,
     ...(params.connector ? { connector: params.connector } : {}),
     ...(params.route ? { route: params.route as never } : {}),
@@ -342,7 +347,10 @@ export async function funnelReport(params: {
 
   const grouped = await prisma.demandOutcome.groupBy({
     by: ['stage'],
-    where,
+    // Practice is not performance, and the filter is written at the query
+    // rather than assembled above it. A scoping rule hidden inside a variable
+    // is one a reader has to go and check; a test scans for it here.
+    where: { ...filters, dataMode: 'PRODUCTION' },
     _count: true,
     _sum: { collectedRevenue: true, collectedGrossProfit: true },
   });

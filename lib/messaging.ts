@@ -4,6 +4,7 @@ import { getOrgConfig } from '@/lib/config';
 import { audit, recordActivity } from '@/lib/audit';
 import { normalizePhone, withinCallingHours } from '@/lib/compliance';
 import { countSegments, getSms } from '@/lib/providers/sms';
+import { assertProductionOnly } from '@/lib/safety/outbound';
 import { getEmail } from '@/lib/providers/email';
 import { recordDecision } from '@/lib/ai/decisions';
 import { smsCost } from '@/lib/ai/outreach';
@@ -81,6 +82,10 @@ export async function sendSms(params: {
   opportunityId?: string | null;
   senderId?: string | null;
 }): Promise<{ messageId: string; segments: number; costCents: number }> {
+  // Before consent, before suppression, before anything: a sandbox record does
+  // not send. Practice must never put a message in front of a real person.
+  await assertProductionOnly({ contactId: params.contactId }, 'sending an SMS');
+
   const check = await checkSmsAllowed({ orgId: params.orgId, contactId: params.contactId });
   if (!check.allowed) {
     await recordDecision({
@@ -268,6 +273,8 @@ export async function sendEmailMessage(params: {
   opportunityId?: string | null;
   senderId?: string | null;
 }): Promise<{ messageId: string }> {
+  await assertProductionOnly({ contactId: params.contactId }, 'sending an email');
+
   const contact = await prisma.contact.findFirstOrThrow({ where: { id: params.contactId, orgId: params.orgId } });
   if (!contact.email) throw new Error('No email address on record');
   if (!contact.consentToEmail) throw new Error('Contact has withdrawn email consent');

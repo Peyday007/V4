@@ -22,7 +22,7 @@ import { createCaller, deactivateCaller, reactivateCaller, roster, requireCaller
 import { issuePin, revokePin, signInWithPin, CallerAuthError } from '@/lib/caller/identity';
 import { previewAssignment, confirmAssignment } from '@/lib/caller/assignment';
 import { ensureSandbox, resetSandbox, sandboxState } from '@/lib/caller/sandbox';
-import { eligibilityCounts, callableRouteIds, bucketSql, ELIGIBILITY_FROM, ASSIGNED_SQL } from '@/lib/demand/eligibility';
+import { eligibilityCounts, callableRouteIds, bucketSql, bucketsForRoutes, ELIGIBILITY_FROM, ASSIGNED_SQL } from '@/lib/demand/eligibility';
 import { queueSummary } from '@/lib/demand/queue';
 import { Prisma } from '@prisma/client';
 
@@ -343,6 +343,116 @@ async function main() {
   check('and the test caller survives the reset',
     (await prisma.user.count({ where: { id: testCaller.callerId } })) === 1);
   check('and the fixtures come back', (await sandboxState(org.id)).routes >= 3);
+
+  // =========================================================================
+  console.log('\n--- two owners, one opportunity, at the same moment ----------------');
+
+  // A route that is genuinely callable at a fixed instant, so the race is
+  // about ownership rather than about eligibility.
+  const raceRoute = await prisma.routeHypothesis.findFirst({
+    // Any live route the floor works. Not `status: 'ACTIVE'` — this engine
+    // also uses BLOCKED_ON_SUPPLY and RESEARCH for records that are still very
+    // much callable, and pinning one status made this check silently find
+    // nothing rather than fail.
+    where: {
+      orgId: org.id, dataMode: 'PRODUCTION',
+      status: { notIn: ['EXPIRED', 'REJECTED', 'COLD'] },
+      tier: { in: ['ACTIVE_DEMAND', 'STRONG_TRIGGER'] },
+    },
+    select: { id: true, companyId: true },
+  });
+
+  if (!raceRoute) {
+    check('a production route exists to race on', false, 'none found');
+  } else {
+    // Make it unambiguously callable: a number, a known timezone, no snooze,
+    // and nobody currently holding it.
+    await prisma.packetItem.deleteMany({ where: { routeId: raceRoute.id, status: { in: ['PENDING', 'IN_PROGRESS'] } } });
+    await prisma.outreachState.upsert({
+      where: { routeId: raceRoute.id },
+      create: { orgId: org.id, routeId: raceRoute.id, status: 'NEW' },
+      update: { status: 'NEW', snoozeUntil: null },
+    });
+    const existingContact = await prisma.contact.findFirst({ where: { companyId: raceRoute.companyId } });
+    if (existingContact) {
+      await prisma.contact.update({
+        where: { id: existingContact.id },
+        data: { phone: existingContact.phone ?? '+1 555 0900', timezone: 'America/Chicago' },
+      });
+    } else {
+      await prisma.contact.create({
+        data: {
+          orgId: org.id, companyId: raceRoute.companyId, firstName: 'Race', lastName: 'Fixture',
+          phone: '+1 555 0900', timezone: 'America/Chicago', isDecisionMaker: true,
+        },
+      });
+    }
+
+    const raceA = await createCaller({
+      orgId: org.id, actorId: owner.id, name: 'Race A', email: `audit-caller-race-a-${stamp}@dealdispatch.test`,
+    });
+    const raceB = await createCaller({
+      orgId: org.id, actorId: owner.id, name: 'Race B', email: `audit-caller-race-b-${stamp}@dealdispatch.test`,
+    });
+    if (!raceA.ok || !raceB.ok) throw new Error('could not create the racers');
+
+    const bucket = await bucketsForRoutes({ orgId: org.id, routeIds: [raceRoute.id], now: at });
+    check('the race route is callable at the fixed instant',
+      bucket.get(raceRoute.id)?.bucket === 'CALLABLE_NOW',
+      bucket.get(raceRoute.id)?.bucket ?? 'missing');
+
+    // Both confirmations are issued without awaiting the first, so they are in
+    // flight together and the database arbitrates rather than the code.
+    const [resultA, resultB] = await Promise.all([
+      confirmAssignment({
+        orgId: org.id, actorId: owner.id, callerId: raceA.callerId,
+        routeIds: [raceRoute.id], name: 'race A', now: at,
+      }),
+      confirmAssignment({
+        orgId: org.id, actorId: owner.id, callerId: raceB.callerId,
+        routeIds: [raceRoute.id], name: 'race B', now: at,
+      }),
+    ]);
+
+    const assigned = [resultA, resultB].filter((r) => r.ok && r.plan.items === 1);
+    const refused = [resultA, resultB].filter((r) => !r.ok || r.plan.items === 0);
+
+    check('exactly one confirmation takes the opportunity',
+      assigned.length === 1, `${assigned.length} took it, ${refused.length} did not`);
+
+    check('and the loser is refused in words rather than a raw database error',
+      refused.every((r) => {
+        const text = r.ok ? r.dropped.map((d) => d.because).join(' ') : r.error;
+        return text.length > 0 && !/P2002|prisma|constraint|Invalid `/i.test(text);
+      }),
+      refused.map((r) => (r.ok ? r.dropped.map((d) => d.label).join(',') : r.error)).join(' | ').slice(0, 110));
+
+    const owners = await prisma.packetItem.count({
+      where: { routeId: raceRoute.id, status: { in: ['PENDING', 'IN_PROGRESS'] } },
+    });
+    check('and the opportunity has exactly one live owner afterwards', owners === 1, `${owners} live items`);
+
+    // Ten at once, to be sure the pair was not luck.
+    await prisma.packetItem.deleteMany({ where: { routeId: raceRoute.id } });
+    const crowd = await Promise.all(
+      Array.from({ length: 10 }, (_, i) => confirmAssignment({
+        orgId: org.id, actorId: owner.id,
+        callerId: i % 2 === 0 ? raceA.callerId : raceB.callerId,
+        routeIds: [raceRoute.id], name: `race ${i}`, now: at,
+      })),
+    );
+    const winners = crowd.filter((r) => r.ok && r.plan.items === 1).length;
+    const liveAfter = await prisma.packetItem.count({
+      where: { routeId: raceRoute.id, status: { in: ['PENDING', 'IN_PROGRESS'] } },
+    });
+    check('ten simultaneous confirmations still produce one owner',
+      winners === 1 && liveAfter === 1, `${winners} winners, ${liveAfter} live items`);
+    check('and none of the nine losers surfaced a raw error',
+      crowd.filter((r) => !r.ok).every((r) => !/P2002|prisma|Invalid `/i.test((r as { error: string }).error)));
+
+    await prisma.packetItem.deleteMany({ where: { routeId: raceRoute.id } });
+    await prisma.workPacket.deleteMany({ where: { callerId: { in: [raceA.callerId, raceB.callerId] } } });
+  }
 
   // =========================================================================
   console.log('\n--- deactivation keeps the history --------------------------------');

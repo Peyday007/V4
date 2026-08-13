@@ -273,6 +273,7 @@ export function WorkWorkspace({ callerName }: { callerName: string }) {
                 .map((d) => (
                   <button
                     key={d.value}
+                    data-testid={`disposition-${d.value}`}
                     className={`filter-chip${disposition === d.value ? ' active' : ''}`}
                     onClick={() => setDisposition(d.value)}
                   >
@@ -310,6 +311,7 @@ export function WorkWorkspace({ callerName }: { callerName: string }) {
                       ) : field.kind === 'longtext' ? (
                         <textarea
                           className="input"
+                          data-testid={`field-${field.key}`}
                           rows={2}
                           value={String(values[field.key] ?? '')}
                           onChange={(e) => setValues((v) => ({ ...v, [field.key]: e.target.value }))}
@@ -317,6 +319,7 @@ export function WorkWorkspace({ callerName }: { callerName: string }) {
                       ) : (
                         <input
                           className="input"
+                          data-testid={`field-${field.key}`}
                           value={String(values[field.key] ?? '')}
                           onChange={(e) => setValues((v) => ({ ...v, [field.key]: e.target.value }))}
                         />
@@ -330,19 +333,22 @@ export function WorkWorkspace({ callerName }: { callerName: string }) {
             {requirement?.needsFollowUpDate && (
               <label className="field mt">
                 <span className="tiny dim">Follow up on · required</span>
-                <input className="input" type="date" value={followUpAt} onChange={(e) => setFollowUpAt(e.target.value)} />
+                <input className="input" type="date" data-testid="follow-up" value={followUpAt} onChange={(e) => setFollowUpAt(e.target.value)} />
               </label>
             )}
 
             <label className="field mt">
               <span className="tiny dim">Anything else</span>
-              <textarea className="input" rows={3} value={notes} onChange={(e) => setNotes(e.target.value)} />
+              <textarea className="input" rows={3} data-testid="notes" value={notes} onChange={(e) => setNotes(e.target.value)} />
             </label>
           </>
         )}
 
         {refusal && (
-          <div className={`alert ${refusal.kind === 'system' ? 'warning' : 'danger'} small mt`}>
+          <div
+            data-testid={`refusal-${refusal.kind}`}
+            className={`alert ${refusal.kind === 'system' ? 'warning' : 'danger'} small mt`}
+          >
             <strong>{refusal.message}</strong>
             {refusal.because && <div style={{ marginTop: '0.3rem' }}>{refusal.because}</div>}
             {refusal.kind === 'system' && (
@@ -354,7 +360,7 @@ export function WorkWorkspace({ callerName }: { callerName: string }) {
         )}
 
         <div className="row mt">
-          <button className="btn" disabled={!disposition || saving} onClick={() => void save()}>
+          <button className="btn" data-testid="save-call" disabled={!disposition || saving} onClick={() => void save()}>
             {saving ? 'Saving…' : 'Save and get the next one'}
           </button>
         </div>

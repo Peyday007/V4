@@ -5,6 +5,7 @@ import { getEmail } from '@/lib/providers/email';
 import { getOrgConfig } from '@/lib/config';
 import { recordDealEvent, newCorrelationId } from '@/lib/deal/events';
 import type { RoomContent } from './content';
+import { assertProductionOnly } from '@/lib/safety/outbound';
 
 /**
  * The message that carries a Deal Room.
@@ -260,6 +261,13 @@ export async function sendRoomEmail(options: {
   contactId: string;
   senderId?: string | null;
 }): Promise<{ sent: boolean; reason?: string; messageId?: string; audience?: Audience }> {
+  // A deal room built on a sandbox opportunity is a page about an invented
+  // company. Delivering it is refused before the room is even loaded.
+  await assertProductionOnly(
+    { roomId: options.roomId, contactId: options.contactId },
+    'delivering a deal room',
+  );
+
   const room = await prisma.dealRoom.findFirst({
     where: { id: options.roomId, orgId: options.orgId },
     include: { route: { select: { id: true } } },

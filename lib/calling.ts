@@ -6,6 +6,7 @@ import { getStorage } from '@/lib/providers/storage';
 import { getTelephony } from '@/lib/providers/telephony';
 import { enqueue } from '@/lib/jobs/queue';
 import { recordDecision } from '@/lib/ai/decisions';
+import { assertProductionOnly } from '@/lib/safety/outbound';
 
 export type StartCallResult = {
   callId: string;
@@ -39,6 +40,17 @@ export async function startCall(params: {
   if (assignment.attemptCount >= assignment.maxAttempts) {
     throw new Error(`Attempt limit reached (${assignment.maxAttempts}). Stop calling this contact.`);
   }
+
+  // The dialler is the loudest external action in the product, and this is the
+  // first question asked about it — ahead of the compliance gate, deliberately.
+  // When the guard sat after that gate, a sandbox record outside calling hours
+  // was refused for the hour rather than for being practice, so the boundary
+  // was only ever exercised between 8am and 8pm. A rule that holds during
+  // office hours is not a rule.
+  await assertProductionOnly(
+    { companyId: assignment.companyId, contactId: assignment.contactId },
+    'placing a call',
+  );
 
   const state = assignment.company.locations.find((l) => l.isHeadquarters)?.state ?? assignment.company.locations[0]?.state ?? null;
   const compliance = await checkContactability({

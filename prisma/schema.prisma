@@ -3012,6 +3012,11 @@ model DemandOutcome {
   eventId String?
   routeId String?
 
+  /// The world this milestone belongs to. A practice call must never appear in
+  /// a scorecard, a funnel report or an experiment readout, and a database
+  /// trigger keeps this equal to the route's own mode.
+  dataMode DataMode @default(PRODUCTION)
+
   stage                OutcomeStage
   occurredAt           DateTime     @default(now())
   /// Set when money actually moved. Never an expectation.
@@ -3029,6 +3034,7 @@ model DemandOutcome {
   @@unique([routeId, stage])
   @@index([orgId, connector, stage])
   @@index([orgId, occurredAt])
+  @@index([orgId, dataMode, stage], map: "DemandOutcome_orgId_dataMode_stage_idx")
 }
 
 // ===========================================================================

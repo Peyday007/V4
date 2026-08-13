@@ -3,6 +3,7 @@ import { prisma } from '@/lib/db';
 import { getOrgConfig } from '@/lib/config';
 import { RECORDING_ANNOUNCEMENT } from '@/lib/compliance';
 import { recordingConsent, type ConsentDecision } from './consent';
+import { assertProductionOnly } from '@/lib/safety/outbound';
 
 /**
  * The record of a call, whether or not anything was captured.
@@ -59,11 +60,19 @@ export async function startSession(input: StartInput): Promise<StartResult | nul
     where: { id: input.routeId, orgId: input.orgId },
     select: {
       id: true,
+      dataMode: true,
       company: { select: { stateCode: true } },
       event: { select: { stateCode: true } },
     },
   });
   if (!route) return null;
+
+  // Capture on a sandbox route would mean a provider recording of a call that
+  // must never be placed. The manual path stays open so an owner can practise
+  // the workspace; only provider-backed capture is refused.
+  if (route.dataMode === 'TEST' && (input.provider ?? 'manual') !== 'manual') {
+    await assertProductionOnly({ routeId: route.id }, 'starting a provider-recorded call');
+  }
 
   const contact = input.contactId
     ? await prisma.contact.findFirst({
