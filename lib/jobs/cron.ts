@@ -34,6 +34,23 @@ const BACKLOG_BUDGET_MS = 20_000;
  * that drops or mangles a query string would silently downgrade `daily` to
  * `tick`, and that is not a failure anybody would notice.
  */
+/**
+ * What is actually running, as far as the running code can tell.
+ *
+ * Every field is absent rather than guessed when the platform does not supply
+ * it, so a self-hosted deployment reports `{}` instead of a plausible lie.
+ */
+function buildIdentity(): Record<string, string> {
+  const identity: Record<string, string> = {};
+  const commit = process.env.VERCEL_GIT_COMMIT_SHA;
+  const branch = process.env.VERCEL_GIT_COMMIT_REF;
+  const environment = process.env.VERCEL_ENV;
+  if (commit) identity.commit = commit.slice(0, 12);
+  if (branch) identity.branch = branch;
+  if (environment) identity.environment = environment;
+  return identity;
+}
+
 export async function runCron(request: Request, mode: CronMode) {
   try {
     const config = env();
@@ -218,7 +235,21 @@ export async function runCron(request: Request, mode: CronMode) {
     // scheduled nothing is visibly distinguishable from one that had nothing to
     // schedule. `unscheduled` above zero means the backlog is not yet covered
     // and the next invocation still has organisations to bring in.
-    return json({ ok: true, mode, durationMs: Date.now() - startedAt, results, enrichment });
+    // Which build answered, and whether its migrations are the ones in the
+    // branch. Deployment lag is not hypothetical here: this project spent a
+    // day on a scheduler reporting success against a build several commits
+    // old, and "is the deployment current?" had no answer that did not involve
+    // a dashboard. The commit is public information — it is in the repository —
+    // and it is the only reliable way to tell a stale deployment from a
+    // healthy one from the outside.
+    return json({
+      ok: true,
+      mode,
+      durationMs: Date.now() - startedAt,
+      build: buildIdentity(),
+      results,
+      enrichment,
+    });
   } catch (error) {
     return handleRouteError(error);
   }

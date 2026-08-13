@@ -142,6 +142,26 @@ jobs:
           )
           out.append("")
 
+          # Which build answered. Printed before the numbers, because a healthy
+          # tick against a stale deployment is the failure that reads most like
+          # success, and the commit is the only thing that distinguishes them.
+          build = body.get("build") or {}
+          if build:
+              out.append(
+                  "Answered by `%s` on `%s` (%s)."
+                  % (
+                      build.get("commit", "an unknown commit"),
+                      build.get("branch", "an unknown branch"),
+                      build.get("environment", "unknown environment"),
+                  )
+              )
+          else:
+              out.append(
+                  "The deployment did not report a build identity, so this run"
+                  " cannot say which commit answered."
+              )
+          out.append("")
+
           results = body.get("results") or []
           if results:
               out.append("| Organisation | Queued | Processed | Failed |")
