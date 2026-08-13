@@ -287,6 +287,35 @@ export async function sendEmailMessage(params: {
   const config = await getOrgConfig(params.orgId);
   const result = await getEmail().send({ to: contact.email, subject: params.subject, body: params.body });
 
+  // Same rule as the deal room: a message no transport accepted is queued with
+  // its reason, never recorded as sent. The follow-up rules downstream reason
+  // about whether somebody replied, and they must not be handed a message that
+  // was never delivered to reply to.
+  if (result.status === 'suppressed') {
+    const held = await prisma.message.create({
+      data: {
+        orgId: params.orgId,
+        opportunityId: params.opportunityId ?? null,
+        contactId: params.contactId,
+        companyId: contact.companyId,
+        senderId: params.senderId ?? null,
+        channel: 'EMAIL',
+        direction: 'outbound',
+        status: 'QUEUED',
+        purpose: params.purpose,
+        subject: params.subject,
+        body: params.body,
+        provider: getEmail().name,
+        providerMessageId: result.providerMessageId,
+        sentAt: null,
+        outcome: 'UNDELIVERABLE',
+        failureReason: result.reason ?? 'No transport accepted this message.',
+      },
+      select: { id: true },
+    });
+    throw new Error(result.reason ?? `Nothing was sent (message ${held.id} is held).`);
+  }
+
   const message = await prisma.message.create({
     data: {
       orgId: params.orgId,

@@ -30,8 +30,12 @@ const schema = z.object({
   TRANSCRIPTION_PROVIDER: z.enum(['mock', 'deepgram']).default('mock'),
   DEEPGRAM_API_KEY: z.string().optional(),
 
-  EMAIL_PROVIDER: z.enum(['mock', 'smtp']).default('mock'),
+  EMAIL_PROVIDER: z.enum(['mock', 'smtp', 'http']).default('mock'),
   SMTP_URL: z.string().optional(),
+  /** A transactional mail API — Resend, Postmark, SendGrid and similar. */
+  EMAIL_API_URL: z.string().optional(),
+  EMAIL_API_KEY: z.string().optional(),
+  /** The verified sending address. Providers reject anything else. */
   EMAIL_FROM: z.string().default('ops@example.com'),
 
   STORAGE_PROVIDER: z.enum(['local', 's3']).default('local'),

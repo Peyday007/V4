@@ -71,6 +71,16 @@ export function DealPlanPanel({ plan }: { plan: DealPlan }) {
         </div>
       )}
 
+      {plan.blockedCapabilities.length > 0 && (
+        <div className="alert danger small mt" data-testid="blocked-capabilities">
+          {plan.blockedCapabilities.map((c) => (
+            <div key={c.what}>
+              <strong>{c.what} is not available.</strong> {c.reason}
+            </div>
+          ))}
+        </div>
+      )}
+
       {waitingOn.length > 0 && (
         <div className="tiny dim mt" data-testid="waiting-on">
           Waiting on somebody outside the building:{' '}

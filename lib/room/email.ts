@@ -326,6 +326,33 @@ export async function sendRoomEmail(options: {
     return { sent: false, reason: 'The email provider accepted the request but returned no message id, so nothing can be confirmed.' };
   }
 
+  // Nothing left the building. Recorded as queued with the reason attached, so
+  // it is visible work with a way back rather than a message the system
+  // believes it sent — and never marked AWAITING_RESPONSE, because nobody is
+  // going to respond to something that was never delivered.
+  if (result.status === 'suppressed') {
+    await prisma.message.create({
+      data: {
+        orgId: options.orgId,
+        routeId: room.routeId,
+        contactId: contact.id,
+        companyId: contact.companyId,
+        senderId: options.senderId ?? null,
+        channel: 'EMAIL',
+        direction: 'outbound',
+        status: 'QUEUED',
+        subject: draft.subject,
+        body: draft.body,
+        provider: getEmail().name,
+        providerMessageId: result.providerMessageId,
+        sentAt: null,
+        outcome: 'UNDELIVERABLE',
+        failureReason: result.reason ?? 'No transport accepted this message.',
+      },
+    });
+    return { sent: false, reason: result.reason ?? 'No email transport is configured, so nothing was sent.' };
+  }
+
   const message = await prisma.message.create({
     data: {
       orgId: options.orgId,

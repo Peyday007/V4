@@ -1,6 +1,7 @@
 import { prisma } from '@/lib/db';
 import type { DealRecord } from './record';
 import { costIsUsable } from './provider';
+import { emailDeliveryStatus } from '@/lib/providers/email';
 
 /**
  * The one question the opportunity page has to answer: what now?
@@ -71,6 +72,12 @@ export type Stage = {
 
 export type DealPlan = {
   stages: Stage[];
+  /**
+   * External dependencies that are missing right now — a transport that cannot
+   * send, a credential nobody has set. Surfaced on the page rather than left in
+   * a log, because the failure they cause is silent everywhere else.
+   */
+  blockedCapabilities: Array<{ what: string; reason: string }>;
   /** The first rung that is ours to move. Null when everything is done or waiting. */
   firstBroken: Stage | null;
   /** Rungs finished on our side and waiting on somebody outside the building. */
@@ -175,7 +182,11 @@ export async function loadDemandContext(params: {
  * against any shape of deal without a database, and the same function decides
  * what the page shows and what the tests assert.
  */
-export function buildDealPlan(input: { record: DealRecord; demand: DemandContext }): DealPlan {
+export function buildDealPlan(input: {
+  record: DealRecord;
+  demand: DemandContext;
+  blockedCapabilities?: Array<{ what: string; reason: string }>;
+}): DealPlan {
   const { record, demand } = input;
   const stages: Stage[] = [];
 
@@ -492,7 +503,11 @@ export function buildDealPlan(input: { record: DealRecord; demand: DemandContext
           ? 'Finished. The money is in and the margin is real.'
           : 'Nothing to do on this one right now.';
 
-  return { stages, firstBroken, waitingOn, headline, progress: { done, total: stages.length } };
+  return {
+    stages, firstBroken, waitingOn, headline,
+    blockedCapabilities: input.blockedCapabilities ?? [],
+    progress: { done, total: stages.length },
+  };
 }
 
 /** The plan for one route, loaded and decided. */
@@ -503,5 +518,13 @@ export async function loadDealPlan(params: {
 }): Promise<DealPlan | null> {
   const demand = await loadDemandContext({ orgId: params.orgId, routeId: params.routeId });
   if (!demand) return null;
-  return buildDealPlan({ record: params.record, demand });
+
+  const email = emailDeliveryStatus();
+  return buildDealPlan({
+    record: params.record,
+    demand,
+    blockedCapabilities: email.canDeliver || !email.reason
+      ? []
+      : [{ what: 'Sending email', reason: email.reason }],
+  });
 }

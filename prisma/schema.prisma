@@ -2366,6 +2366,9 @@ model Message {
   repliedAt         DateTime?
   responseTimeSec   Int?
   outcome           MessageOutcome?
+  /// Why it did not go. Set whenever a send is refused or suppressed, so the
+  /// failure is on the record rather than only in a log.
+  failureReason     String?
   inboundBody       String?
   /// SMS bills per 160-character segment, so a naturally-written message is
   /// often several messages priced as one send.
