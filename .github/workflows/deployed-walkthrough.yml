@@ -66,7 +66,7 @@ jobs:
           OWNER_EMAIL: ${{ inputs.owner_email }}
           OWNER_PASSWORD: ${{ secrets.OWNER_PASSWORD }}
           EXPECT_COMMIT: ${{ inputs.expect_commit }}
-          EXPECT_MIGRATION: 20260813140000_measurement_data_mode
+          EXPECT_MIGRATION: 20260813230000_message_failure_reason
         run: |
           set -u
           if [ -z "${BASE_URL:-}" ]; then
