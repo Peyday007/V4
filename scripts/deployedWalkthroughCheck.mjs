@@ -119,6 +119,43 @@ async function productionNumbers(page) {
   return { summary: summary.replace(/\s+/g, ' ').trim(), buckets };
 }
 
+/**
+ * When the practice fixtures are next callable, in UTC.
+ *
+ * The sandbox companies sit in real US timezones and the business-hours rule
+ * applies to them exactly as it does to real work, so this check can only run
+ * inside their working day. Saying "come back later" is not useful; saying
+ * which hour is.
+ */
+function nextWindow(zones = ['America/Chicago', 'America/Los_Angeles']) {
+  const hourIn = (zone, at) => {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: zone, hour: 'numeric', hour12: false, weekday: 'short',
+    }).formatToParts(at);
+    return {
+      hour: Number(parts.find((p) => p.type === 'hour')?.value ?? '0'),
+      day: parts.find((p) => p.type === 'weekday')?.value ?? 'Sun',
+    };
+  };
+  const open = (zone, at) => {
+    const { hour, day } = hourIn(zone, at);
+    return !['Sat', 'Sun'].includes(day) && hour >= 8 && hour < 18;
+  };
+  const now = new Date();
+  for (const zone of zones) if (open(zone, now)) return { zone, when: 'now' };
+  // Step forward in half-hours until one of them opens. A week is plenty, and
+  // it costs nothing.
+  for (let i = 1; i <= 7 * 48; i += 1) {
+    const at = new Date(now.getTime() + i * 30 * 60_000);
+    for (const zone of zones) {
+      if (open(zone, at)) {
+        return { zone, when: `${at.toISOString().slice(0, 16).replace('T', ' ')} UTC` };
+      }
+    }
+  }
+  return { zone: null, when: 'unknown' };
+}
+
 const stamp = Date.now();
 const callerEmail = `deployed-walkthrough-${stamp}@dealdispatch.test`;
 let browser;
@@ -247,10 +284,11 @@ try {
   if (previewRows === 0) {
     check('practice work is available to assign', false,
       `nothing callable right now — ${previewText.split('\n').slice(0, 3).join(' ').slice(0, 150)}`);
+    const opens = nextWindow();
     throw new Error(
-      'No sandbox record is callable on the deployment at this moment. The fixtures sit in US '
-      + 'timezones and the business-hours rule applies to practice exactly as it does to real work, '
-      + 'so this must run inside 08:00–18:00 local time for the fixture contacts.',
+      'No sandbox record is callable on the deployment at this moment. The fixtures sit in real US '
+      + 'timezones and the business-hours rule applies to practice exactly as it does to real work. '
+      + `They are next callable at ${opens.when}${opens.zone ? `, when it is inside working hours in ${opens.zone}` : ''}.`,
     );
   }
   check('practice work is available to assign', true, `${previewRows} rows`);
