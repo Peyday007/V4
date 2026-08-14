@@ -365,6 +365,43 @@ describe('nothing sandbox can leave the building', () => {
   });
 
   /**
+   * Fixtures must not be able to describe themselves as production.
+   *
+   * Every audit script builds the rows it needs. Three of them built those rows
+   * with the default data mode, attached to real seeded companies, and left
+   * them behind — 54 route hypotheses from two fixture events, one of them
+   * refracted into 42. The result was a portfolio screen that looked like a
+   * book of business, 85% concentrated in janitorial work, resting on a
+   * connector called `audit_fixture` with no source URL. The emptiness of the
+   * real demand engine was invisible because the litter filled the space.
+   *
+   * Scanned rather than listed, so the next script to do it fails here.
+   */
+  it('no script creates production rows from a fixture connector', () => {
+    const FIXTURE_CONNECTOR = /connector:\s*'(audit_fixture|sandbox|seed|demo|fixture)'/;
+    const offenders: string[] = [];
+
+    for (const file of walk('scripts')) {
+      const source = readFileSync(file, 'utf8');
+      for (const match of source.matchAll(new RegExp(FIXTURE_CONNECTOR, 'g'))) {
+        // The create block a fixture connector sits in has to say it is test
+        // data. Looked for in the 400 characters around it, which is the block.
+        const from = Math.max(0, match.index! - 400);
+        const around = source.slice(from, match.index! + 400);
+        // A create that is *expected* to be refused is the assertion itself,
+        // and has to say so at the call site rather than be excused here.
+        if (/fixture-connector-guard: expected-to-fail/.test(around)) continue;
+        if (!/dataMode:\s*'TEST'/.test(around)) offenders.push(`${file}: ${match[0]}`);
+      }
+    }
+
+    expect(
+      offenders,
+      `these create fixture demand in the production world: ${offenders.join(', ')}`,
+    ).toEqual([]);
+  });
+
+  /**
    * The same argument, one layer further in.
    *
    * Measurement is an outbound action of a different kind: nothing leaves the

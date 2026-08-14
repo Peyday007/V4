@@ -127,7 +127,7 @@ async function main() {
     Number(corrected?.collectedGrossProfit) === 2500
     && (await prisma.demandOutcome.count({ where: { routeId: route.id, stage: 'PAID' } })) === 1);
 
-  const report = await funnelReport({ orgId });
+  const report = await funnelReport({ orgId, dataMode: 'TEST' });
   check('the report reads the money back', report.collectedGrossProfit >= 2500, `${report.collectedGrossProfit}`);
   const leads = report.rows.find((r) => r.stage === 'VERIFIED_LEAD')?.count ?? 0;
   check('and refuses percentages below the sample floor',
@@ -232,7 +232,8 @@ async function main() {
   const fixtureRoutes = await seedExperimentPopulation(orgId, experiment.id, experiment.arms);
   check('a population was staged', fixtureRoutes > 0, `${fixtureRoutes} subjects`);
 
-  const readout = await readOut({ orgId, experimentId: experiment.id });
+  // The audit's population lives in the test world; read it there.
+  const readout = await readOut({ orgId, experimentId: experiment.id, dataMode: 'TEST' });
   check('the readout reports the declared outcome', readout?.primaryOutcome === 'RELEVANT_PERSON');
   check('a guardrail moving the wrong way is flagged as a regression',
     readout?.blocked === true,
@@ -243,14 +244,14 @@ async function main() {
 
   const treatmentArm = experiment.arms.find((a) => !a.isControl);
   const declared = await concludeExperiment({
-    orgId, experimentId: experiment.id, conclusion: 'Looked good early.', winningArmId: treatmentArm?.id,
+    orgId, dataMode: 'TEST', experimentId: experiment.id, conclusion: 'Looked good early.', winningArmId: treatmentArm?.id,
   });
   check('a winner cannot be recorded past a guardrail regression',
     !declared.ok && (declared.message ?? '').includes('guardrail'),
     declared.message);
 
   const halted = await concludeExperiment({
-    orgId, experimentId: experiment.id, conclusion: 'Halted: lost more deals than it won conversations.', halted: true,
+    orgId, dataMode: 'TEST', experimentId: experiment.id, conclusion: 'Halted: lost more deals than it won conversations.', halted: true,
   });
   check('but it can be halted with a written conclusion', halted.ok);
 
@@ -341,9 +342,32 @@ async function seedExperimentPopulation(
   const control = arms.find((a) => a.isControl)!;
   const treatment = arms.find((a) => !a.isControl)!;
 
-  const event = await prisma.demandEvent.findFirst({ where: { orgId }, orderBy: { createdAt: 'asc' } });
-  const company = await prisma.company.findFirst({ where: { orgId }, orderBy: { createdAt: 'asc' } });
-  if (!event || !company) return 0;
+  // Scoped to the test world, and built here rather than borrowed. Taking the
+  // org's first event and first company put forty fixture routes onto a real
+  // company — and because they all carried the same hardcoded capability, they
+  // were also the reason the portfolio read as 85% janitorial.
+  const company = await prisma.company.upsert({
+    where: { orgId_legalName: { orgId, legalName: '[TEST] Measurement Fixture Buyer' } },
+    create: {
+      orgId, dataMode: 'TEST', origin: 'SEED_DEMO',
+      legalName: '[TEST] Measurement Fixture Buyer',
+      operatingName: '[TEST] Measurement Fixture Buyer',
+      stateCode: 'IL', cityName: 'Chicago', phone: '+1 555 0300',
+    },
+    update: {},
+  });
+  const event = await prisma.demandEvent.upsert({
+    where: { orgId_dedupeKey: { orgId, dedupeKey: 'audit_fixture:measurement' } },
+    create: {
+      orgId, dataMode: 'TEST', type: 'CONTRACT_EXPIRATION',
+      connector: 'audit_fixture', sourceRecordId: 'measurement-audit',
+      dedupeKey: 'audit_fixture:measurement', eventDate: new Date(),
+      headline: 'Audit fixture: measurement population',
+      summary: 'Created by scripts/measurementAudit.ts. Not a real demand event.',
+      cityName: 'Chicago', stateCode: 'IL',
+    },
+    update: {},
+  });
 
   let made = 0;
   for (let i = 0; i < 40; i += 1) {
@@ -353,7 +377,8 @@ async function seedExperimentPopulation(
     const row = await prisma.routeHypothesis.upsert({
       where: { eventId_companyId_playbookKey: { eventId: event.id, companyId: company.id, playbookKey } },
       create: {
-        orgId, eventId: event.id, companyId: company.id, route: 'BROKERAGE', playbookKey,
+        orgId, dataMode: 'TEST',
+        eventId: event.id, companyId: company.id, route: 'BROKERAGE', playbookKey,
         headline: `Measurement audit fixture ${i}`,
         rationale: 'Created by scripts/measurementAudit.ts. Not a real opportunity.',
         tier: 'ACTIVE_DEMAND', status: 'RESEARCH', requiredCapability: 'Janitorial',

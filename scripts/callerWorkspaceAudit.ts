@@ -82,6 +82,7 @@ async function ensureCallableRoutes(orgId: string, existing: string[], wanted: n
     create: {
       orgId,
       type: 'CONTRACT_EXPIRATION',
+      dataMode: 'TEST',
       connector: 'audit_fixture',
       sourceRecordId: 'caller-workspace-audit',
       dedupeKey: 'audit_fixture:caller-workspace',
@@ -94,8 +95,10 @@ async function ensureCallableRoutes(orgId: string, existing: string[], wanted: n
     update: {},
   });
 
+  // Test companies. See the note in dealProgressionAudit: fixtures attached to
+  // production companies are what filled the portfolio with litter.
   const companies = await prisma.company.findMany({
-    where: { orgId, phone: { not: null } },
+    where: { orgId, dataMode: 'TEST', phone: { not: null } },
     orderBy: { createdAt: 'asc' },
     select: { id: true, legalName: true },
   });
@@ -108,6 +111,7 @@ async function ensureCallableRoutes(orgId: string, existing: string[], wanted: n
       where: { eventId_companyId_playbookKey: { eventId: event.id, companyId: company.id, playbookKey } },
       create: {
         orgId,
+        dataMode: 'TEST',
         eventId: event.id,
         companyId: company.id,
         route: ['BROKERAGE', 'DISTRIBUTION', 'SUBCONTRACTING'][index % 3] as 'BROKERAGE',

@@ -337,6 +337,8 @@ export async function funnelReport(params: {
   connector?: string;
   route?: string;
   since?: Date;
+  /** Which world to report on. Production by default; nothing renders a rehearsal. */
+  dataMode?: 'PRODUCTION' | 'TEST';
 }): Promise<FunnelReport> {
   const filters = {
     orgId: params.orgId,
@@ -350,7 +352,7 @@ export async function funnelReport(params: {
     // Practice is not performance, and the filter is written at the query
     // rather than assembled above it. A scoping rule hidden inside a variable
     // is one a reader has to go and check; a test scans for it here.
-    where: { ...filters, dataMode: 'PRODUCTION' },
+    where: { ...filters, dataMode: params.dataMode ?? 'PRODUCTION' },
     _count: true,
     _sum: { collectedRevenue: true, collectedGrossProfit: true },
   });

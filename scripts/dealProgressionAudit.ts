@@ -30,14 +30,29 @@ function check(label: string, passed: boolean, detail = '') {
 
 /** Two live routes on two different companies, created once and reused. */
 async function ensureRoutes(orgId: string) {
-  const companies = await prisma.company.findMany({ where: { orgId }, orderBy: { createdAt: 'asc' }, take: 3 });
-  if (companies.length < 3) throw new Error('Need at least three companies. Seed the database first.');
+  // Test companies, not seeded production ones. Attaching audit fixtures to
+  // real companies is what put 54 fixture routes into the production portfolio
+  // and made an empty demand engine look like a book of business.
+  const companies = [];
+  for (const index of [0, 1, 2]) {
+    companies.push(await prisma.company.upsert({
+      where: { orgId_legalName: { orgId, legalName: `[TEST] Deal Progression Fixture ${index}` } },
+      create: {
+        orgId, dataMode: 'TEST', origin: 'SEED_DEMO',
+        legalName: `[TEST] Deal Progression Fixture ${index}`,
+        operatingName: `[TEST] Deal Progression Fixture ${index}`,
+        stateCode: 'IL', cityName: 'Chicago', phone: `+1 555 02${index}0`,
+      },
+      update: {},
+    }));
+  }
 
   const event = await prisma.demandEvent.upsert({
     where: { orgId_dedupeKey: { orgId, dedupeKey: 'audit_fixture:deal-progression-audit' } },
     create: {
       orgId,
       type: 'CONTRACT_EXPIRATION',
+      dataMode: 'TEST',
       connector: 'audit_fixture',
       sourceRecordId: 'deal-progression-audit',
       dedupeKey: 'audit_fixture:deal-progression-audit',
@@ -60,6 +75,7 @@ async function ensureRoutes(orgId: string) {
       },
       create: {
         orgId,
+        dataMode: 'TEST',
         eventId: event.id,
         companyId: company.id,
         route: 'BROKERAGE',

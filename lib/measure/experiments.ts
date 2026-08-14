@@ -230,7 +230,17 @@ export type ExperimentReadout = {
  * doubled do-not-contact can never be reported as a win with a caveat under
  * it — it is reported as blocked, because that is what it is.
  */
-export async function readOut(params: { orgId: string; experimentId: string }): Promise<ExperimentReadout | null> {
+export async function readOut(params: {
+  orgId: string;
+  experimentId: string;
+  /**
+   * Which world's outcomes to read. Production by default, so no screen can
+   * accidentally report a rehearsal — but a test population has to be readable
+   * by the audit that builds it, or the measurement path is only ever exercised
+   * against real data nobody wants to disturb.
+   */
+  dataMode?: 'PRODUCTION' | 'TEST';
+}): Promise<ExperimentReadout | null> {
   const experiment = await prisma.experiment.findFirst({
     where: { id: params.experimentId, orgId: params.orgId },
     include: { arms: { orderBy: { isControl: 'desc' } } },
@@ -245,7 +255,7 @@ export async function readOut(params: { orgId: string; experimentId: string }): 
   const routeIds = assignments.filter((a) => a.subjectType === 'route').map((a) => a.subjectId);
   const outcomes = routeIds.length > 0
     ? await prisma.demandOutcome.findMany({
-        where: { orgId: params.orgId, dataMode: 'PRODUCTION', routeId: { in: routeIds } },
+        where: { orgId: params.orgId, dataMode: params.dataMode ?? 'PRODUCTION', routeId: { in: routeIds } },
         select: { routeId: true, stage: true },
       })
     : [];
@@ -448,6 +458,8 @@ export async function concludeExperiment(options: {
   conclusion: string;
   winningArmId?: string | null;
   halted?: boolean;
+  /** Which world's outcomes the guardrail check reads. Production by default. */
+  dataMode?: 'PRODUCTION' | 'TEST';
 }): Promise<{ ok: boolean; message?: string }> {
   const experiment = await prisma.experiment.findFirst({
     where: { id: options.experimentId, orgId: options.orgId },
@@ -461,7 +473,9 @@ export async function concludeExperiment(options: {
   // operator believes. Checked here rather than on the screen, because the
   // screen is not the thing that writes the row.
   if (options.winningArmId) {
-    const readout = await readOut({ orgId: options.orgId, experimentId: options.experimentId });
+    const readout = await readOut({
+      orgId: options.orgId, experimentId: options.experimentId, dataMode: options.dataMode,
+    });
     if (readout?.blocked) {
       return {
         ok: false,
