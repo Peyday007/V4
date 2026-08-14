@@ -1,8 +1,10 @@
 import { randomInt, timingSafeEqual } from 'node:crypto';
+import { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { hashSecret, verifyPassword } from '@/lib/auth/password';
 import { createSession } from '@/lib/auth/session';
 import { audit } from '@/lib/audit';
+import { forgiveSource, pinLookupValue, recordAttempt } from './pinLookup';
 
 /**
  * Caller sign-in.
@@ -24,8 +26,21 @@ import { audit } from '@/lib/audit';
  * of.
  */
 
-/** Long enough that guessing is impractical against the lockout below. */
-const PIN_LENGTH = 6;
+/**
+ * Ten digits, which is four more than it was.
+ *
+ * Six was long enough when sign-in also took an email: a guess had to be right
+ * about a named person, and five wrong ones closed that person's account. With
+ * the email gone every guess is aimed at whoever happens to hold that number,
+ * so the space an attacker has to walk is not 10^6 but 10^6 divided by the
+ * number of callers — and no individual profile ever accumulates the failures
+ * that would trigger a lockout.
+ *
+ * Ten digits puts that back by four orders of magnitude, and the spray counter
+ * in ./pinLookup covers the rest. It is still a number somebody can read off a
+ * card and type.
+ */
+const PIN_LENGTH = 10;
 const MAX_FAILURES = 5;
 const LOCKOUT_MS = 15 * 60_000;
 
@@ -77,21 +92,35 @@ export async function issuePin(params: {
     throw new CallerAuthError('That caller is deactivated. Reactivate them before issuing a PIN.', 409);
   }
 
-  const pin = generatePin();
-  const pinHash = await hashSecret(pin, PIN_LENGTH);
+  // A PIN now has to be unique across the organisation, because it is the only
+  // thing identifying its holder. The database enforces that; this retries
+  // rather than handing somebody a PIN that silently failed to save. Ten digits
+  // makes a collision vanishingly unlikely, which is exactly why it must not be
+  // handled by hoping.
   const issuedAt = new Date();
-
-  await prisma.callerProfile.update({
-    where: { userId: params.userId },
-    data: {
-      pinHash,
-      pinSetAt: issuedAt,
-      pinIssuedById: params.issuedByUserId,
-      pinFailedCount: 0,
-      pinLockedUntil: null,
-      pinRevokedAt: null,
-    },
-  });
+  let pin = '';
+  for (let attempt = 1; ; attempt += 1) {
+    pin = generatePin();
+    try {
+      await prisma.callerProfile.update({
+        where: { userId: params.userId },
+        data: {
+          pinHash: await hashSecret(pin, PIN_LENGTH),
+          pinLookup: pinLookupValue(pin),
+          pinSetAt: issuedAt,
+          pinIssuedById: params.issuedByUserId,
+          pinFailedCount: 0,
+          pinLockedUntil: null,
+          pinRevokedAt: null,
+        },
+      });
+      break;
+    } catch (error) {
+      const collision =
+        error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
+      if (!collision || attempt >= 5) throw error;
+    }
+  }
 
   await audit({
     orgId: params.orgId,
@@ -133,39 +162,59 @@ export async function revokePin(params: {
 }
 
 /**
- * Signs a caller in from an identifier and a PIN.
+ * Signs a caller in from a PIN and nothing else.
  *
- * The identifier is required. A PIN alone would mean the PIN *is* the identity,
- * and six digits across a team is a collision waiting to log somebody in as
- * somebody else — which is the same unattributable state as a shared passphrase
- * reached by a different route.
+ * There is no identifier field. A caller arriving for a shift has a number on a
+ * card and no reason to remember which of an operator's email conventions their
+ * account was created under, and an email box on this door was one more thing
+ * to get wrong at the start of a shift.
+ *
+ * What that costs, stated plainly because it is a real cost: with no
+ * identifier, a wrong guess is no longer a wrong guess *at somebody*. Every
+ * attempt is aimed at whoever holds that number, so no single profile
+ * accumulates the failures that trigger its lockout, and the space to search is
+ * the PIN space divided by the number of callers. Three things answer that. The
+ * PIN is ten digits rather than six. The database enforces that no two callers
+ * share one, so a match is never ambiguous. And attempts are counted per source
+ * and in total, durably, in ./pinLookup — which is the only counter that can
+ * see somebody walking the number space rather than guessing at a person.
+ *
+ * Everything that made the old door work is kept: one message for every
+ * rejection, the per-caller lockout for somebody who does know a PIN and keeps
+ * mistyping it, revocation, rotation, and the same `Session` row every other
+ * user gets, so attribution and permissions need no second notion of identity.
  */
 export async function signInWithPin(params: {
-  /** Email or the short code an operator uses on the door. */
-  identifier: string;
   pin: string;
   ip?: string;
   userAgent?: string;
 }): Promise<{ token: string; expiresAt: Date; userId: string; orgId: string; name: string }> {
-  const identifier = params.identifier.trim().toLowerCase();
-  if (!identifier || !params.pin.trim()) {
-    throw new CallerAuthError('Enter your email and your PIN.', 400);
-  }
+  const pin = params.pin.trim();
+  if (!pin) throw new CallerAuthError('Enter your PIN.', 400);
 
-  const user = await prisma.user.findFirst({
-    where: { email: { equals: identifier, mode: 'insensitive' } },
-    include: { callerProfile: true, role: true },
-  });
+  // Counted before anything is looked up, so a wrong PIN and a right one cost
+  // the attacker the same budget.
+  const source = params.ip?.trim() || 'unknown';
+  const budget = await recordAttempt(source);
+  if (!budget.allowed) {
+    throw new CallerAuthError(
+      `Too many sign-in attempts. Try again in ${budget.retryInMinutes} minute`
+        + `${budget.retryInMinutes === 1 ? '' : 's'}.`,
+      429,
+    );
+  }
 
   // One message for every rejection below, so this endpoint cannot be used to
-  // discover which emails exist or which have a PIN set.
-  const reject = () => new CallerAuthError('That email and PIN do not match.', 401);
+  // learn which PINs exist, which are revoked, or how many callers there are.
+  const reject = () => new CallerAuthError('That PIN was not recognised.', 401);
 
-  const profile = user?.callerProfile ?? null;
+  const profile = await prisma.callerProfile.findUnique({
+    where: { pinLookup: pinLookupValue(pin) },
+    include: { user: true },
+  });
+
   const pinHash = profile?.pinHash ?? null;
-  if (!user || !user.isActive || !profile || !pinHash || profile.pinRevokedAt) {
-    throw reject();
-  }
+  if (!profile || !pinHash || profile.pinRevokedAt || !profile.user.isActive) throw reject();
 
   if (profile.pinLockedUntil && profile.pinLockedUntil > new Date()) {
     const minutes = Math.ceil((profile.pinLockedUntil.getTime() - Date.now()) / 60_000);
@@ -175,7 +224,10 @@ export async function signInWithPin(params: {
     );
   }
 
-  const matches = await verifyPassword(params.pin.trim(), pinHash);
+  // The index found a candidate; the slow hash still decides. Belt and braces
+  // against a lookup collision or a stale index, and the only comparison that
+  // is allowed to grant a session.
+  const matches = await verifyPassword(pin, pinHash);
   if (!matches) {
     const failures = profile.pinFailedCount + 1;
     await prisma.callerProfile.update({
@@ -192,7 +244,10 @@ export async function signInWithPin(params: {
     where: { id: profile.id },
     data: { pinFailedCount: 0, pinLockedUntil: null, pinLastUsedAt: new Date() },
   });
+  // A floor signing in from one office must not lock itself out by lunchtime.
+  await forgiveSource(source);
 
+  const user = profile.user;
   const session = await createSession(user.id, { ip: params.ip, userAgent: params.userAgent });
 
   await audit({

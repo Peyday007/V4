@@ -3,14 +3,20 @@
 import { useState } from 'react';
 
 /**
- * Caller sign-in.
+ * Caller sign-in: one field.
  *
- * Email and PIN, not PIN alone. Six digits across a team collide, and a
- * credential that is also the identity logs somebody in as somebody else —
- * which is the shared-passphrase problem reached by a different route.
+ * A caller arriving for a shift has a number on a card. They have no reason to
+ * remember which of an operator's email conventions their account was created
+ * under, and the email box was one more thing to get wrong before the first
+ * call of the day.
+ *
+ * What makes one field safe is not on this screen. The PIN is ten digits and
+ * unique across the organisation — enforced by the database, so a match is
+ * never ambiguous — and attempts are counted per source and in total, because
+ * without an identifier there is no account to lock and a per-caller lockout
+ * cannot see somebody walking the number space. See lib/caller/pinLookup.
  */
 export function WorkSignIn() {
-  const [identifier, setIdentifier] = useState('');
   const [pin, setPin] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -23,7 +29,7 @@ export function WorkSignIn() {
       const response = await fetch('/api/work/signin', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ identifier, pin }),
+        body: JSON.stringify({ pin }),
       });
       const body = await response.json();
       if (!response.ok) {
@@ -41,32 +47,26 @@ export function WorkSignIn() {
   return (
     <div className="card" style={{ maxWidth: '24rem', margin: '4rem auto' }}>
       <h1 style={{ marginTop: 0 }}>Work</h1>
-      <p className="small muted">Sign in with your own PIN. It is yours, not the team&rsquo;s.</p>
+      <p className="small muted">Enter your PIN. It is yours, not the team&rsquo;s.</p>
       <form onSubmit={submit}>
         <label className="field">
-          <span className="tiny dim">Email</span>
-          <input
-            className="input"
-            type="email"
-            autoComplete="username"
-            value={identifier}
-            onChange={(e) => setIdentifier(e.target.value)}
-            required
-          />
-        </label>
-        <label className="field mt">
           <span className="tiny dim">PIN</span>
           <input
             className="input"
             type="password"
             inputMode="numeric"
-            autoComplete="current-password"
+            // "one-time-code" rather than "current-password": there is no
+            // username beside it, so a password manager offering to fill a
+            // saved pair here has nothing to match on and gets it wrong.
+            autoComplete="one-time-code"
+            data-testid="pin"
             value={pin}
             onChange={(e) => setPin(e.target.value)}
             required
+            autoFocus
           />
         </label>
-        {error && <div className="alert danger small mt">{error}</div>}
+        {error && <div className="alert danger small mt" data-testid="signin-error">{error}</div>}
         <button className="btn mt" type="submit" disabled={busy}>
           {busy ? 'Signing in…' : 'Start work'}
         </button>

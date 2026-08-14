@@ -230,7 +230,10 @@ export async function createCaller(input: CreateCallerInput): Promise<CreateResu
 
   if (name.length < 2) return { ok: false, message: 'Give them a name somebody would recognise.', field: 'name' };
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
-    return { ok: false, message: 'That is not an email address. It is their sign-in identity, so it has to be real.', field: 'email' };
+    // No longer the sign-in credential — a caller signs in with their PIN and
+    // nothing else — but still how the owner and the audit trail tell one
+    // person from another, and how a PIN gets to them.
+    return { ok: false, message: 'That is not an email address. It is how you reach them, so it has to be real.', field: 'email' };
   }
 
   const clash = await prisma.user.findFirst({

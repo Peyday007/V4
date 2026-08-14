@@ -770,6 +770,18 @@ model CallerProfile {
   /// shared: one PIN per person is what makes every read and write in the
   /// caller workspace attributable to somebody.
   pinHash            String?
+  /// Deterministic index for the PIN, so a PIN alone can find its caller.
+  ///
+  /// A hash cannot be looked up — that is the point of a hash — and sign-in
+  /// with no identifier has nothing else to search by. Verifying a PIN against
+  /// every profile in turn would be a slow scan and a timing oracle, so this
+  /// holds a keyed HMAC of the PIN: constant-time to find, and useless on its
+  /// own to anybody who reads the table, because the key is not in it.
+  ///
+  /// Unique, which is the other half of the requirement: with no identifier
+  /// beside it, a PIN two people share is a PIN that identifies neither, and
+  /// every attribution downstream would be a coin toss.
+  pinLookup          String?   @unique
   pinSetAt           DateTime?
   pinLastUsedAt      DateTime?
   /// Consecutive failures. A PIN is short, so it needs a lockout that a
@@ -4998,4 +5010,27 @@ model ManagerBrief {
 
   @@unique([orgId, period, periodStart])
   @@index([orgId, generatedAt])
+}
+
+/// Failed PIN sign-in attempts, counted somewhere that survives a restart.
+///
+/// Sign-in with no identifier changes the shape of the attack. A per-caller
+/// lockout stops somebody guessing at one person, and cannot see somebody
+/// trying one PIN after another against nobody in particular — every guess
+/// lands on whichever caller happens to hold it, and no single profile ever
+/// accumulates a failure. So attempts are also counted per source and in
+/// total, and that count has to be durable: the in-memory limiter in lib/api
+/// is per-instance, and a serverless deployment has as many memories as it has
+/// instances.
+model PinAttempt {
+  id String @id @default(cuid())
+
+  /// The bucket: a client address, or the literal "global".
+  scope    String
+  /// Start of the fixed window this counts.
+  windowAt DateTime
+  count    Int      @default(0)
+
+  @@unique([scope, windowAt])
+  @@index([windowAt])
 }

@@ -208,9 +208,8 @@ try {
   caller.on('pageerror', (e) => console.log(`  [page error] ${e.message}`));
 
   await caller.goto(`${BASE}/work`);
-  const inputs = caller.locator('form input');
-  await inputs.nth(0).fill(email);
-  await inputs.nth(1).fill(pin);
+  // One field: the PIN identifies its holder on its own.
+  await caller.locator('[data-testid="pin"]').fill(pin);
   await caller.locator('form button[type="submit"]').click();
   await caller.waitForLoadState('networkidle');
   const readiness = await caller.locator('body').innerText();

@@ -347,9 +347,10 @@ try {
   caller.on('pageerror', (e) => console.log(`  [page error] ${e.message}`));
 
   await goTo(caller, '/work');
-  const inputs = caller.locator('form input');
-  await inputs.nth(0).fill(callerEmail);
-  await inputs.nth(1).fill(pin);
+  // One field. The email box is gone: the PIN identifies its holder on its own,
+  // and a caller starting a shift has a number on a card and no reason to know
+  // which email convention their account was created under.
+  await caller.locator('[data-testid="pin"]').fill(pin);
   await caller.locator('form button[type="submit"]').click();
   await caller.waitForLoadState('networkidle').catch(() => {});
   await caller.waitForTimeout(2500);
