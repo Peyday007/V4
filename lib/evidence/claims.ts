@@ -102,6 +102,46 @@ export function gradeProbability(input: {
 }
 
 /**
+ * A rate over a denominator somebody can check.
+ *
+ * Distinct from `gradeProbability`, which is about forecasting. This is about
+ * arithmetic that is correct and still misleading: two quotes accepted out of
+ * three is "67%", and it is the true answer to a question nobody should be
+ * asking of three quotes. The denominator is always stated, and below the floor
+ * the ratio is withheld and the raw counts shown instead — because the counts
+ * are the honest form of the same information.
+ */
+export function gradeRate(input: {
+  numerator: number;
+  denominator: number;
+  /** Below this the ratio is not shown. */
+  minimumDenominator?: number;
+  what: string;
+}): Evidenced<number> {
+  const floor = input.minimumDenominator ?? 10;
+  if (input.denominator === 0) {
+    return unknown(`Nothing has happened yet for a ${input.what} to be measured over.`, 'It appears with the first one.');
+  }
+  if (input.denominator < floor) {
+    return {
+      value: null,
+      evidence: 'UNKNOWN',
+      source:
+        `${input.numerator} of ${input.denominator}. A ${input.what} over ${input.denominator} is arithmetic `
+        + `rather than a measurement — one more either way moves it by `
+        + `${Math.round((1 / input.denominator) * 100)} points.`,
+      toConfirm: `Get to about ${floor} before reading a rate into it.`,
+    };
+  }
+  return {
+    value: input.numerator / input.denominator,
+    evidence: 'CALCULATED_FROM_CONFIRMED_INPUTS',
+    source: `${input.numerator} of ${input.denominator}.`,
+    toConfirm: null,
+  };
+}
+
+/**
  * Expected value: the product of a price, a probability and a confidence.
  *
  * The composition rule makes this one nearly always unknown early on, and that

@@ -8,6 +8,10 @@ import { grossProfitPipeline } from '@/lib/evidence/economics';
 import { boardEmptiness } from '@/lib/demand/emptyState';
 import { ActionButton } from '@/components/ActionButton';
 import { Badge, Empty, humanize, money, PriorityBadge, relativeDays, Stat, TypeBadge } from '@/components/ui';
+import { FigureChip } from '@/components/Figure';
+import { closedComparablesByType, gradeOpportunity, STAGE_ORDER } from '@/lib/evidence/opportunity';
+import { presentMoney } from '@/lib/evidence/economics';
+import { gradeRate, presentPercent } from '@/lib/evidence/claims';
 
 export const dynamic = 'force-dynamic';
 
@@ -30,11 +34,19 @@ export default async function DashboardPage() {
     computePipelineAnalytics(user.orgId),
     grossProfitPipeline({ orgId: user.orgId }),
     boardEmptiness(user.orgId),
+    // Was ordered by closingProbability, which on most rows is the column
+    // default — so "closest to closing" was returning whichever six rows the
+    // database happened to hand back, presented as a ranking. Ordered by how
+    // far the deal has actually got instead, which is a fact about the record.
     prisma.opportunity.findMany({
       where: { orgId: user.orgId, status: { in: ['ACTIVE', 'WAITING'] } },
-      orderBy: [{ closingProbability: 'desc' }, { expectedValue: 'desc' }],
-      take: 6,
-      include: { parties: { where: { isPrimary: true }, include: { company: true } }, nextActions: { where: { isCurrent: true } } },
+      orderBy: [{ stageEnteredAt: 'desc' }],
+      take: 40,
+      include: {
+        parties: { where: { isPrimary: true }, include: { company: true } },
+        nextActions: { where: { isCurrent: true } },
+        scores: { select: { id: true }, take: 1 },
+      },
     }),
     prisma.opportunity.findMany({
       where: { orgId: user.orgId, status: { in: ['BLOCKED', 'ESCALATED'] } },
@@ -56,6 +68,22 @@ export default async function DashboardPage() {
       take: 5,
     }),
   ]);
+
+  // Stage order is the operating order, so position in it is how far a deal
+  // has genuinely got. Ties break on the deal that has sat there longest,
+  // because that is the one most likely to be stuck.
+  const closedByType = await closedComparablesByType(user.orgId);
+  const furthest = closest
+    .map((opportunity) => ({
+      opportunity,
+      depth: STAGE_ORDER.indexOf(opportunity.stage),
+      claims: gradeOpportunity({
+        opportunity: { ...opportunity, hasScore: opportunity.scores.length > 0 },
+        closedComparables: closedByType.get(String(opportunity.type)) ?? 0,
+      }),
+    }))
+    .sort((a, b) => b.depth - a.depth || a.opportunity.stageEnteredAt.getTime() - b.opportunity.stageEnteredAt.getTime())
+    .slice(0, 6);
 
   const priorities = (plan?.priorities ?? []) as Array<{
     rank: number;
@@ -187,8 +215,11 @@ export default async function DashboardPage() {
           </div>
 
           <div className="card">
-            <h2>Closest to closing</h2>
-            {closest.length === 0 ? (
+            <div className="card-title">
+              <h2>Furthest along</h2>
+              <span className="tiny dim">By stage reached, not by a predicted probability</span>
+            </div>
+            {furthest.length === 0 ? (
               <Empty>No active opportunities yet.</Empty>
             ) : (
               <div className="table-wrap">
@@ -196,24 +227,28 @@ export default async function DashboardPage() {
                   <thead>
                     <tr>
                       <th>Opportunity</th>
-                      <th>Type</th>
-                      <th className="num">P(close)</th>
+                      <th>Stage</th>
+                      <th className="num">Closing rate</th>
                       {showMoney && <th className="num">Expected</th>}
                       <th>Next action</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {closest.map((opportunity) => (
+                    {furthest.map(({ opportunity, claims }) => (
                       <tr key={opportunity.id}>
                         <td>
                           <Link href={`/opportunities/${opportunity.id}`}>{opportunity.name}</Link>
-                          <div className="tiny dim">{opportunity.parties[0]?.company.legalName}</div>
+                          <div className="tiny dim">
+                            {opportunity.parties[0]?.company.legalName} · <TypeBadge type={opportunity.type} />
+                          </div>
                         </td>
-                        <td>
-                          <TypeBadge type={opportunity.type} />
-                        </td>
-                        <td className="num">{Math.round(opportunity.closingProbability * 100)}%</td>
-                        {showMoney && <td className="num">{money(opportunity.expectedValue)}</td>}
+                        <td className="small nowrap">{humanize(opportunity.stage)}</td>
+                        <td className="num tiny"><FigureChip presentation={claims.shown.closingProbability} /></td>
+                        {showMoney && (
+                          <td className="num tiny">
+                            <FigureChip presentation={presentMoney(claims.expectedValue)} />
+                          </td>
+                        )}
                         <td className="small">
                           {opportunity.nextActions[0] ? humanize(opportunity.nextActions[0].type) : <span className="dim">None set</span>}
                         </td>
@@ -279,8 +314,14 @@ export default async function DashboardPage() {
                       <Link href={`/companies/${company.id}`} className="small">
                         {company.legalName}
                       </Link>
+                      {/* The score is weighted from signals that fired with a
+                          quote attached. With no signals it is zero, and a
+                          zero shown as "0%" reads as an assessment rather than
+                          as the absence of one. */}
                       <Badge tone={company.movability === 'ACTIVELY_MOVABLE' ? 'success' : 'warning'}>
-                        {Math.round(company.movabilityScore * 100)}%
+                        {company.movabilityReasons.length > 0
+                          ? `${Math.round(company.movabilityScore * 100)}% · ${company.movabilityReasons.length} signal(s)`
+                          : 'no signals on file'}
                       </Badge>
                     </div>
                     <div className="tiny dim">{company.movabilityReasons[0] ?? humanize(company.movability)}</div>
@@ -296,7 +337,16 @@ export default async function DashboardPage() {
               <tbody>
                 <tr>
                   <td className="muted">Quote-to-close</td>
-                  <td className="num">{Math.round(analytics.quoteToCloseRate * 100)}%</td>
+                  <td className="num tiny">
+                    {/* A rate over three quotes is arithmetic, not a
+                        measurement. Below the floor the counts are shown, which
+                        say the same thing without the false precision. */}
+                    <FigureChip presentation={presentPercent(gradeRate({
+                      numerator: analytics.quotesAccepted,
+                      denominator: analytics.quotesSent,
+                      what: 'quote-to-close rate',
+                    }))} />
+                  </td>
                 </tr>
                 <tr>
                   <td className="muted">Quotes sent</td>
@@ -315,12 +365,26 @@ export default async function DashboardPage() {
                   <td className="num">{analytics.supplyDemandRatio}</td>
                 </tr>
                 <tr>
-                  <td className="muted">Average AI confidence</td>
-                  <td className="num">{Math.round(analytics.averageAIConfidence * 100)}%</td>
+                  {/* The model's own confidence in itself, averaged. A real
+                      average of really-recorded numbers, and not a measure of
+                      whether any of them were right — so it is labelled as the
+                      self-report it is. */}
+                  <td className="muted">AI self-reported confidence</td>
+                  <td className="num tiny">
+                    {analytics.totalAIDecisions === 0
+                      ? <span className="dim">no decisions recorded</span>
+                      : `${Math.round(analytics.averageAIConfidence * 100)}% over ${analytics.totalAIDecisions}`}
+                  </td>
                 </tr>
                 <tr>
                   <td className="muted">Escalation rate</td>
-                  <td className="num">{Math.round(analytics.escalationRate * 100)}%</td>
+                  <td className="num tiny">
+                    <FigureChip presentation={presentPercent(gradeRate({
+                      numerator: analytics.totalEscalations,
+                      denominator: analytics.totalAIDecisions,
+                      what: 'escalation rate',
+                    }))} />
+                  </td>
                 </tr>
               </tbody>
             </table>

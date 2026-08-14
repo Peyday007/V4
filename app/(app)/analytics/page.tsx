@@ -3,8 +3,34 @@ import { can, requireUser } from '@/lib/auth/session';
 import { computeCallerMetrics, computePipelineAnalytics, recommendCoaching } from '@/lib/ai/analytics';
 import { computePipelineMetrics } from '@/lib/ai/planner';
 import { Badge, Empty, humanize, money, Stat } from '@/components/ui';
+import { FigureChip, GradedStat } from '@/components/Figure';
+import { gradeRate, presentPercent } from '@/lib/evidence/claims';
+import { presentMoney } from '@/lib/evidence/economics';
+import { inferred, unknown, type Evidenced } from '@/lib/evidence/class';
 
 export const dynamic = 'force-dynamic';
+
+/**
+ * A pipeline total summed from per-opportunity estimates.
+ *
+ * Every row under it is a playbook range rather than a quoted price, so the
+ * sum is an inference however many rows went into it. Shown as what it is
+ * rather than as money, with the quote-backed figure a click away on the
+ * dashboard.
+ */
+function estimateTotal(value: number, what: string): Evidenced<number> {
+  if (!value) {
+    return unknown<number>(
+      `Nothing has been estimated, so there is no ${what} pipeline to show.`,
+      'It fills in as opportunities are scored.',
+    );
+  }
+  return inferred(
+    value,
+    `Summed from per-opportunity ${what} estimates, which are playbook ranges rather than quoted prices.`,
+    'Quote the work against provider costs; the quote-backed total is on the dashboard.',
+  );
+}
 
 export default async function AnalyticsPage() {
   const user = await requireUser();
@@ -46,9 +72,30 @@ export default async function AnalyticsPage() {
         <>
           <div className="grid grid-4 mb">
             <Stat label="Active opportunities" value={pipeline.activeOpportunities} />
-            {showMoney && <Stat label="GP pipeline" value={money(pipeline.grossProfitPipeline)} />}
-            {showMoney && <Stat label="Expected value" value={money(pipeline.expectedValuePipeline)} />}
-            <Stat label="Quote-to-close" value={`${Math.round(analytics.quoteToCloseRate * 100)}%`} sub={`${analytics.quotesSent} sent`} />
+            {/* Both of these sum per-opportunity estimates. The gross-profit
+                figure with a cost behind it lives on the quotes, so these say
+                what they are summing rather than presenting it as money in
+                hand. */}
+            {showMoney && (
+              <GradedStat
+                label="GP pipeline"
+                presentation={presentMoney(estimateTotal(pipeline.grossProfitPipeline, 'gross profit'))}
+              />
+            )}
+            {showMoney && (
+              <GradedStat
+                label="Expected value"
+                presentation={presentMoney(estimateTotal(pipeline.expectedValuePipeline, 'expected value'))}
+              />
+            )}
+            <GradedStat
+              label="Quote-to-close"
+              presentation={presentPercent(gradeRate({
+                numerator: analytics.quotesAccepted,
+                denominator: analytics.quotesSent,
+                what: 'quote-to-close rate',
+              }))}
+            />
             <Stat label="Average age" value={`${pipeline.averageAgeDays}d`} />
             <Stat label="Calls per opportunity" value={pipeline.callsPerQualifiedOpportunity} />
           </div>
@@ -149,16 +196,45 @@ export default async function AnalyticsPage() {
                     <td className="num">{caller.callsAttempted}</td>
                     <td className="num">{caller.contactsReached}</td>
                     <td className="num">{caller.meaningfulConversations}</td>
-                    <td className="num">{Math.round(caller.qualificationRate * 100)}%</td>
+                    {/* Each of these was a percentage with its denominator out
+                        of reach, so 100% over two facts and 100% over two
+                        hundred read the same — and these numbers get people
+                        praised or managed. Below the floor the counts show
+                        instead. */}
+                    <td className="num tiny">
+                      <FigureChip presentation={presentPercent(gradeRate({
+                        numerator: Math.round(caller.qualificationRate * caller.denominators.opportunities),
+                        denominator: caller.denominators.opportunities,
+                        what: 'qualification rate',
+                      }))} />
+                    </td>
                     <td className="num">{caller.pricingObtained}</td>
                     <td className="num">{caller.matchesEnabled}</td>
                     <td className="num">{caller.dealsInfluenced}</td>
                     {showMoney && <td className="num">{money(caller.grossProfitInfluenced)}</td>}
-                    <td className="num">{Math.round(caller.scriptCompliance * 100)}%</td>
-                    <td className="num">{Math.round(caller.informationAccuracy * 100)}%</td>
-                    <td className="num">{Math.round(caller.averageTalkRatio * 100)}%</td>
+                    <td className="num tiny">
+                      <FigureChip presentation={presentPercent(gradeRate({
+                        numerator: Math.round(caller.scriptCompliance * caller.denominators.requiredQuestions),
+                        denominator: caller.denominators.requiredQuestions,
+                        what: 'question-coverage rate',
+                      }))} />
+                    </td>
+                    <td className="num tiny">
+                      <FigureChip presentation={presentPercent(gradeRate({
+                        numerator: Math.round(caller.informationAccuracy * caller.denominators.facts),
+                        denominator: caller.denominators.facts,
+                        what: 'accuracy rate',
+                      }))} />
+                    </td>
+                    <td className="num tiny">
+                      {caller.denominators.talkRatios === 0
+                        ? <span className="dim">no measured calls</span>
+                        : `${Math.round(caller.averageTalkRatio * 100)}% over ${caller.denominators.talkRatios}`}
+                    </td>
                     <td className="num">
-                      {caller.unauthorizedPromises > 0 ? <Badge tone="critical">{caller.unauthorizedPromises}</Badge> : '—'}
+                      {caller.unauthorizedPromises > 0
+                        ? <Badge tone="critical">{caller.unauthorizedPromises}</Badge>
+                        : <span className="dim">none</span>}
                     </td>
                   </tr>
                 ))}
@@ -202,7 +278,13 @@ export default async function AnalyticsPage() {
                         <td className="small">{humanize(type)}</td>
                         <td className="num">{stats.attempted}</td>
                         <td className="num">{stats.connected}</td>
-                        <td className="num">{Math.round(stats.connectRate * 100)}%</td>
+                        <td className="num tiny">
+                          <FigureChip presentation={presentPercent(gradeRate({
+                            numerator: stats.connected,
+                            denominator: stats.attempted,
+                            what: 'connect rate',
+                          }))} />
+                        </td>
                       </tr>
                     ))}
                   </tbody>

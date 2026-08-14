@@ -4,7 +4,13 @@ import { num, prisma } from '@/lib/db';
 import { collapseRepeats } from '@/lib/activity/collapse';
 import { can, requireUser } from '@/lib/auth/session';
 import { ActionButton } from '@/components/ActionButton';
-import { Badge, dueLabel, Empty, humanize, Meter, money, PriorityBadge, relativeDays, Stat, StatusBadge, TypeBadge } from '@/components/ui';
+import { Badge, dueLabel, Empty, humanize, money, PriorityBadge, relativeDays, Stat, StatusBadge, TypeBadge } from '@/components/ui';
+import { Figure, GradedStat } from '@/components/Figure';
+import {
+  closedComparablesByType, gradeOpportunity, gradeOpportunityMoney, gradeMatchScore, presentMatchScore,
+} from '@/lib/evidence/opportunity';
+import { presentMoney } from '@/lib/evidence/economics';
+import { gradeScore, presentPercent } from '@/lib/evidence/claims';
 
 export const dynamic = 'force-dynamic';
 
@@ -54,6 +60,27 @@ export default async function OpportunityWorkspace({ params }: { params: { id: s
   const openEscalations = opportunity.escalations.filter((e) => e.status === 'OPEN' || e.status === 'ACKNOWLEDGED');
   const due = dueLabel(currentAction?.dueDate);
 
+  // Everything with a number on it goes through the grader before the page
+  // sees it, on the same rule the money already used.
+  const closedByType = await closedComparablesByType(user.orgId);
+  const claims = gradeOpportunity({
+    opportunity: {
+      ...opportunity,
+      hasScore: opportunity.scores.length > 0,
+      incumbentIssues: opportunity.buyerNeed?.currentProviderIssues.length ?? 0,
+      movabilitySignals: primary?.movabilityReasons.length ?? 0,
+    },
+    closedComparables: closedByType.get(String(opportunity.type)) ?? 0,
+  });
+  const liveQuote = opportunity.quotes.find(
+    (q) => q.direction === 'outbound' && !['SUPERSEDED', 'DECLINED', 'EXPIRED'].includes(q.status),
+  ) ?? null;
+  const cash = gradeOpportunityMoney({
+    estimatedValue: opportunity.estimatedValue,
+    estimatedGrossProfit: opportunity.estimatedGrossProfit,
+    quote: liveQuote,
+  });
+
   return (
     <>
       <div className="page-header">
@@ -96,16 +123,21 @@ export default async function OpportunityWorkspace({ params }: { params: { id: s
         </div>
       )}
 
+      {/* Seven tiles, four of them meters over column defaults — a closing
+          probability of 10% nobody set, a relationship vulnerability about an
+          incumbent nobody has asked after. Every one now goes through the same
+          rule the money does, and a tile with nothing under it says what is
+          missing instead of printing a percentage. */}
       <div className="grid grid-4 mb">
-        <Stat label="Closing probability" value={`${Math.round(opportunity.closingProbability * 100)}%`} sub={<Meter value={opportunity.closingProbability} />} />
-        <Stat label="Fulfillment confidence" value={`${Math.round(opportunity.fulfillmentConfidence * 100)}%`} sub={<Meter value={opportunity.fulfillmentConfidence} tone={opportunity.fulfillmentConfidence < 0.4 ? 'danger' : 'success'} />} />
-        <Stat label="Information completeness" value={`${Math.round(opportunity.informationCompleteness * 100)}%`} sub={<Meter value={opportunity.informationCompleteness} tone={opportunity.informationCompleteness < 0.5 ? 'warning' : 'success'} />} />
-        <Stat label="Relationship vulnerability" value={`${Math.round(opportunity.relationshipVulnerability * 100)}%`} sub={<Meter value={opportunity.relationshipVulnerability} />} />
+        <GradedStat label="Closing rate" presentation={claims.shown.closingProbability} />
+        <GradedStat label="Fulfilment confidence" presentation={claims.shown.fulfillmentConfidence} />
+        <GradedStat label="Information completeness" presentation={claims.shown.informationCompleteness} />
+        <GradedStat label="Relationship vulnerability" presentation={claims.shown.relationshipVulnerability} />
         {showMoney && (
           <>
-            <Stat label="Estimated value" value={money(opportunity.estimatedValue)} />
-            <Stat label="Gross profit" value={money(opportunity.estimatedGrossProfit)} sub={deal?.grossMarginPct ? `${deal.grossMarginPct}% margin` : undefined} />
-            <Stat label="Expected value" value={money(opportunity.expectedValue)} sub="GP × P(close) × fulfillment confidence" />
+            <GradedStat label="Estimated value" presentation={presentMoney(cash.value)} />
+            <GradedStat label="Gross profit" presentation={presentMoney(cash.grossProfit)} />
+            <GradedStat label="Expected value" presentation={presentMoney(claims.expectedValue)} />
           </>
         )}
       </div>
@@ -150,15 +182,19 @@ export default async function OpportunityWorkspace({ params }: { params: { id: s
                     </tr>
                     <tr>
                       <td className="muted nowrap">Inputs required</td>
-                      <td>{currentAction.inputsRequired.join(', ') || '—'}</td>
+                      <td>{currentAction.inputsRequired.join(', ') || <Missing>Nothing is needed to start this.</Missing>}</td>
                     </tr>
                     <tr>
                       <td className="muted nowrap">Fallback</td>
-                      <td>{currentAction.fallbackAction ? humanize(currentAction.fallbackAction) : '—'}</td>
+                      <td>
+                        {currentAction.fallbackAction
+                          ? humanize(currentAction.fallbackAction)
+                          : <Missing>No fallback was set, so a failed attempt stops here.</Missing>}
+                      </td>
                     </tr>
                     <tr>
                       <td className="muted nowrap">Escalate if</td>
-                      <td>{currentAction.escalationCondition ?? '—'}</td>
+                      <td>{currentAction.escalationCondition ?? <Missing>No escalation condition was set.</Missing>}</td>
                     </tr>
                   </tbody>
                 </table>
@@ -177,20 +213,38 @@ export default async function OpportunityWorkspace({ params }: { params: { id: s
                   <Badge tone={opportunity.buyerNeed.status === 'CONFIRMED' ? 'success' : 'warning'}>
                     {humanize(opportunity.buyerNeed.status)}
                   </Badge>
-                  <Badge>confidence {Math.round(opportunity.buyerNeed.confidence * 100)}%</Badge>
+                  {/* A confirmed need was confirmed by a person; an unconfirmed
+                      one is our reading of an event, and a confidence figure on
+                      it is a number about a guess. */}
+                  {opportunity.buyerNeed.status === 'CONFIRMED'
+                    ? <Badge tone="success">stated by the buyer</Badge>
+                    : <Badge tone="warning">our reading, not confirmed with them</Badge>}
                 </div>
                 <table>
                   <tbody>
                     <tr><td className="muted nowrap">Scope</td><td>{opportunity.buyerNeed.scope}</td></tr>
-                    <tr><td className="muted nowrap">Location</td><td>{opportunity.buyerNeed.location ?? '—'}</td></tr>
+                    {/* A requirement field showing a dash tells an operator
+                        nothing about whether to go and ask. Each gap now names
+                        itself, which is the difference between a record and a
+                        form with blanks in it. */}
+                    <tr><td className="muted nowrap">Location</td><td>{opportunity.buyerNeed.location ?? <Missing>Not stated. Ask where the work is.</Missing>}</td></tr>
                     <tr><td className="muted nowrap">Frequency</td><td>{humanize(opportunity.buyerNeed.frequency)}</td></tr>
-                    <tr><td className="muted nowrap">Start</td><td>{opportunity.buyerNeed.startDate?.toISOString().slice(0, 10) ?? '—'}</td></tr>
-                    <tr><td className="muted nowrap">Deadline</td><td>{opportunity.buyerNeed.deadline?.toISOString().slice(0, 10) ?? '—'}</td></tr>
-                    <tr><td className="muted nowrap">Quantity</td><td>{opportunity.buyerNeed.quantity ? `${opportunity.buyerNeed.quantity} ${opportunity.buyerNeed.unit ?? ''}` : '—'}</td></tr>
-                    {showMoney && <tr><td className="muted nowrap">Estimated value</td><td>{money(opportunity.buyerNeed.estimatedValue)}</td></tr>}
-                    <tr><td className="muted nowrap">Capabilities</td><td>{opportunity.buyerNeed.requiredCapabilities.join(', ') || '—'}</td></tr>
-                    <tr><td className="muted nowrap">Current provider</td><td>{opportunity.buyerNeed.currentProvider ?? '—'}</td></tr>
-                    <tr><td className="muted nowrap">Provider issues</td><td>{opportunity.buyerNeed.currentProviderIssues.join('; ') || '—'}</td></tr>
+                    <tr><td className="muted nowrap">Start</td><td>{opportunity.buyerNeed.startDate?.toISOString().slice(0, 10) ?? <Missing>No start date. Ask when they need it.</Missing>}</td></tr>
+                    <tr><td className="muted nowrap">Deadline</td><td>{opportunity.buyerNeed.deadline?.toISOString().slice(0, 10) ?? <Missing>No deadline. Without one there is nothing driving this.</Missing>}</td></tr>
+                    <tr><td className="muted nowrap">Quantity</td><td>{opportunity.buyerNeed.quantity ? `${opportunity.buyerNeed.quantity} ${opportunity.buyerNeed.unit ?? ''}` : <Missing>No scale. Nothing can be priced without it.</Missing>}</td></tr>
+                    {showMoney && (
+                      <tr>
+                        <td className="muted nowrap">Estimated value</td>
+                        <td>
+                          {opportunity.buyerNeed.estimatedValue === null
+                            ? <Missing>Nothing has been estimated.</Missing>
+                            : <>{money(opportunity.buyerNeed.estimatedValue)} <span className="tiny dim">— our estimate, not their budget</span></>}
+                        </td>
+                      </tr>
+                    )}
+                    <tr><td className="muted nowrap">Capabilities</td><td>{opportunity.buyerNeed.requiredCapabilities.join(', ') || <Missing>None recorded, so nothing can be matched against.</Missing>}</td></tr>
+                    <tr><td className="muted nowrap">Current provider</td><td>{opportunity.buyerNeed.currentProvider ?? <Missing>Unknown. Ask who does it now.</Missing>}</td></tr>
+                    <tr><td className="muted nowrap">Provider issues</td><td>{opportunity.buyerNeed.currentProviderIssues.join('; ') || <Missing>None recorded — either there are none or nobody asked.</Missing>}</td></tr>
                     <tr><td className="muted nowrap">Open to alternatives</td><td>{opportunity.buyerNeed.openToAlternatives === null ? 'Unknown' : opportunity.buyerNeed.openToAlternatives ? 'Yes' : 'No'}</td></tr>
                   </tbody>
                 </table>
@@ -239,10 +293,40 @@ export default async function OpportunityWorkspace({ params }: { params: { id: s
                           {match.isSelected && <> <Badge tone="success">Selected</Badge></>}
                           <div className="tiny dim">{match.explanation.slice(0, 180)}</div>
                         </td>
-                        <td className="num">{Math.round(match.score * 100)}%</td>
-                        {showMoney && <td className="num">{money(match.estimatedCost)}</td>}
-                        {showMoney && <td className="num">{money(match.estimatedGrossProfit)}</td>}
-                        <td className="num">{Math.round(match.fulfillmentRisk * 100)}%</td>
+                        <td className="num tiny">
+                          <Figure
+                            presentation={presentMatchScore(gradeMatchScore({
+                              score: match.score,
+                              missingInformation: match.missingInformation,
+                              // Nothing on Match records a verified capability;
+                              // a candidate with nothing outstanding is the
+                              // closest the model gets, and it is still a
+                              // record-matching claim, not a checked one.
+                              capabilityVerified: false,
+                            }))}
+                          />
+                        </td>
+                        {showMoney && (
+                          <td className="num tiny">
+                            {match.estimatedCost === null
+                              ? <span className="dim">not priced</span>
+                              : money(match.estimatedCost)}
+                          </td>
+                        )}
+                        {showMoney && (
+                          <td className="num tiny">
+                            {/* A margin computed against a cost nobody quoted is
+                                arithmetic over an assumption. */}
+                            {match.estimatedCost === null || match.estimatedGrossProfit === null
+                              ? <span className="dim">no cost behind it</span>
+                              : money(match.estimatedGrossProfit)}
+                          </td>
+                        )}
+                        <td className="num tiny">
+                          {match.missingInformation.length > 0
+                            ? <span className="dim" title="Risk is scored from what is known about the candidate, and things are still unknown.">unassessed</span>
+                            : `${Math.round(match.fulfillmentRisk * 100)}%`}
+                        </td>
                         <td className="tiny">{match.missingInformation.join(', ') || <span className="muted">None</span>}</td>
                         {can(user, 'deal.write') && (
                           <td>
@@ -378,8 +462,17 @@ export default async function OpportunityWorkspace({ params }: { params: { id: s
                               {humanize(fact.status)}
                             </Badge>
                           </td>
-                          <td className="num">{Math.round(fact.confidence * 100)}%</td>
-                          <td className="tiny dim">{fact.sourceQuote?.slice(0, 90) ?? '—'}</td>
+                          {/* A confidence figure means something when there is
+                              an utterance under it. Without a quote it is the
+                              extractor grading its own homework. */}
+                          <td className="num tiny">
+                            {fact.sourceQuote
+                              ? `${Math.round(fact.confidence * 100)}%`
+                              : <span className="dim">no quote</span>}
+                          </td>
+                          <td className="tiny dim">
+                            {fact.sourceQuote?.slice(0, 90) ?? 'Nothing was quoted for this.'}
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -417,7 +510,25 @@ export default async function OpportunityWorkspace({ params }: { params: { id: s
           {score && (
             <div className="card">
               <h2>Why this score</h2>
-              <div className="small muted mb">Composite {Math.round(score.compositeScore * 100)}%</div>
+              {/* The composite is a real computation; what it is computed over
+                  is mostly defaults early on, and it was shown as a flat
+                  percentage either way. It now carries how much of its input
+                  set has actually been established. */}
+              <div className="mb">
+                <Figure
+                  presentation={presentPercent(gradeScore({
+                    value: score.compositeScore,
+                    inputsPresent: Math.round(opportunity.informationCompleteness * 10),
+                    inputsTotal: 10,
+                    what: 'Composite score',
+                  }))}
+                  prefix="Composite"
+                  explain
+                />
+              </div>
+              <p className="tiny dim">
+                A ranking against other opportunities on this account, not a forecast about this one.
+              </p>
               <ul className="list-reset">
                 {reasons.slice(0, 12).map((reason, index) => (
                   <li key={index} style={{ padding: '0.35rem 0', borderBottom: '1px solid var(--border)' }}>
@@ -586,4 +697,16 @@ export default async function OpportunityWorkspace({ params }: { params: { id: s
       </div>
     </>
   );
+}
+
+/**
+ * A gap that says what it is.
+ *
+ * An em dash in a requirement table is indistinguishable from a value of zero,
+ * a value nobody has asked for, and a value the buyer declined to give — and
+ * those want three different next actions. Every blank on this page names
+ * itself instead.
+ */
+function Missing({ children }: { children: string }) {
+  return <span className="dim small">{children}</span>;
 }

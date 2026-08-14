@@ -28,6 +28,25 @@ export type CallerMetrics = {
   byCallType: Record<string, { attempted: number; connected: number; connectRate: number }>;
   byHour: Record<string, { attempted: number; connected: number }>;
   byWeekday: Record<string, { attempted: number; connected: number }>;
+  /**
+   * What each rate above was divided by.
+   *
+   * Every ratio here was rendered as a percentage with no denominator in
+   * reach, so an accuracy of 100% over two facts and one over two hundred read
+   * identically — and the first is the one that gets somebody praised or
+   * managed. A rate cannot be judged without the count under it, so the count
+   * travels with it.
+   */
+  denominators: {
+    /** Facts captured, for informationAccuracy. */
+    facts: number;
+    /** Required questions across the calls, for scriptCompliance. */
+    requiredQuestions: number;
+    /** Calls with a measurable talk ratio, for averageTalkRatio. */
+    talkRatios: number;
+    /** Opportunities touched, for qualificationRate. */
+    opportunities: number;
+  };
 };
 
 export type CoachingRecommendation = {
@@ -150,6 +169,12 @@ export async function computeCallerMetrics(params: {
     byCallType,
     byHour,
     byWeekday,
+    denominators: {
+      facts: allFacts.length,
+      requiredQuestions: requiredQuestionsTotal,
+      talkRatios: talkRatios.length,
+      opportunities: opportunityIds.length,
+    },
   };
 }
 

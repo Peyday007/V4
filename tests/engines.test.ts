@@ -280,6 +280,7 @@ describe('caller coaching', () => {
     trialsSecured: 1, dealsInfluenced: 2, grossProfitInfluenced: 12000, scriptCompliance: 0.9,
     unauthorizedPromises: 0, averageTalkRatio: 0.4, averageCallDurationSec: 300, connectRate: 0.6,
     byCallType: {}, byHour: {}, byWeekday: {},
+    denominators: { facts: 40, requiredQuestions: 60, talkRatios: 12, opportunities: 8 },
   };
 
   it('raises a critical review flag for unauthorised commitments without acting on the worker', () => {

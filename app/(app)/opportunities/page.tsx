@@ -2,7 +2,10 @@ import Link from 'next/link';
 import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { can, requireUser } from '@/lib/auth/session';
-import { Badge, dueLabel, Empty, humanize, money, PriorityBadge, relativeDays, StatusBadge, TypeBadge } from '@/components/ui';
+import { Badge, dueLabel, Empty, humanize, PriorityBadge, relativeDays, StatusBadge, TypeBadge } from '@/components/ui';
+import { FigureChip } from '@/components/Figure';
+import { closedComparablesByType, gradeOpportunity, gradeOpportunityMoney } from '@/lib/evidence/opportunity';
+import { presentMoney } from '@/lib/evidence/economics';
 
 export const dynamic = 'force-dynamic';
 
@@ -40,16 +43,27 @@ export default async function OpportunitiesPage({ searchParams }: { searchParams
 
   if (user.roleKey === 'CALLER') where.callAssignments = { some: { assignedToId: user.id } };
 
-  const opportunities = await prisma.opportunity.findMany({
-    where,
-    include: {
-      parties: { where: { isPrimary: true }, include: { company: true } },
-      nextActions: { where: { isCurrent: true } },
-      matches: { where: { isSelected: true }, include: { candidate: true } },
-    },
-    orderBy: [{ priority: 'asc' }, { expectedValue: 'desc' }],
-    take: 300,
-  });
+  const [opportunities, closedByType] = await Promise.all([
+    prisma.opportunity.findMany({
+      where,
+      include: {
+        parties: { where: { isPrimary: true }, include: { company: true } },
+        nextActions: { where: { isCurrent: true } },
+        matches: { where: { isSelected: true }, include: { candidate: true } },
+        scores: { select: { id: true }, take: 1 },
+        quotes: {
+          // Superseded and declined revisions are history, not the live price.
+          where: { direction: 'outbound', status: { notIn: ['SUPERSEDED', 'DECLINED', 'EXPIRED'] } },
+          select: { total: true, costTotal: true, grossProfit: true },
+          orderBy: { createdAt: 'desc' },
+          take: 1,
+        },
+      },
+      orderBy: [{ priority: 'asc' }, { expectedValue: 'desc' }],
+      take: 300,
+    }),
+    closedComparablesByType(user.orgId),
+  ]);
 
   return (
     <>
@@ -83,7 +97,7 @@ export default async function OpportunitiesPage({ searchParams }: { searchParams
                 <th>Stage</th>
                 <th>Status</th>
                 <th>Fulfillment</th>
-                <th className="num">P(close)</th>
+                <th className="num">Closing rate</th>
                 {showMoney && <th className="num">Value</th>}
                 {showMoney && <th className="num">GP</th>}
                 <th>Next action</th>
@@ -95,6 +109,15 @@ export default async function OpportunitiesPage({ searchParams }: { searchParams
               {opportunities.map((opportunity) => {
                 const action = opportunity.nextActions[0];
                 const due = dueLabel(action?.dueDate ?? opportunity.dueDate);
+                const claims = gradeOpportunity({
+                  opportunity: { ...opportunity, hasScore: opportunity.scores.length > 0 },
+                  closedComparables: closedByType.get(String(opportunity.type)) ?? 0,
+                });
+                const cash = gradeOpportunityMoney({
+                  estimatedValue: opportunity.estimatedValue,
+                  estimatedGrossProfit: opportunity.estimatedGrossProfit,
+                  quote: opportunity.quotes[0] ?? null,
+                });
                 return (
                   <tr key={opportunity.id}>
                     <td>
@@ -107,9 +130,15 @@ export default async function OpportunitiesPage({ searchParams }: { searchParams
                     <td className="small nowrap">{humanize(opportunity.stage)}</td>
                     <td><StatusBadge status={opportunity.status} /></td>
                     <td className="small">{opportunity.matches[0]?.candidate.legalName ?? <span className="dim">Not selected</span>}</td>
-                    <td className="num">{Math.round(opportunity.closingProbability * 100)}%</td>
-                    {showMoney && <td className="num">{money(opportunity.estimatedValue)}</td>}
-                    {showMoney && <td className="num">{money(opportunity.estimatedGrossProfit)}</td>}
+                    <td className="num tiny">
+                      <FigureChip presentation={claims.shown.closingProbability} />
+                    </td>
+                    {showMoney && (
+                      <td className="num tiny"><FigureChip presentation={presentMoney(cash.value)} /></td>
+                    )}
+                    {showMoney && (
+                      <td className="num tiny"><FigureChip presentation={presentMoney(cash.grossProfit)} /></td>
+                    )}
                     <td className="small">
                       {action ? humanize(action.type) : <Badge tone="danger">None</Badge>}
                       <div className="tiny dim">{<PriorityBadge priority={opportunity.priority} />}</div>

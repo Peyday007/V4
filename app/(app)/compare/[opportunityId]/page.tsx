@@ -105,19 +105,27 @@ export default async function ComparePage({ params }: { params: { opportunityId:
             <div className="stat">
               <div className="stat-label">Best overall</div>
               <div className="stat-value" style={{ fontSize: '1rem' }}>{bestOverall?.candidate.legalName}</div>
-              <div className="stat-sub">{Math.round((bestOverall?.score ?? 0) * 100)}% match score</div>
+              <div className="stat-sub">{Math.round((bestOverall?.score ?? 0) * 100)}% record match</div>
             </div>
             {showMoney && (
               <div className="stat">
                 <div className="stat-label">Best margin</div>
                 <div className="stat-value" style={{ fontSize: '1rem' }}>{bestMargin?.candidate.legalName}</div>
-                <div className="stat-sub">{money(bestMargin?.estimatedGrossProfit)} gross profit</div>
+                <div className="stat-sub">
+                  {bestMargin?.estimatedCost && bestMargin.estimatedGrossProfit
+                    ? `${money(bestMargin.estimatedGrossProfit)} gross profit`
+                    : 'no quoted cost behind any margin here'}
+                </div>
               </div>
             )}
             <div className="stat">
               <div className="stat-label">Lowest risk</div>
               <div className="stat-value" style={{ fontSize: '1rem' }}>{lowestRisk?.candidate.legalName}</div>
-              <div className="stat-sub">{Math.round((lowestRisk?.fulfillmentRisk ?? 0) * 100)}% fulfillment risk</div>
+              <div className="stat-sub">
+                {lowestRisk && lowestRisk.missingInformation.length === 0
+                  ? `${Math.round(lowestRisk.fulfillmentRisk * 100)}% fulfilment risk`
+                  : 'risk is scored from what is known, and things are still unknown'}
+              </div>
             </div>
             <div className="stat">
               <div className="stat-label">Fastest</div>
@@ -152,7 +160,16 @@ export default async function ComparePage({ params }: { params: { opportunityId:
                 </tr>
               </thead>
               <tbody>
-                <Row label="Match score" matches={matches} render={(m) => `${Math.round(m.score * 100)}%`} />
+                {/* A match score is how well two records line up. It was
+                    labelled and read as a judgement that the provider can do
+                    the work, which nothing here has established. */}
+                <Row
+                  label="Record match"
+                  matches={matches}
+                  render={(m) => (m.missingInformation.length === 0
+                    ? `${Math.round(m.score * 100)}%`
+                    : `${Math.round(m.score * 100)}% on what is known`)}
+                />
                 <Row label="Location" matches={matches} render={(m) => m.candidate.locations[0] ? [m.candidate.locations[0].city, m.candidate.locations[0].state].filter(Boolean).join(', ') : '—'} />
                 <Row label="Territories" matches={matches} render={(m) => m.candidate.serviceTerritories.join(', ') || '—'} />
                 <Row label="Capacity" matches={matches} render={(m) => (m.capacity?.crewCount ? `${m.capacity.crewCount} crew(s)` : m.supply?.quantity ? `${m.supply.quantity} ${m.supply.unit ?? ''}` : '—')} />
@@ -160,12 +177,48 @@ export default async function ComparePage({ params }: { params: { opportunityId:
                 <Row label="Licensing" matches={matches} render={(m) => m.capacity?.licenses.join(', ') || (m.candidate.licenses as unknown[]).length ? JSON.stringify(m.candidate.licenses).slice(0, 40) : '—'} />
                 <Row label="Insurance" matches={matches} render={(m) => JSON.stringify(m.capacity?.insuranceLimits ?? m.candidate.insurance ?? {}).slice(0, 60)} />
                 <Row label="Certifications" matches={matches} render={(m) => m.candidate.certifications.join(', ') || '—'} />
-                {showMoney && <Row label="Estimated cost" matches={matches} render={(m) => money(m.estimatedCost)} />}
-                {showMoney && <Row label="Estimated revenue" matches={matches} render={(m) => money(m.estimatedRevenue)} />}
-                {showMoney && <Row label="Gross profit" matches={matches} render={(m) => money(m.estimatedGrossProfit)} />}
-                <Row label="Fulfillment risk" matches={matches} render={(m) => `${Math.round(m.fulfillmentRisk * 100)}%`} />
-                <Row label="Closing probability" matches={matches} render={(m) => `${Math.round(m.closingProbability * 100)}%`} />
-                <Row label="Relationship" matches={matches} render={(m) => (m.candidate.relationshipStrength > 0 ? `${Math.round(m.candidate.relationshipStrength * 100)}% strength` : 'No history')} />
+                {showMoney && (
+                  <Row
+                    label="Cost"
+                    matches={matches}
+                    render={(m) => (m.estimatedCost === null ? 'Nobody has priced it' : money(m.estimatedCost))}
+                  />
+                )}
+                {showMoney && (
+                  <Row
+                    label="Revenue"
+                    matches={matches}
+                    render={(m) => (m.estimatedRevenue === null ? 'No price has been set' : money(m.estimatedRevenue))}
+                  />
+                )}
+                {showMoney && (
+                  <Row
+                    label="Gross profit"
+                    matches={matches}
+                    // A margin is only real when both sides are. One quoted
+                    // side and one assumed side is an assumption.
+                    render={(m) => (m.estimatedCost === null || m.estimatedGrossProfit === null
+                      ? 'No cost behind it'
+                      : money(m.estimatedGrossProfit))}
+                  />
+                )}
+                <Row
+                  label="Fulfilment risk"
+                  matches={matches}
+                  render={(m) => (m.missingInformation.length > 0
+                    ? 'Unassessed — things are still unknown'
+                    : `${Math.round(m.fulfillmentRisk * 100)}%`)}
+                />
+                {/* Match.closingProbability defaults to 0.2 and is a claim about
+                    this buyer, not this candidate. Comparing candidates on it
+                    compares four copies of the same default. */}
+                <Row
+                  label="Relationship"
+                  matches={matches}
+                  render={(m) => (m.candidate.relationshipStrength > 0
+                    ? `${Math.round(m.candidate.relationshipStrength * 100)}% strength`
+                    : 'No history with them')}
+                />
                 <Row label="Payment terms" matches={matches} render={() => 'Not negotiated'} />
                 <tr>
                   <td className="muted nowrap">Missing information</td>
