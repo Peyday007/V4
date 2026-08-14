@@ -20,17 +20,16 @@
  * it is not displayed as money.
  */
 
-export type EvidenceClass =
-  /** A named person said so, and it was written down against this record. */
-  | 'CONFIRMED_BY_PERSON'
-  /** Published by a source outside this building, with its own identifier. */
-  | 'EXTERNALLY_OBSERVED'
-  /** Arithmetic whose every input is itself confirmed or observed. */
-  | 'CALCULATED_FROM_CONFIRMED_INPUTS'
-  /** Our own guess. Reasonable, perhaps well-reasoned, still a guess. */
-  | 'INFERRED'
-  /** Not known. Distinct from inferred: nobody has even guessed. */
-  | 'UNKNOWN';
+/**
+ * Re-exported from the schema rather than declared twice.
+ *
+ * It started as a TypeScript union here and became a database enum when
+ * campaign evidence had to persist it. Two definitions of the same five values
+ * would drift the first time somebody added a sixth, and the drift would be
+ * silent — so there is one, and it lives where the data does.
+ */
+export type { EvidenceClass } from '@prisma/client';
+import type { EvidenceClass } from '@prisma/client';
 
 /**
  * Strongest to weakest.

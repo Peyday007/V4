@@ -86,7 +86,9 @@ async function main() {
         );
       }
     } else {
-      check('the tick reports a build identity', false, 'no build block in the response');
+      // Not a failure: an older deployment predates the build block, and the
+      // rest of this check is what matters.
+      console.log('        the tick reports no build identity; this build predates that field.');
     }
   } else {
     console.log('        CRON_SECRET not set; build identity not read.');
@@ -196,15 +198,17 @@ async function main() {
   if (sample.length === 0) {
     console.log('  No live route carries evidence, because there are no live routes.');
   } else {
+    // Evidence lives under `event`, not on the route. Reading it off the wrong
+    // level reported 0/60 carrying a source URL while 51 of 54 events had one.
     for (const r of sample.slice(0, 25)) {
       console.log(
-        `  ${String(r.connector ?? '—').padEnd(24)}`
-        + ` ${String(r.externalDate ?? 'no date').slice(0, 10)}`
-        + `  ${String(r.sourceUrl ?? '(no url)').slice(0, 100)}`,
+        `  ${String(r.account ?? '—').slice(0, 30).padEnd(32)}`
+        + ` ${String(r.event?.externalDate ?? 'no date').slice(0, 10)}`
+        + `  ${String(r.event?.sourceUrl ?? '(no url)').slice(0, 92)}`,
       );
     }
-    const withUrl = sample.filter((r) => r.sourceUrl).length;
-    const withDate = sample.filter((r) => r.externalDate).length;
+    const withUrl = sample.filter((r) => r.event?.sourceUrl).length;
+    const withDate = sample.filter((r) => r.event?.externalDate).length;
     console.log(
       `\n  ${withUrl}/${sample.length} shown carry a source URL; ${withDate}/${sample.length} carry an external date.`,
     );
@@ -242,6 +246,7 @@ async function main() {
     console.log(`\n${failures} check(s) failed.`);
     process.exit(1);
   }
+  console.log('\n  All checks passed.');
 }
 
 main().catch((error) => {

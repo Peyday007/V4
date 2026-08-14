@@ -4,7 +4,8 @@ import { requirePagePermission } from '@/lib/auth/page';
 import { loadOpportunityRecord } from '@/lib/demand/opportunityRecord';
 import { loadDealRecord } from '@/lib/deal/record';
 import { DealProgress } from '@/components/DealProgress';
-import { DealPlanPanel } from '@/components/DealPlanPanel';
+import { OpportunityStanding } from '@/components/OpportunityStanding';
+import { buildOpportunityView } from '@/lib/deal/opportunityView';
 import { loadDealPlan } from '@/lib/deal/plan';
 import { DealActions } from '@/components/DealActions';
 import { can } from '@/lib/auth/session';
@@ -54,7 +55,20 @@ export default async function OpportunityRecordPage({ params }: { params: { rout
 
       {record.standing.statusReason && <div className="alert small">{record.standing.statusReason}</div>}
 
-      {plan && <DealPlanPanel plan={plan} />}
+      {/* Standing, the one blocker, the money path, the two tracks and the
+          plan — in that order, because that is the order somebody working the
+          deal needs them in. Every value has been through the evidence test on
+          the server, so nothing here can print a number that is not supported. */}
+      {plan && (
+        <OpportunityStanding
+          {...buildOpportunityView({
+            organisation: record.organisation,
+            plan,
+            record: deal,
+            closedComparables: 0,
+          })}
+        />
+      )}
 
       <DealActions
         context={{
