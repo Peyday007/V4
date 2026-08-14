@@ -41,10 +41,23 @@ export type CallBrief = {
   doNotClaim: string[];
 };
 
+/**
+ * What we are offering, in the words a caller would use.
+ *
+ * Three of these named cleaning explicitly, which was fine when cleaning was
+ * the only trade the engine could route. It is not any more: a campaign can
+ * target any capability, and a brokerage call about window cleaning that opens
+ * with "arranging a cleaning crew" is close enough, while one about security
+ * guarding is simply wrong. The offer now names the route and the capability
+ * is filled in by the caller's card, which knows it.
+ */
 const ROUTE_OFFER: Record<SignalCategory, string> = {
-  BROKERAGE: 'arranging a cleaning crew',
-  DISTRIBUTION: 'supplying janitorial consumables',
+  BROKERAGE: 'arranging a crew for the work',
+  DISTRIBUTION: 'supplying the consumables',
   SUBCONTRACTING: 'providing local crew capacity under their contract',
+  DIRECT_SERVICE: 'doing the work ourselves',
+  SUPPLIER_DEVELOPMENT: 'helping them take on work they cannot cover today',
+  PROVIDER_RECRUITMENT: 'putting work their way when we have it',
   GENERAL: 'facility services',
 };
 

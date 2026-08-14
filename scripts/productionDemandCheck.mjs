@@ -108,13 +108,24 @@ async function main() {
   console.log('\n--- production baseline, before the run ------------------------');
   const before = await call('/api/demand/diagnostic');
   check('the diagnostic reads', before.status === 200, `HTTP ${before.status}`);
-  const b = before.body ?? {};
-  const baseline = {
-    events: b.events?.total ?? b.eventCount ?? 0,
-    routes: b.routes?.total ?? b.routeCount ?? 0,
-    companies: b.companies?.total ?? 0,
-  };
-  console.log(`        events ${baseline.events}   routes ${baseline.routes}   companies ${baseline.companies}`);
+  // Read from `pipelineTruth`, which is what the endpoint actually returns.
+  // The first version of this script guessed at `events.total` and got zero
+  // for everything — and then reported production as empty when it was not.
+  // Reading the wrong key and calling the result a finding is the same class
+  // of mistake as everything else this work has been correcting.
+  const truth = (body) => ({
+    events: body?.pipelineTruth?.demandEvents ?? 0,
+    routes: body?.pipelineTruth?.routeHypotheses ?? 0,
+    companies: body?.pipelineTruth?.accounts ?? 0,
+    verifiedLeads: body?.pipelineTruth?.verifiedLeads ?? 0,
+    withExternalDate: body?.events?.dateCoverage?.withExternalEventDate ?? 0,
+    withSourceUrl: body?.events?.dateCoverage?.withDurableSourceUrl ?? 0,
+  });
+  const baseline = truth(before.body);
+  console.log(
+    `        events ${baseline.events}   routes ${baseline.routes}   organisations ${baseline.companies}`
+    + `   verified leads ${baseline.verifiedLeads}`,
+  );
 
   // --- 4. the real recurring path ------------------------------------------
   console.log('\n--- running the demand sources through the deployed path -------');
@@ -164,31 +175,39 @@ async function main() {
   console.log('\n--- production after the run -----------------------------------');
   const after = await call('/api/demand/diagnostic');
   const a = after.body ?? {};
-  const now = {
-    events: a.events?.total ?? a.eventCount ?? 0,
-    routes: a.routes?.total ?? a.routeCount ?? 0,
-    companies: a.companies?.total ?? 0,
-  };
-  console.log(`        events ${now.events}   routes ${now.routes}   companies ${now.companies}`);
+  const now = truth(a);
+  console.log(
+    `        events ${now.events}   routes ${now.routes}   organisations ${now.companies}`
+    + `   verified leads ${now.verifiedLeads}`,
+  );
   console.log(
     `        delta: events +${now.events - baseline.events}`
     + `   routes +${now.routes - baseline.routes}`
-    + `   companies +${now.companies - baseline.companies}`,
+    + `   organisations +${now.companies - baseline.companies}`,
+  );
+  console.log(
+    `        of ${now.events} event(s): ${now.withExternalDate} carry an external date, `
+    + `${now.withSourceUrl} carry a durable source URL`,
   );
 
   // --- 6. evidence for what landed -----------------------------------------
   console.log('\n--- evidence for every event that landed ------------------------');
-  const sample = a.recentEvents ?? a.events?.recent ?? a.liveRoutes ?? [];
-  if (!Array.isArray(sample) || sample.length === 0) {
-    console.log('  Nothing to show: no event carries an evidence URL because none landed.');
+  const sample = Array.isArray(a.liveRoutes) ? a.liveRoutes : [];
+  if (sample.length === 0) {
+    console.log('  No live route carries evidence, because there are no live routes.');
   } else {
-    for (const e of sample.slice(0, 25)) {
+    for (const r of sample.slice(0, 25)) {
       console.log(
-        `  ${String(e.connector ?? e.source ?? '—').padEnd(24)}`
-        + ` ${String(e.eventDate ?? e.externalDate ?? 'no date').slice(0, 10)}`
-        + `  ${String(e.sourceUrl ?? e.evidenceUrl ?? '(no url)').slice(0, 90)}`,
+        `  ${String(r.connector ?? '—').padEnd(24)}`
+        + ` ${String(r.externalDate ?? 'no date').slice(0, 10)}`
+        + `  ${String(r.sourceUrl ?? '(no url)').slice(0, 100)}`,
       );
     }
+    const withUrl = sample.filter((r) => r.sourceUrl).length;
+    const withDate = sample.filter((r) => r.externalDate).length;
+    console.log(
+      `\n  ${withUrl}/${sample.length} shown carry a source URL; ${withDate}/${sample.length} carry an external date.`,
+    );
   }
 
   // --- 7. the honest verdict ------------------------------------------------
@@ -199,10 +218,13 @@ async function main() {
   console.log(`  events accepted          ${totals.created + totals.updated}`);
   console.log(`  events rejected          ${totals.rejected}`);
   console.log(`  events quarantined       ${totals.quarantined}`);
-  console.log(`  events persisted (delta) ${now.events - baseline.events}`);
-  console.log(`  organisations created    ${accounts.created ?? 0}`);
-  console.log(`  organisations matched    ${accounts.matched ?? accounts.linked ?? 0}`);
-  console.log(`  routes created           ${routes.created ?? 0}`);
+  console.log(`  events persisted (total) ${now.events}   (delta ${now.events - baseline.events})`);
+  console.log(`  … carrying an external date  ${now.withExternalDate}`);
+  console.log(`  … carrying a source URL      ${now.withSourceUrl}`);
+  console.log(`  organisations resolved   ${accounts.resolved ?? 0}   created ${accounts.created ?? 0}   matched ${accounts.matched ?? accounts.linked ?? 0}`);
+  console.log(`  organisations (total)    ${now.companies}`);
+  console.log(`  routes created           ${routes.created ?? 0}   updated ${routes.updated ?? 0}   (total ${now.routes})`);
+  console.log(`  verified leads           ${now.verifiedLeads}`);
 
   if (now.events === 0) {
     console.log('\n  Production holds no demand events. Per-source reasons, verbatim:');
