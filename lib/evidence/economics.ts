@@ -1,4 +1,5 @@
 import type { EconomicsBasis } from '@prisma/client';
+import { prisma } from '@/lib/db';
 import {
   calculate,
   confirmed,
@@ -127,16 +128,6 @@ export function presentMoney(value: Evidenced<number>): Presentation {
  * no total to show and why.
  */
 export async function grossProfitPipeline(params: {
-  prisma: {
-    routeQuote: {
-      findMany: (args: unknown) => Promise<Array<{
-        basis: EconomicsBasis;
-        buyerPrice: unknown;
-        providerCost: unknown;
-        costSideMissing: boolean;
-      }>>;
-    };
-  };
   orgId: string;
   dataMode?: 'PRODUCTION' | 'TEST';
 }): Promise<{
@@ -147,7 +138,7 @@ export async function grossProfitPipeline(params: {
   /** True when a figure may be shown at all. */
   showable: boolean;
 }> {
-  const quotes = await params.prisma.routeQuote.findMany({
+  const quotes = await prisma.routeQuote.findMany({
     where: {
       orgId: params.orgId,
       dataMode: params.dataMode ?? 'PRODUCTION',

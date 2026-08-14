@@ -4,6 +4,7 @@ import { prisma } from '@/lib/db';
 import { can, requireUser } from '@/lib/auth/session';
 import { computePipelineAnalytics } from '@/lib/ai/analytics';
 import { computePipelineMetrics, generateDailyPlan } from '@/lib/ai/planner';
+import { grossProfitPipeline } from '@/lib/evidence/economics';
 import { ActionButton } from '@/components/ActionButton';
 import { Badge, Empty, humanize, money, PriorityBadge, relativeDays, Stat, TypeBadge } from '@/components/ui';
 
@@ -23,9 +24,10 @@ export default async function DashboardPage() {
     plan = await prisma.dailyPlan.findUnique({ where: { orgId_planDate: { orgId: user.orgId, planDate } } });
   }
 
-  const [metrics, analytics, closest, blocked, noAction, movable, supplyGaps] = await Promise.all([
+  const [metrics, analytics, pipeline, closest, blocked, noAction, movable, supplyGaps] = await Promise.all([
     computePipelineMetrics(user.orgId),
     computePipelineAnalytics(user.orgId),
+    grossProfitPipeline({ orgId: user.orgId }),
     prisma.opportunity.findMany({
       where: { orgId: user.orgId, status: { in: ['ACTIVE', 'WAITING'] } },
       orderBy: [{ closingProbability: 'desc' }, { expectedValue: 'desc' }],
@@ -89,15 +91,28 @@ export default async function DashboardPage() {
         <Stat label="Active opportunities" value={metrics.activeOpportunities} sub={`${metrics.totalOpportunities} total`} />
         {showMoney && (
           <>
+            {/* The figure that used to sit here was the sum of every open
+                opportunity's `estimatedGrossProfit` — a playbook's typical
+                range for a category, times an assumed margin, added up. It is
+                the number in this product most likely to be repeated out loud
+                as though it were revenue, and there was nothing under it.
+
+                Now only quotes with a real provider cost are totalled, and
+                when none qualifies the space says so rather than showing a
+                zero, because zero is itself a claim about the business. */}
             <Stat
               label="Gross-profit pipeline"
-              value={money(metrics.grossProfitPipeline)}
-              sub="Sum of estimated gross profit on open deals"
+              value={pipeline.showable ? money(pipeline.total) : <span className="dim">not yet priced</span>}
+              sub={pipeline.note}
             />
             <Stat
-              label="Expected value"
-              value={money(metrics.expectedValuePipeline)}
-              sub="After closing probability and fulfillment confidence"
+              label="Quotes with a cost side"
+              value={`${pipeline.counted} of ${pipeline.counted + pipeline.excluded}`}
+              sub={
+                pipeline.excluded > 0
+                  ? `${pipeline.excluded} priced from an assumption, so excluded from the total`
+                  : 'Every quote rests on a provider price'
+              }
             />
           </>
         )}
