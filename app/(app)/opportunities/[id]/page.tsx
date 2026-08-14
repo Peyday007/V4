@@ -1,6 +1,7 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { num, prisma } from '@/lib/db';
+import { collapseRepeats } from '@/lib/activity/collapse';
 import { can, requireUser } from '@/lib/auth/session';
 import { ActionButton } from '@/components/ActionButton';
 import { Badge, dueLabel, Empty, humanize, Meter, money, PriorityBadge, relativeDays, Stat, StatusBadge, TypeBadge } from '@/components/ui';
@@ -541,11 +542,17 @@ export default async function OpportunityWorkspace({ params }: { params: { id: s
 
           <div className="card">
             <h2>Activity</h2>
-            <ul className="timeline">
-              {opportunity.activityEvents.map((event) => (
-                <li key={event.id}>
-                  <time>{relativeDays(event.createdAt)} · {event.actorType}</time>
-                  <div className="small">{event.summary}</div>
+            {/* Consecutive restatements share a line. The engine re-deriving
+                the same next action every run is not four events, and reading
+                it as four is how the one call that happened gets buried. */}
+            <ul className="timeline" data-testid="activity-feed">
+              {collapseRepeats(opportunity.activityEvents).map(({ entry, repeats, note }) => (
+                <li key={entry.id}>
+                  <time>
+                    {relativeDays(entry.createdAt)} · {entry.actorType}
+                    {repeats > 1 && <> · <span className="dim">{note}</span></>}
+                  </time>
+                  <div className="small">{entry.summary}</div>
                 </li>
               ))}
             </ul>

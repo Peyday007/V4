@@ -12,6 +12,20 @@ export type DecisionInput = {
   rulesApplied?: string[];
   modelName: string;
   promptVersion: string;
+  /**
+   * True when this process re-derives the same conclusion on every run.
+   *
+   * Scoring is the clearest case: it runs on a schedule and writes "Composite
+   * 0.505, expected value $47,733" whether or not anything about the deal has
+   * changed. Three identical rows is not three decisions, it is one decision
+   * and two reruns, and reading it as a trail of deliberation is worse than
+   * having no trail.
+   *
+   * The rerun is skipped only when it repeats the *most recent* conclusion for
+   * the same process on the same opportunity. A score that moves away and
+   * comes back has genuinely changed twice.
+   */
+  derived?: boolean;
 };
 
 /**
@@ -20,6 +34,22 @@ export type DecisionInput = {
  * version — and later, the outcome.
  */
 export async function recordDecision(input: DecisionInput): Promise<string> {
+  if (input.derived) {
+    const last = await prisma.aIDecision.findFirst({
+      where: {
+        orgId: input.orgId,
+        opportunityId: input.opportunityId ?? null,
+        process: input.process,
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true, decision: true },
+    });
+    // The existing row's id is returned so a caller that links to its decision
+    // still links somewhere true — it points at the decision that stands,
+    // which is what it meant all along.
+    if (last?.decision === input.decision) return last.id;
+  }
+
   const row = await prisma.aIDecision.create({
     data: {
       orgId: input.orgId,

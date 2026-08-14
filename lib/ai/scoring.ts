@@ -393,6 +393,9 @@ export async function scoreOpportunity(opportunityId: string): Promise<ScoreBrea
     rulesApplied: ['scoring_weights', 'expected_opportunity_value'],
     modelName: 'deterministic',
     promptVersion: SCORING_VERSION,
+    // Runs on a schedule and re-derives the same composite whether or not the
+    // deal moved. An unchanged score is not a new decision.
+    derived: true,
   });
 
   return breakdown;

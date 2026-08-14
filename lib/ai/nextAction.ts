@@ -687,6 +687,9 @@ export async function determineNextAction(opportunityId: string): Promise<Planne
     rulesApplied: ['next_action_decision_table'],
     modelName: 'deterministic',
     promptVersion: NEXT_ACTION_VERSION,
+    // The decision table is deterministic, so a deal nobody has touched gets
+    // the same answer every run.
+    derived: true,
   });
 
   await recordActivity({
@@ -695,6 +698,10 @@ export async function determineNextAction(opportunityId: string): Promise<Planne
     verb: 'next_action.set',
     summary: `Next action: ${plan.type.replace(/_/g, ' ').toLowerCase()} — ${plan.reason.slice(0, 180)}`,
     payload: { type: plan.type, dueDate },
+    // Setting the same next action again is not activity. Recording it as
+    // such also kept `lastActivityAt` fresh on deals that had stalled, which
+    // is the more expensive half of the mistake.
+    derived: true,
   });
 
   return plan;

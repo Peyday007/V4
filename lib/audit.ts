@@ -66,9 +66,27 @@ export type ActivityInput = {
   verb: string;
   summary: string;
   payload?: Record<string, unknown>;
+  /**
+   * True when this restates a conclusion rather than recording an occurrence.
+   *
+   * Two quite different things were being written to one table. "A call was
+   * logged" happened at a moment, and if it happens twice that is two calls.
+   * "Next action: confirm timeline" is a statement about the present, and the
+   * planner rewrites it every time it runs — so an opportunity nobody touched
+   * for a fortnight accumulated a history of the engine agreeing with itself,
+   * and the one real event in it was buried.
+   *
+   * A derived event is written only when its conclusion differs from the last
+   * one of its kind. Not deduplicated against all of history: if a score goes
+   * 0.5, then 0.6, then 0.5 again, the return is news. Only the immediate
+   * repetition is silence.
+   */
+  derived?: boolean;
 };
 
 export async function recordActivity(input: ActivityInput): Promise<void> {
+  if (input.derived && (await restatesTheLast(input))) return;
+
   await prisma.activityEvent.create({
     data: {
       orgId: input.orgId,
@@ -88,4 +106,26 @@ export async function recordActivity(input: ActivityInput): Promise<void> {
       data: { lastActivityAt: new Date() },
     });
   }
+}
+
+/**
+ * Whether the newest event of this kind already says exactly this.
+ *
+ * Also the reason `lastActivityAt` stops moving on a silent rerun: an
+ * opportunity whose only "activity" is the planner restating an unchanged
+ * conclusion has not been active, and treating it as though it had is how a
+ * stalled deal keeps looking fresh.
+ */
+async function restatesTheLast(input: ActivityInput): Promise<boolean> {
+  const last = await prisma.activityEvent.findFirst({
+    where: {
+      orgId: input.orgId,
+      opportunityId: input.opportunityId ?? null,
+      companyId: input.companyId ?? null,
+      verb: input.verb,
+    },
+    orderBy: { createdAt: 'desc' },
+    select: { summary: true },
+  });
+  return last?.summary === input.summary;
 }
