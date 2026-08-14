@@ -26,6 +26,8 @@
  */
 
 import { prisma } from '@/lib/db';
+import { DEFAULT_JURISDICTIONS } from '@/lib/demand/connectors/municipalOpenData';
+import { DEFAULT_SOLICITATION_DATASETS } from '@/lib/demand/connectors/municipalSolicitations';
 
 export type Exposure = {
   /** What is concentrated: a category, a city, a source, a buyer. */
@@ -198,4 +200,66 @@ function verdictFor(input: { total: number; opportunities: number; exposures: Ex
   }
 
   return parts.join(' ');
+}
+
+// ---------------------------------------------------------------------------
+// Coverage
+// ---------------------------------------------------------------------------
+
+/**
+ * What the engine can actually reach, as opposed to what it is configured for.
+ *
+ * Concentration answers "how balanced is what we have". This answers the
+ * question underneath it, which turned out to matter more: how balanced
+ * *could* it be. A portfolio 100% in Illinois is not a discipline problem if
+ * Illinois is the only state a working source covers — it is the shape the
+ * collection layer forces, and telling an owner to diversify without telling
+ * them that would send them looking for a fault in how work is chosen when the
+ * fault is in what arrives.
+ *
+ * Read from the shipped configuration rather than from what has been
+ * collected, so it is honest on an empty board — which is precisely when
+ * somebody needs it.
+ */
+export type Coverage = {
+  /** States a currently-usable source can produce events in. */
+  reachable: string[];
+  /** States configured but parked, with why. */
+  unreachable: Array<{ state: string; label: string; because: string }>;
+  /** The sentence an owner needs before they read a concentration figure. */
+  verdict: string;
+};
+
+export function coverage(input: {
+  jurisdictions: Array<{ state: string; label: string; unusableReason?: string }>;
+  portals: Array<{ state: string; label: string; unusableReason?: string }>;
+}): Coverage {
+  const all = [...input.jurisdictions, ...input.portals];
+  const reachable = [...new Set(all.filter((d) => !d.unusableReason).map((d) => d.state))].sort();
+  const unreachable = all
+    .filter((d) => d.unusableReason)
+    // A state is only unreachable when nothing working covers it.
+    .filter((d) => !reachable.includes(d.state))
+    .map((d) => ({ state: d.state, label: d.label, because: d.unusableReason! }));
+
+  const verdict =
+    reachable.length === 0
+      ? 'No configured source can currently produce an event anywhere. Concentration is not the question; '
+        + 'collection is.'
+      : `Live work can only come from ${reachable.join(', ')}, because those are the states a working source `
+        + `covers. Any concentration in those places is the shape collection forces, not a choice about what `
+        + `to pursue`
+        + (unreachable.length > 0
+          ? `; ${unreachable.length} configured jurisdiction(s) are parked and produce nothing.`
+          : '.');
+
+  return { reachable, unreachable, verdict };
+}
+
+/** Coverage from the shipped configuration, which is the only honest source. */
+export function configuredCoverage(): Coverage {
+  return coverage({
+    jurisdictions: DEFAULT_JURISDICTIONS,
+    portals: DEFAULT_SOLICITATION_DATASETS,
+  });
 }

@@ -7,6 +7,8 @@ import { DemandControls } from '@/components/DemandControls';
 import { EnrichmentPanel } from '@/components/EnrichmentPanel';
 import { enrichmentOverview } from '@/lib/enrichment/report';
 import { ChainHealth } from '@/components/ChainHealth';
+import { PortfolioShape } from '@/components/PortfolioShape';
+import { portfolioShape, configuredCoverage } from '@/lib/portfolio/concentration';
 import { chainHealth } from '@/lib/health/chain';
 
 export const dynamic = 'force-dynamic';
@@ -34,6 +36,7 @@ export default async function SourcesPage() {
   ]);
   // Loaded after the rest so the panels it summarises are already resolved.
   const chain = await chainHealth(user.orgId);
+  const shape = await portfolioShape({ orgId: user.orgId });
 
   return (
     <>
@@ -48,6 +51,8 @@ export default async function SourcesPage() {
       {/* First on the page: it is the only panel that can say which of the
           others is worth opening. */}
       <ChainHealth health={chain} />
+
+      <PortfolioShape shape={shape} coverage={configuredCoverage()} />
 
       <EnrichmentPanel overview={enrichment} />
 
