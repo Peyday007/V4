@@ -277,23 +277,62 @@ export async function callableRouteIds(params: {
   /** Exclude anything already held by somebody. */
   unassignedOnly?: boolean;
   now?: Date;
+  /**
+   * Allow more than one route per organisation in the same batch.
+   *
+   * Off by default, and the default is the important part. One demand event
+   * fans out into a route per applicable playbook, so a buyer whose licence
+   * matched three playbooks produces three rows — and handing a caller all
+   * three hands them one phone call three times. The portfolio audit's
+   * counting rule says several hypotheses from one event are one opportunity;
+   * this is that rule at the point where it costs somebody an afternoon.
+   *
+   * The other routes are not discarded. They stay callable and come back on
+   * the next fill, once this conversation has happened and what it turned up
+   * can inform them.
+   */
+  allowMultiplePerCompany?: boolean;
 }): Promise<string[]> {
+  // `DISTINCT ON` keeps the first row per company under the ORDER BY below,
+  // which is the same ordering the board uses — so the one kept is the one the
+  // owner would have picked anyway, not an arbitrary sibling.
+  const distinct = params.allowMultiplePerCompany
+    ? Prisma.empty
+    : Prisma.sql`DISTINCT ON (r."companyId")`;
+
   const rows = await prisma.$queryRaw<Array<{ id: string }>>`
-    SELECT r."id" AS id
-    ${ELIGIBILITY_FROM}
-    WHERE r."orgId" = ${params.orgId}
-      AND r."dataMode" = ${params.mode}::"DataMode"
-      AND (${bucketSql(params.now)}) = 'CALLABLE_NOW'
-      ${params.unassignedOnly === false ? Prisma.empty : Prisma.sql`AND NOT ${ASSIGNED_SQL}`}
-    -- The queue's own ordering, so the preview offers the same records in the
-    -- same order the demand board would. A second opinion about priority here
-    -- would mean the owner assigning a different top-25 than the one they read.
+    SELECT * FROM (
+      SELECT ${distinct}
+        r."id" AS id,
+        r."companyId" AS company,
+        r."tier" AS tier,
+        r."windowClosesAt" AS closes,
+        r."friction" AS friction,
+        (r."fulfilmentStatus" <> 'AVAILABLE') AS unfulfilled
+      ${ELIGIBILITY_FROM}
+      WHERE r."orgId" = ${params.orgId}
+        AND r."dataMode" = ${params.mode}::"DataMode"
+        AND (${bucketSql(params.now)}) = 'CALLABLE_NOW'
+        ${params.unassignedOnly === false ? Prisma.empty : Prisma.sql`AND NOT ${ASSIGNED_SQL}`}
+      -- The queue's own ordering, so the preview offers the same records in the
+      -- same order the demand board would. A second opinion about priority here
+      -- would mean the owner assigning a different top-25 than the one they read.
+      -- companyId leads only because DISTINCT ON requires it to; the rest is
+      -- the board's order and decides which route survives per company.
+      ORDER BY
+        r."companyId" ASC,
+        r."tier" ASC,
+        r."windowClosesAt" ASC NULLS LAST,
+        r."friction" ASC,
+        (r."fulfilmentStatus" <> 'AVAILABLE') ASC,
+        r."id" ASC
+    ) AS picked
     ORDER BY
-      r."tier" ASC,
-      r."windowClosesAt" ASC NULLS LAST,
-      r."friction" ASC,
-      (r."fulfilmentStatus" <> 'AVAILABLE') ASC,
-      r."id" ASC
+      picked.tier ASC,
+      picked.closes ASC NULLS LAST,
+      picked.friction ASC,
+      picked.unfulfilled ASC,
+      picked.id ASC
     LIMIT ${params.limit}
   `;
   return rows.map((r) => r.id);
