@@ -105,6 +105,18 @@ export async function runCron(request: Request, mode: CronMode) {
       });
       if (pollQueued) queued += 1;
 
+      // Keeping the floor stocked is a tick job, not a daily one. A caller who
+      // works through their packet at eleven has been idle since eleven, and a
+      // daily top-up would leave them there until tomorrow.
+      const replenishQueued = await enqueue({
+        orgId: org.id,
+        kind: 'callers.replenish',
+        priority: 28,
+        idempotencyKey: `cron:callers.replenish:${new Date().toISOString().slice(0, 13)}`,
+        skipIfCompleted: false,
+      });
+      if (replenishQueued) queued += 1;
+
       // Contact resolution is not enqueued and hoped for — it runs here, first,
       // with a budget of its own.
       //

@@ -3,6 +3,7 @@ import { prisma } from '@/lib/db';
 import { runAllDiscovery, runDiscoveryForSource } from '@/lib/discovery/run';
 import { promoteSignals } from '@/lib/discovery/promote';
 import { dueConnectors, runDemandSource } from '@/lib/demand/run';
+import { replenishFloor } from '@/lib/caller/replenish';
 import { runDemandPipeline } from '@/lib/demand/pipeline';
 import { generateDocument } from '@/lib/ai/documents';
 import { configureDeal } from '@/lib/ai/dealConfig';
@@ -85,6 +86,27 @@ export const HANDLERS: Record<string, JobHandler> = {
    * every live event's window, so a solicitation whose deadline passed
    * overnight stops being work without anybody touching it.
    */
+  /**
+   * Tops up any caller who is about to run out of work.
+   *
+   * On the tick rather than the daily sweep, because running dry is a
+   * mid-morning problem and a daily top-up would leave somebody idle until
+   * tomorrow. It assigns nothing that a person assigning by hand would have
+   * been refused — same eligibility query, same calling window, same
+   * one-route-per-organisation rule — and when there is nothing callable it
+   * leaves the floor short and says so.
+   */
+  'callers.replenish': async (job) => {
+    const [production, practice] = await Promise.all([
+      replenishFloor({ orgId: job.orgId, actorId: job.orgId, dataMode: 'PRODUCTION' }),
+      replenishFloor({ orgId: job.orgId, actorId: job.orgId, dataMode: 'TEST' }),
+    ]);
+    return {
+      production: { toppedUp: production.toppedUp, itemsAdded: production.itemsAdded, stillShort: production.stillShort.length },
+      practice: { toppedUp: practice.toppedUp, itemsAdded: practice.itemsAdded, stillShort: practice.stillShort.length },
+    };
+  },
+
   'demand.run_pipeline': async (job) => {
     return runDemandPipeline({ orgId: job.orgId });
   },
