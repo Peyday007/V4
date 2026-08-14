@@ -12,7 +12,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   const isCaller = user.roleKey === 'CALLER';
 
-  const [org, startedForReal, myCalls, escalations, approvals, signals, liveLeads] = await Promise.all([
+  const [org, startedForReal, myCalls, escalations, approvals, signals, liveLeads, runningCampaigns] = await Promise.all([
     prisma.organization.findUnique({ where: { id: user.orgId }, select: { name: true, slug: true } }),
     // Audit events outlive the data they describe — clearBusinessData does not
     // remove them — so this stays true once the operator has begun, rather
@@ -42,6 +42,13 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     can(user, 'discovery.read')
       ? prisma.discoverySignal.count({
           where: { orgId: user.orgId, status: { in: ['NEW', 'TRIAGED'] }, origin: 'LIVE_DISCOVERY' },
+        })
+      : Promise.resolve(0),
+    // Production only. A practice campaign in the sandbox must not raise a
+    // badge that reads as live commercial activity.
+    can(user, 'campaign.read')
+      ? prisma.campaign.count({
+          where: { orgId: user.orgId, dataMode: 'PRODUCTION', state: { in: ['RUNNING', 'EXPANDED'] } },
         })
       : Promise.resolve(0),
   ]);
@@ -92,6 +99,22 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             <div className="nav-section">Floor</div>
             <NavLink href="/callers">Callers</NavLink>
             <NavLink href="/work">Caller workspace</NavLink>
+          </>
+        )}
+
+        {can(user, 'campaign.read') && (
+          <>
+            {/* Above the graph, because a campaign is what decides which parts
+                of the graph get worked. Reached from the sidebar rather than
+                only from a deep link, or nobody opens it. */}
+            <div className="nav-section">Strategy</div>
+            <NavLink href="/campaigns" count={runningCampaigns} note={runningCampaigns > 0 ? 'running' : undefined}>
+              Commercial campaigns
+            </NavLink>
+            {/* Portfolio concentration and source coverage live together,
+                because "85% of the board is janitorial" and "only one source
+                works" are the same fact read from two ends. */}
+            <NavLink href="/demand/sources">Portfolio and sources</NavLink>
           </>
         )}
 
