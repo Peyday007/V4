@@ -135,6 +135,108 @@ export const DEFAULT_PATHS: PathDefinition[] = [
     expectedCycleDays: 60,
     typicalMarginPct: 24,
   },
+
+  // ---------------------------------------------------------------------------
+  // The three that were missing
+  // ---------------------------------------------------------------------------
+  //
+  // Playbooks existed for all six commercial routes and paths existed for three
+  // of them, so the three below produced routes that belonged to no path — and
+  // every surface that groups, scores or reports by path silently dropped them.
+  // A route with a null pathId is not a fourth way of earning; it is a route
+  // nobody is counting.
+  //
+  // They differ from the first three in what is actually being sold. The first
+  // three all sell somebody else's labour or goods to a buyer. Direct service
+  // sells our own. Supplier development spends to create capacity that does not
+  // exist yet. Provider recruitment produces no revenue at all on its own — it
+  // removes the constraint that stops the other five earning, and pretending
+  // otherwise by attaching a margin to it would be the same fabrication as a
+  // closing probability nobody set.
+  {
+    key: 'direct_service',
+    name: 'Direct service',
+    description:
+      'Performing the work ourselves with our own crew, where the job is close enough, small enough and '
+      + 'urgent enough that finding a provider costs more than doing it.',
+    // No legacy category on new paths, by the rule at the top of this file.
+    legacyCategory: null,
+    isActive: true,
+    // Below the three broking paths: self-performing consumes capacity that
+    // cannot be bought back, so it should be what happens when placing fails
+    // rather than the first thing tried.
+    priority: 40,
+    leadRoles: ['BUYER'],
+    segments: ['COMMERCIAL', 'RESIDENTIAL'],
+    sourceKeys: [],
+    // The highest bar of the six. Committing our own crew is committing the
+    // one resource that cannot be sourced on demand, so a thin signal is not
+    // enough — the service and a contact both have to be established.
+    qualificationRules: { minimumStrength: 0.5, requiresService: true, requiresContact: true },
+    scoringWeights: { freshness: 1.4, contactability: 1.3, segmentFit: 1.1, sourceReliability: 0.9, signalStrength: 1.2 },
+    requiredFields: ['requiredService', 'market'],
+    recommendedActions: {
+      BUYER:
+        'Confirm the scope, the date and the access arrangements, establish who signs off, then check the crew '
+        + 'is actually free before anything is promised.',
+    },
+    revenueModel: 'Full job value, net of our own labour and materials',
+    expectedCycleDays: 14,
+    // Higher than broking because there is no provider taking a share, and
+    // lower than it looks because our own labour is the cost.
+    typicalMarginPct: 45,
+  },
+  {
+    key: 'supplier_development',
+    name: 'Supplier development',
+    description:
+      'Growing a provider\'s capability — coverage, credentials, crew or equipment — so they can take work we '
+      + 'already have buyers for and cannot currently place.',
+    legacyCategory: null,
+    isActive: true,
+    priority: 50,
+    leadRoles: ['PROVIDER', 'SUBCONTRACTOR', 'PARTNER'],
+    segments: ['COMMERCIAL', 'INDUSTRIAL'],
+    sourceKeys: [],
+    qualificationRules: { minimumStrength: 0.4 },
+    scoringWeights: { freshness: 0.7, contactability: 1.2, segmentFit: 1.0, sourceReliability: 1.0, signalStrength: 1.1 },
+    requiredFields: ['market'],
+    recommendedActions: {
+      PROVIDER: 'Establish what specifically stops them taking this work — coverage, credentials, crew or cash.',
+      SUBCONTRACTOR: 'Agree what we would fund or arrange, and what work follows once it is in place.',
+      PARTNER: 'Establish whether the gap is worth closing at all, or whether another provider already has it.',
+    },
+    // Deliberately not a margin. This path spends before it earns, and the
+    // return arrives through whichever path sells the capacity afterwards.
+    revenueModel: 'No direct revenue; it removes a fulfilment gap that another path then earns through',
+    expectedCycleDays: 90,
+    typicalMarginPct: null,
+  },
+  {
+    key: 'provider_recruitment',
+    name: 'Provider recruitment',
+    description:
+      'Finding and qualifying providers where supply is the binding constraint — the trades, territories and '
+      + 'credentials we keep losing work for want of.',
+    legacyCategory: null,
+    isActive: true,
+    priority: 60,
+    leadRoles: ['PROVIDER', 'SUBCONTRACTOR'],
+    segments: ['COMMERCIAL', 'INDUSTRIAL', 'PUBLIC_SECTOR'],
+    sourceKeys: [],
+    // The lowest bar, because a thin lead on a provider costs one call and the
+    // alternative is a confirmed buyer with nobody to send.
+    qualificationRules: { minimumStrength: 0.2 },
+    scoringWeights: { freshness: 0.6, contactability: 1.4, segmentFit: 1.1, sourceReliability: 1.0, signalStrength: 0.8 },
+    requiredFields: [],
+    recommendedActions: {
+      PROVIDER: 'Establish capability, coverage, capacity, insurance and licensing — and whether they want the work.',
+      SUBCONTRACTOR: 'Qualify as fulfilment capacity, and record what they cannot do as carefully as what they can.',
+    },
+    revenueModel: 'No direct revenue; it is what makes the other paths fulfillable',
+    expectedCycleDays: 30,
+    typicalMarginPct: null,
+  },
 ];
 
 export function toPathDefinition(row: BusinessPath): PathDefinition {

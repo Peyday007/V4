@@ -428,6 +428,42 @@ describe('nothing sandbox can leave the building', () => {
     ).toEqual([]);
   });
 
+  /**
+   * The same argument again, at the place it actually broke.
+   *
+   * Both tests above check that practice records are not *created* or
+   * *measured* in the production world. Neither caught the diagnostic, which
+   * created nothing and measured nothing — it merely counted, and counted both
+   * worlds together. A deployed run reported 54 production events and then
+   * listed three sandbox routes among the evidence for them, and a conformance
+   * table quoting those totals would have been three records wrong.
+   *
+   * Counting is the third way practice contaminates production, and it is the
+   * quietest, because the number looks like a number either way.
+   */
+  it('every count in the demand diagnostic says which world it means', () => {
+    const source = readFileSync('app/api/demand/diagnostic/route.ts', 'utf8');
+    const unscoped: string[] = [];
+
+    // The three tables that hold demand records in both worlds. `sourceRun`,
+    // `opportunity` and `quote` are deliberately not here: they carry no
+    // dataMode, so scoping them would be a lie rather than a fix.
+    const TABLES = /prisma\.(demandEvent|routeHypothesis|company)\.(findMany|count|groupBy|aggregate)\(([\s\S]{0,300})/g;
+    for (const match of source.matchAll(TABLES)) {
+      if (!/dataMode/.test(match[3])) unscoped.push(`${match[1]}.${match[2]}`);
+    }
+
+    expect(
+      unscoped,
+      `these diagnostic counts mix practice into production: ${unscoped.join(', ')}`,
+    ).toEqual([]);
+
+    // And the answer has to say which world it counted, so a reader is never
+    // left to infer it from the numbers.
+    expect(source).toMatch(/dataMode,/);
+    expect(source).toMatch(/practiceRecordsNotCounted/);
+  });
+
   it('the guard refuses rather than returning a falsy value', () => {
     const guard = readFileSync('lib/safety/outbound.ts', 'utf8');
     // A boolean that a caller can ignore is not a boundary.

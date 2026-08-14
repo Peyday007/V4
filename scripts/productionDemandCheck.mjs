@@ -70,6 +70,8 @@ async function main() {
   // --- 1. which build is answering ----------------------------------------
   console.log('--- build identity ---------------------------------------------');
   if (CRON_SECRET) {
+    // POST, which is the verb this endpoint is — it drains a queue and writes.
+    // GET is also accepted, because the platform scheduler issues one.
     const tick = await call('/api/cron/tick', {
       method: 'POST',
       headers: { authorization: `Bearer ${CRON_SECRET}` },
@@ -128,6 +130,23 @@ async function main() {
     `        events ${baseline.events}   routes ${baseline.routes}   organisations ${baseline.companies}`
     + `   verified leads ${baseline.verifiedLeads}`,
   );
+
+  // The diagnostic states which set of records it counted. A production check
+  // that silently read a mixed set would produce a conformance table three
+  // records too high, which is how the first run of this reported sandbox
+  // fixtures beside Chicago licence records.
+  check(
+    'the diagnostic counted production records only',
+    before.body?.dataMode === 'PRODUCTION',
+    `dataMode ${before.body?.dataMode ?? '(not stated)'}`,
+  );
+  const practice = before.body?.practiceRecordsNotCounted;
+  if (practice) {
+    console.log(
+      `        practice records held separately and not counted: `
+      + `${practice.events} event(s), ${practice.routes} route(s), ${practice.accounts} organisation(s)`,
+    );
+  }
 
   // --- 4. the real recurring path ------------------------------------------
   console.log('\n--- running the demand sources through the deployed path -------');

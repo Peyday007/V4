@@ -24,12 +24,25 @@ export const maxDuration = 60;
  * evidence behind each live route.
  *
  * It reports what is there. It makes no claim that the numbers are good.
+ *
+ * Every count is scoped to one `dataMode`, and the default is PRODUCTION. The
+ * first version was not, and the deployed run proved why it had to be: three
+ * sandbox routes appeared in the evidence listing beside real Chicago licence
+ * records, and the totals that a conformance report would have quoted were
+ * three higher than the truth. Practice records must never be a rounding error
+ * in a production measurement — that is the whole point of having a mode.
  */
-export async function GET() {
+export async function GET(request: Request) {
   try {
     const user = await requirePermission('discovery.read');
     const orgId = user.orgId;
     const now = new Date();
+
+    // Practice is readable, but only by asking for it by name. Anything that
+    // does not ask gets production, so a caller cannot get a mixed answer by
+    // forgetting a parameter.
+    const requested = new URL(request.url).searchParams.get('dataMode');
+    const dataMode = requested === 'TEST' ? 'TEST' : 'PRODUCTION';
 
     const [
       health,
@@ -44,11 +57,12 @@ export async function GET() {
       quotes,
       funnel,
       scorecards,
+      practice,
     ] = await Promise.all([
       demandSourceHealth(orgId),
       prisma.discoverySignal.count({ where: { orgId } }),
       prisma.demandEvent.findMany({
-        where: { orgId },
+        where: { orgId, dataMode },
         select: {
           id: true,
           type: true,
@@ -70,10 +84,10 @@ export async function GET() {
         orderBy: { discoveredAt: 'desc' },
         take: 500,
       }),
-      prisma.demandEvent.groupBy({ by: ['type'], where: { orgId }, _count: true }),
-      prisma.demandEvent.groupBy({ by: ['lifecycle'], where: { orgId }, _count: true }),
+      prisma.demandEvent.groupBy({ by: ['type'], where: { orgId, dataMode }, _count: true }),
+      prisma.demandEvent.groupBy({ by: ['lifecycle'], where: { orgId, dataMode }, _count: true }),
       prisma.routeHypothesis.findMany({
-        where: { orgId },
+        where: { orgId, dataMode },
         include: {
           event: { select: { type: true, eventDate: true, sourceUrl: true, headline: true, confirmedFacts: true, inferredFacts: true } },
           company: { select: { legalName: true, cityName: true, stateCode: true } },
@@ -81,7 +95,7 @@ export async function GET() {
         orderBy: [{ tier: 'asc' }, { friction: 'asc' }],
         take: 400,
       }),
-      prisma.company.count({ where: { orgId } }),
+      prisma.company.count({ where: { orgId, dataMode } }),
       prisma.sourceRun.findMany({
         where: { orgId },
         orderBy: { startedAt: 'desc' },
@@ -91,6 +105,15 @@ export async function GET() {
       prisma.quote.count({ where: { orgId } }),
       funnelTotals(orgId),
       sourceScorecards(orgId),
+      // The practice records, counted but never added in. Reported so that a
+      // sandbox left full is visible rather than invisible — the failure this
+      // replaces was not that practice data existed, it was that nobody could
+      // tell it was in the total.
+      Promise.all([
+        prisma.demandEvent.count({ where: { orgId, dataMode: 'TEST' } }),
+        prisma.routeHypothesis.count({ where: { orgId, dataMode: 'TEST' } }),
+        prisma.company.count({ where: { orgId, dataMode: 'TEST' } }),
+      ]).then(([events, routes, accounts]) => ({ events, routes, accounts })),
     ]);
 
     // Event-date coverage is the single most diagnostic number here: an event
@@ -132,6 +155,11 @@ export async function GET() {
 
     return json({
       generatedAt: now.toISOString(),
+      // Which set of records every number below counts, stated first so no
+      // reader has to infer it — and the practice records alongside, so that a
+      // full sandbox is visible without ever being added in.
+      dataMode,
+      practiceRecordsNotCounted: practice,
       environment: {
         // Whether a key is present, never its value.
         samGovConfigured: Boolean(process.env.SAM_GOV_API_KEY),

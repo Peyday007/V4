@@ -20,3 +20,17 @@ export const maxDuration = 60;
 export async function GET(request: Request) {
   return runCron(request, 'tick');
 }
+
+/**
+ * The same tick, for callers that use the verb this actually is.
+ *
+ * GET is here because the platform's scheduler issues one and cannot be told
+ * otherwise. But this endpoint drains a queue and writes, so POST is the
+ * honest verb, and a caller that reasonably used it was getting a 405 — which
+ * reads as "the deployment is broken" rather than "wrong method". Both routes
+ * go through the same authorisation inside `runCron`; nothing is relaxed by
+ * accepting a second verb.
+ */
+export async function POST(request: Request) {
+  return runCron(request, 'tick');
+}
