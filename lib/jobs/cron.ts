@@ -117,6 +117,17 @@ export async function runCron(request: Request, mode: CronMode) {
       });
       if (replenishQueued) queued += 1;
 
+      // Campaigns tick alongside the rest. A kill condition that only fired
+      // once a day would let a campaign spend another morning on its way out.
+      const campaignQueued = await enqueue({
+        orgId: org.id,
+        kind: 'campaigns.tick',
+        priority: 26,
+        idempotencyKey: `cron:campaigns.tick:${new Date().toISOString().slice(0, 13)}`,
+        skipIfCompleted: false,
+      });
+      if (campaignQueued) queued += 1;
+
       // Contact resolution is not enqueued and hoped for — it runs here, first,
       // with a budget of its own.
       //

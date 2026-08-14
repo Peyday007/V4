@@ -4,6 +4,9 @@ import { runAllDiscovery, runDiscoveryForSource } from '@/lib/discovery/run';
 import { promoteSignals } from '@/lib/discovery/promote';
 import { dueConnectors, runDemandSource } from '@/lib/demand/run';
 import { replenishFloor } from '@/lib/caller/replenish';
+import { evaluateCampaignConditions } from '@/lib/campaign/service';
+import { generateCampaignWork, runCampaignTasks } from '@/lib/campaign/execute';
+import { prisma as db } from '@/lib/db';
 import { runDemandPipeline } from '@/lib/demand/pipeline';
 import { generateDocument } from '@/lib/ai/documents';
 import { configureDeal } from '@/lib/ai/dealConfig';
@@ -104,6 +107,43 @@ export const HANDLERS: Record<string, JobHandler> = {
     return {
       production: { toppedUp: production.toppedUp, itemsAdded: production.itemsAdded, stillShort: production.stillShort.length },
       practice: { toppedUp: practice.toppedUp, itemsAdded: practice.itemsAdded, stillShort: practice.stillShort.length },
+    };
+  },
+
+  /**
+   * Campaigns, on the tick.
+   *
+   * Three things in order, and the order is the point. Conditions are
+   * evaluated first, so a campaign that should have stopped does not generate
+   * another morning of work on its way out. Then the survivors generate the
+   * research they are owed. Then the tasks that need no external contact are
+   * run.
+   */
+  'campaigns.tick': async (job) => {
+    const evaluated = await evaluateCampaignConditions({ orgId: job.orgId, actorId: job.orgId });
+
+    const running = await db.campaign.findMany({
+      where: { orgId: job.orgId, state: { in: ['RUNNING', 'EXPANDED'] } },
+      select: { id: true },
+    });
+
+    let generated = 0;
+    let ran = 0;
+    for (const campaign of running) {
+      const report = await generateCampaignWork({
+        orgId: job.orgId, campaignId: campaign.id, actorId: job.orgId,
+      });
+      generated += report.total;
+      const results = await runCampaignTasks({ orgId: job.orgId, campaignId: campaign.id, limit: 25 });
+      ran += results.length;
+    }
+
+    return {
+      evaluated: evaluated.length,
+      fired: evaluated.filter((e) => e.fired.length > 0).map((e) => ({ name: e.name, fired: e.fired, newState: e.newState })),
+      running: running.length,
+      tasksGenerated: generated,
+      tasksRun: ran,
     };
   },
 

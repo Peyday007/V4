@@ -30,6 +30,12 @@ export const PERMISSIONS = {
   'discovery.read': { category: 'Discovery', description: 'View signals and sources' },
   'discovery.review': { category: 'Discovery', description: 'Triage signals and low-confidence enrichment' },
   'discovery.run': { category: 'Discovery', description: 'Trigger discovery runs' },
+  'campaign.read': { category: 'Campaigns', description: 'See commercial campaigns and what they produced' },
+  'campaign.write': { category: 'Campaigns', description: 'Write and edit campaign theses, channels and conditions' },
+  /// Separate from `write` on purpose: authorising spend and starting a
+  /// campaign running are the two moments money and reputation are committed,
+  /// and the person who drafts a thesis is not always the person who may.
+  'campaign.authorise': { category: 'Campaigns', description: 'Authorise a campaign to run, and grant its budget' },
 
   // Calling
   'call.assignment.read.own': { category: 'Calling', description: 'See own call assignments' },
@@ -78,6 +84,8 @@ export const ROLES = {
       'finance.margin.read', 'finance.pipeline.read',
       'company.read', 'company.write', 'contact.read', 'contact.write',
       'discovery.read', 'discovery.review', 'discovery.run',
+      // A deal manager writes campaigns but does not authorise their spend.
+      'campaign.read', 'campaign.write',
       'call.assignment.read.all', 'call.assignment.write', 'call.place', 'call.transcript.read',
       'escalation.read', 'escalation.resolve',
       'analytics.caller.read.all', 'analytics.pipeline.read',
@@ -100,6 +108,7 @@ export const ROLES = {
     description: 'Reviews discovered companies, sources, classifications and low-confidence enrichment.',
     permissions: [
       'discovery.read', 'discovery.review', 'discovery.run',
+      'campaign.read',
       'company.read', 'company.write', 'contact.read', 'contact.write',
       'opportunity.read',
     ] as PermissionKey[],

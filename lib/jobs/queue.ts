@@ -18,6 +18,7 @@ export type JobKind =
   | 'demand.poll_sources'
   | 'demand.run_pipeline'
   | 'callers.replenish'
+  | 'campaigns.tick'
   /** The recurring contact-resolution worker. Schedules, then works the batch. */
   | 'enrichment.resolve_contacts'
   /** Re-runs provider matching when the supply catalogue has changed. */
