@@ -588,6 +588,167 @@ export const CLEANING_PLAYBOOKS: Playbook[] = [
     authoritativeSources: ['municipal_solicitations', 'inbound_intake'],
     noisySources: [],
   },
+
+  // -------------------------------------------------------------------------
+  // Provider recruitment — the supply side is the binding constraint
+  // -------------------------------------------------------------------------
+  //
+  // These three routes had no playbook at all, which is the structural half of
+  // why the portfolio could only ever look like one trade. Every play in the
+  // list above ends in placing a cleaning provider with a buyer; if that is the
+  // only shape of work the engine can produce, no amount of measuring
+  // concentration afterwards will produce a second one.
+  //
+  // Each still obeys the rule the file opens with: a dated external event, or
+  // no route. Recruitment is triggered by an award naming a prime who has to
+  // deliver somewhere they are not, not by "this company exists".
+  {
+    key: 'supply.provider_recruitment.award_geography',
+    route: 'PROVIDER_RECRUITMENT',
+    vertical: 'Commercial facility services',
+    subvertical: 'Supply',
+    label: 'Recruit a provider where work has landed',
+    qualifyingEvents: ['CONTRACT_AWARD'],
+    requiredEvidence: [
+      'a dated award naming the winner',
+      'a place of performance the winner is not based in',
+    ],
+    optionalEvidence: ['award value', 'contract start date', 'the buying authority'],
+    likelyBuyerRoles: ['PRIME_CONTRACTOR'],
+    // Deliberately the capability the *award* names, filled from the event
+    // rather than assumed. The default that put 85% of a board in one trade
+    // came from lines like this being hardcoded.
+    requiredCapability: 'Local crew capacity',
+    window: {
+      opensDaysFromEvent: -30,
+      closesDaysFromEvent: 60,
+      reason:
+        'A prime looks for local capacity between winning and mobilising. Before the award there is nothing '
+        + 'to staff; two months after it they have solved it, well or badly.',
+    },
+    typicalBuyerPrice: { low: 0, high: 0 },
+    typicalMarginPct: 0,
+    typicalCycleDays: 21,
+    typicalHumanMinutes: 40,
+    automationPotential: 0.5,
+    frictionFactors: [
+      { key: 'distant_prime', question: 'Is the winner based in another state?', weight: -3 },
+      { key: 'large_award', question: 'Is the award large enough to need subcontracting?', weight: -2 },
+      { key: 'local_prime', question: 'Is the winner already local to the work?', weight: 4 },
+    ],
+    compliance: CLEANING_COMPLIANCE,
+    verificationQuestions: [
+      'Do they already have crews where this work is?',
+      'Do they subcontract, or only self-perform?',
+      'What would they need from a local partner?',
+    ],
+    rejectionConditions: [
+      'The winner is based in the place of performance',
+      'They self-perform everything as a matter of policy',
+    ],
+    firstAction:
+      'Call the prime and ask how they are covering the work in this area, and what a local partner would '
+      + 'need to satisfy them.',
+    authoritativeSources: ['contract_awards', 'inbound_intake'],
+    noisySources: ['google_places'],
+  },
+  {
+    key: 'supply.supplier_development.capacity_gap',
+    route: 'SUPPLIER_DEVELOPMENT',
+    vertical: 'Commercial facility services',
+    subvertical: 'Supply',
+    label: 'Grow a provider into work they cannot take today',
+    qualifyingEvents: ['ACTIVE_RFQ', 'ACTIVE_RFP', 'VENDOR_REQUEST', 'CONTRACT_AWARD'],
+    requiredEvidence: [
+      'a dated demand record we cannot currently fulfil',
+      'a named provider who is close to being able to',
+    ],
+    optionalEvidence: ['what specifically they lack', 'the buyer\u2019s compliance requirements'],
+    likelyBuyerRoles: ['BUYER', 'ISSUING_AUTHORITY'],
+    requiredCapability: 'Capability development',
+    window: {
+      opensDaysFromEvent: -60,
+      closesDaysFromEvent: 30,
+      reason:
+        'Developing a provider takes weeks, so it only makes sense against demand far enough out to still be '
+        + 'there when they are ready.',
+    },
+    typicalBuyerPrice: { low: 0, high: 0 },
+    typicalMarginPct: 0,
+    typicalCycleDays: 45,
+    typicalHumanMinutes: 90,
+    automationPotential: 0.3,
+    frictionFactors: [
+      { key: 'one_gap', question: 'Is exactly one thing missing — insurance, a licence, headcount?', weight: -3 },
+      { key: 'repeat_demand', question: 'Is this demand recurring rather than one-off?', weight: -2 },
+      { key: 'many_gaps', question: 'Are several capabilities missing at once?', weight: 4 },
+    ],
+    compliance: CLEANING_COMPLIANCE,
+    verificationQuestions: [
+      'What exactly stops them taking this work today?',
+      'How long would closing that gap take, and what does it cost?',
+      'Would they commit to the work if the gap were closed?',
+    ],
+    rejectionConditions: [
+      'The gap is a licence they are not eligible for',
+      'The demand closes before they could possibly be ready',
+    ],
+    firstAction:
+      'Call the provider and establish precisely what is missing, what closing it costs, and how long it takes.',
+    authoritativeSources: ['municipal_solicitations', 'contract_awards', 'inbound_intake'],
+    noisySources: [],
+  },
+  {
+    key: 'direct.service.self_perform',
+    route: 'DIRECT_SERVICE',
+    vertical: 'Commercial facility services',
+    subvertical: 'Cleaning',
+    label: 'Deliver it ourselves',
+    qualifyingEvents: [
+      'ACTIVE_RFQ',
+      'ACTIVE_RFP',
+      'FACILITY_OPENING',
+      'OCCUPANCY_OR_OPERATING_APPROVAL',
+      'INBOUND_REQUEST',
+    ],
+    requiredEvidence: [
+      'a dated demand record',
+      'the work being inside our own crew\u2019s reach and capability',
+    ],
+    optionalEvidence: ['square footage', 'frequency', 'the incumbent'],
+    likelyBuyerRoles: ['BUYER', 'PROPERTY_MANAGER'],
+    requiredCapability: 'Own crew delivery',
+    window: {
+      opensDaysFromEvent: -21,
+      closesDaysFromEvent: 14,
+      reason: 'Self-performed work needs the same timing as brokered work; the difference is who does it.',
+    },
+    typicalBuyerPrice: { low: 600, high: 6000 },
+    // Higher than brokerage because there is no provider taking a share, and
+    // lower risk of a margin surprise because the cost is our own payroll.
+    typicalMarginPct: 45,
+    typicalCycleDays: 12,
+    typicalHumanMinutes: 60,
+    automationPotential: 0.5,
+    frictionFactors: [
+      { key: 'in_territory', question: 'Is this inside a territory our own crew already covers?', weight: -3 },
+      { key: 'has_capacity', question: 'Is there confirmed crew capacity for it?', weight: -3 },
+      { key: 'no_capacity', question: 'Would this need hiring before it could be delivered?', weight: 4 },
+    ],
+    compliance: CLEANING_COMPLIANCE,
+    verificationQuestions: [
+      'Do we have crew capacity in this territory on those dates?',
+      'Is the scope inside what our own people actually do?',
+      'What happens to our other commitments if we take it?',
+    ],
+    rejectionConditions: [
+      'No own-crew capacity in the territory',
+      'The scope needs a trade we do not self-perform',
+    ],
+    firstAction: 'Confirm crew capacity for the dates before quoting anything.',
+    authoritativeSources: ['municipal_solicitations', 'municipal_open_data', 'inbound_intake'],
+    noisySources: ['google_places'],
+  },
 ];
 
 export const PLAYBOOKS: Playbook[] = [...CLEANING_PLAYBOOKS];

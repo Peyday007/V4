@@ -81,8 +81,22 @@ export async function portfolioShape(params: {
       eventId: true,
       companyId: true,
       requiredCapability: true,
-      event: { select: { connector: true, stateCode: true } },
-      company: { select: { legalName: true, stateCode: true } },
+      route: true,
+      playbookKey: true,
+      event: { select: { connector: true, stateCode: true, type: true } },
+      company: {
+        select: {
+          legalName: true,
+          stateCode: true,
+          // The primary one where marked, else whichever is attached. An
+          // industry is a join row here, not a column.
+          industries: {
+            select: { industry: { select: { name: true } } },
+            orderBy: { isPrimary: 'desc' },
+            take: 1,
+          },
+        },
+      },
     },
   });
 
@@ -118,6 +132,27 @@ export async function portfolioShape(params: {
       (name, share) =>
         `${(share * 100).toFixed(0)}% of live work is with ${name}. One relationship going cold takes that `
         + 'much of the pipeline.'),
+    largestShare('industry', routes, (r) => r.company.industries[0]?.industry.name ?? 'unstated',
+      (name, share) =>
+        `${(share * 100).toFixed(0)}% of buyers are in ${name}. An industry with a bad quarter takes that `
+        + 'share with it, and they tend to have bad quarters together.'),
+    largestShare('commercial route', routes, (r) => String(r.route),
+      (name, share) =>
+        `${(share * 100).toFixed(0)}% of live work transacts as ${lower(name)}. Every route carries its own `
+        + 'working capital and delivery risk, so this is how much of the business is exposed to one of them.'),
+    // The one that makes the others look better than they are. Several routes
+    // can differ in category, place and buyer and still rest on the same
+    // hypothesis — "a new licence means somebody needs a first clean" — and if
+    // that hypothesis is wrong they are all wrong at once.
+    largestShare('underlying play', routes, (r) => r.playbookKey,
+      (name, share) =>
+        `${(share * 100).toFixed(0)}% of live work rests on the same play (${name}). It can look diverse by `
+        + 'category, place and buyer and still be one bet: if the hypothesis behind that play is wrong, all of '
+        + 'it is wrong together.'),
+    largestShare('event type', routes, (r) => String(r.event.type),
+      (name, share) =>
+        `${(share * 100).toFixed(0)}% of live work came from one kind of event (${lower(name)}). A source that `
+        + 'stops publishing that kind takes the lot.'),
   ].filter((e): e is Exposure => e !== null);
 
   return {
@@ -155,6 +190,10 @@ function largestShare<T>(
     // description of the business, not a concentration to act on.
     material: rows.length >= MEANINGFUL_SIZE && share >= MATERIAL_SHARE && counts.size > 1,
   };
+}
+
+function lower(text: string): string {
+  return text.toLowerCase().replace(/_/g, ' ');
 }
 
 /** The commercial thing being sold, from the capability the route requires. */

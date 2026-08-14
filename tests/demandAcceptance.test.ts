@@ -6,7 +6,7 @@ import {
   assessExpiry,
   eventDedupeKey,
 } from '@/lib/demand/events';
-import { playbooksFor, windowFor } from '@/lib/demand/playbooks';
+import { playbooksFor, windowFor, CLEANING_PLAYBOOKS } from '@/lib/demand/playbooks';
 import { assessFriction, qualifiesForLowFrictionQueue, UNKNOWN_SIGNALS } from '@/lib/demand/friction';
 import { chooseStructure, estimateEconomics, meetsEconomicFloor } from '@/lib/demand/economics';
 import { toDemandEvent, type JurisdictionDataset } from '@/lib/demand/connectors/municipalOpenData';
@@ -551,11 +551,36 @@ describe('15. sources that only prove existence', () => {
   });
 
   it('never turns a directory listing into any event type', () => {
-    // Contract awards do feed a playbook, but only one, and only through a
-    // prime. Nothing anywhere maps a category match to an event.
+    // Contract awards feed several playbooks now — recruiting a provider where
+    // work landed, and developing one against demand we cannot cover — and the
+    // count is not the invariant. The invariant is that every one of them
+    // needs the dated award itself as evidence, so none can fire on "this
+    // company exists in a category".
     const awardPlaybooks = playbooksFor('CONTRACT_AWARD');
-    expect(awardPlaybooks).toHaveLength(1);
-    expect(awardPlaybooks[0].likelyBuyerRoles).toEqual(['PRIME_CONTRACTOR']);
+    expect(awardPlaybooks.length).toBeGreaterThan(0);
+    for (const playbook of awardPlaybooks) {
+      // Every award playbook rests on something the award record itself
+      // states — who won it, where it is performed, when it was made — rather
+      // than on the winner merely existing in a category.
+      expect(playbook.requiredEvidence.join(' ')).toMatch(/award|won the work|place of performance|dated/i);
+      expect(playbook.requiredEvidence.join(' ')).not.toMatch(/directory|listing|category match/i);
+      // And none of them treats the award as demand from the awarding body
+      // for us — the counterparty is the prime who won it, or the authority
+      // that issued it, never an invented buyer.
+      expect(playbook.likelyBuyerRoles.length).toBeGreaterThan(0);
+      expect(playbook.likelyBuyerRoles).not.toContain('PROPERTY_MANAGER');
+    }
+  });
+
+  it('gives the supply-side routes a playbook, so they are reachable at all', () => {
+    // The structural half of why a portfolio could only look like one trade:
+    // every play ended in placing a cleaning provider with a buyer, so no
+    // amount of measuring concentration afterwards could produce a second
+    // shape of work.
+    const routes = new Set(CLEANING_PLAYBOOKS.map((p) => p.route));
+    expect(routes.has('PROVIDER_RECRUITMENT')).toBe(true);
+    expect(routes.has('SUPPLIER_DEVELOPMENT')).toBe(true);
+    expect(routes.has('DIRECT_SERVICE')).toBe(true);
   });
 });
 
