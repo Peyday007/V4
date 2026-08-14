@@ -21,6 +21,7 @@ import { prisma } from '@/lib/db';
 import { replenishFloor } from '@/lib/caller/replenish';
 import { createCaller } from '@/lib/caller/roster';
 import { issuePin } from '@/lib/caller/identity';
+import { resetSandbox } from '@/lib/caller/sandbox';
 
 let passed = 0;
 let failed = 0;
@@ -52,6 +53,12 @@ async function main() {
   console.log('='.repeat(72));
   console.log('CONTINUOUS REPLENISHMENT — nobody sits idle waiting to be noticed');
   console.log('='.repeat(72));
+
+  // From a known practice world. Replenishment's whole job is to claim work,
+  // so a previous run's top-up packets are still holding routes when the next
+  // one starts — and a floor with nothing callable left is indistinguishable
+  // from a broken top-up. The reset releases them.
+  await resetSandbox({ orgId: org.id, actorId: owner.id });
 
   const made: string[] = [];
   const caller = async (suffix: string) => {
