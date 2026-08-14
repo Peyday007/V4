@@ -1,0 +1,85 @@
+name: Production demand check
+
+# Did the deployment actually collect demand from the real world?
+#
+# The connector probe answers a smaller question — whether the portals return
+# what the connectors expect — from a machine that can reach them, writing
+# nothing. Passing it is not evidence that production has ingested anything.
+#
+# This drives the deployed application through its own recurring path against
+# the production database and reads back what is there: rows examined, events
+# accepted, rejected, quarantined and persisted, organisations created or
+# matched, routes created, the evidence URL and external date of everything
+# that landed, and for every source still at zero, the exact reason.
+#
+# It creates no fixtures. If production ends at zero, that is the answer.
+#
+# Manual only: it writes to the production database through the ordinary
+# ingest path, and that is not something to do on a timer from here — the
+# deployment's own worker already does it on a schedule.
+
+on:
+  workflow_dispatch:
+    inputs:
+      expect_commit:
+        description: 'Commit the deployment must report (first 12 chars). Blank to skip.'
+        required: false
+        default: ''
+      owner_email:
+        description: 'Owner account to sign in as.'
+        required: false
+        default: 'owner@dealdispatch.test'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-demand
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Ask the deployment what it collected
+        env:
+          BASE_URL: ${{ secrets.APP_BASE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          OWNER_EMAIL: ${{ inputs.owner_email }}
+          OWNER_PASSWORD: ${{ secrets.OWNER_PASSWORD }}
+          EXPECT_COMMIT: ${{ inputs.expect_commit }}
+        run: |
+          set -o pipefail
+          if [ -z "${BASE_URL:-}" ]; then
+            echo "APP_BASE_URL must be set as a repository secret." >&2
+            exit 1
+          fi
+          if [ -z "${OWNER_PASSWORD:-}" ]; then
+            echo "OWNER_PASSWORD is not set; using the seed's documented default."
+            export OWNER_PASSWORD='demo-password-123'
+          fi
+          node scripts/productionDemandCheck.mjs | tee production-demand.txt
+
+      - name: Put it in the run summary
+        if: always()
+        run: |
+          {
+            echo '## Production demand check'
+            echo
+            echo '```'
+            cat production-demand.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: production-demand
+          path: production-demand.txt
+          retention-days: 30
