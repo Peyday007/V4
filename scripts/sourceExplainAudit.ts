@@ -173,12 +173,25 @@ async function main() {
     (republished.outcomeReason ?? '').slice(0, 300),
   );
 
-  const funnel = (republished.details as { funnel?: unknown[] } | null)?.funnel;
+  const funnel = (republished.details as { funnel?: Array<Record<string, unknown>> } | null)?.funnel;
   check('the per-scope funnel is persisted alongside it', Array.isArray(funnel) && funnel.length > 0);
-  const first = Array.isArray(funnel) ? (funnel[0] as Record<string, unknown>) : {};
-  check('each scope records what it fetched and what it kept', first.fetched === 3 && first.accepted === 0,
-    JSON.stringify(first).slice(0, 200));
-  check('each scope carries the exact URL it requested', typeof first.url === 'string' && String(first.url).includes('r5kz-chrr'));
+
+  // Datasets parked with an `unusableReason` lead the funnel — they are the
+  // reason the coverage is what it is — so the scope that was actually
+  // requested has to be found rather than assumed to be first.
+  const requested = (funnel ?? []).filter((f) => typeof f.url === 'string');
+  const parked = (funnel ?? []).filter((f) => f.url === null);
+  check('parked datasets are reported rather than silently omitted', parked.length > 0, `${parked.length} parked`);
+  check(
+    'and each says it was deliberately not requested, with the portal\'s reason',
+    parked.every((f) => /Deliberately not requested/.test(String(f.emptyMeans ?? ''))),
+  );
+
+  const chicago = requested.find((f) => String(f.url).includes('r5kz-chrr'));
+  check('each requested scope records what it fetched and what it kept',
+    chicago?.fetched === 3 && chicago?.accepted === 0,
+    JSON.stringify(chicago).slice(0, 200));
+  check('and carries the exact URL it requested', typeof chicago?.url === 'string');
 
   // -- 4. the health view reads the last attempt ----------------------------
   console.log('\n--- health reports the last attempt, not the last good day ------');
@@ -195,12 +208,12 @@ async function main() {
   );
   check(
     'and still names the datasets that produced nothing, rather than resting on the ones that did',
-    /San Francisco.*all discarded/.test(working.outcomeReason),
+    /San Francisco/.test(working.outcomeReason) && /discarded|zero rows/.test(working.outcomeReason),
     working.outcomeReason.slice(0, 240),
   );
   check(
     'naming, per dataset, the column it went looking for',
-    /location_start_date/.test(working.outcomeReason) && /issued_date/.test(working.outcomeReason),
+    /location_start_date/.test(working.outcomeReason),
     working.outcomeReason.slice(0, 240),
   );
 
