@@ -4,9 +4,11 @@ import { hasCredential } from '@/lib/discovery/http';
 import {
   AllRequestsFailedError,
   NotConfiguredError,
+  explainSourceOutcome,
   getDemandConnector,
   listDemandConnectors,
   type DemandConnector,
+  type SourceScopeReport,
 } from './connector';
 import { ensureDemandConnectorsRegistered } from './connectors';
 import { ingestEvents, runDemandPipeline, type PipelineResult } from './pipeline';
@@ -38,6 +40,8 @@ export type SourceRunSummary = {
   error: string | null;
   /** Precise remedy when the status is `not_configured`. */
   howToFix: string | null;
+  /** Where the records went, in one sentence. Always set. */
+  outcomeReason: string;
   warnings: string[];
   durationMs: number;
 };
@@ -65,6 +69,7 @@ export async function runDemandSource(params: {
       quarantined: 0,
       error: `No demand connector registered under "${params.connectorKey}".`,
       howToFix: null,
+      outcomeReason: `Nothing ran: no connector is registered under "${params.connectorKey}".`,
       warnings: [],
       durationMs: 0,
     };
@@ -116,6 +121,30 @@ export async function runDemandSource(params: {
       sourceReliability: await reliabilityOf(params.orgId, connector.key),
     });
 
+    // Two funnels feed the sentence, and both matter. The connector's own says
+    // which rows never became candidate events; the ingest's says which
+    // candidates the pipeline then refused. A source can be blameless at the
+    // first stage and still produce nothing.
+    const funnel = result.funnel ?? [];
+    const outcomeReason = [
+      explainSourceOutcome({
+        connectorKey: connector.key,
+        eventsCreated: ingest.created,
+        eventsUpdated: ingest.updated,
+        recordsExamined: result.recordsExamined,
+        funnel,
+      }),
+      ...(ingest.rejected > 0
+        ? [
+            `${ingest.rejected} candidate event(s) were then refused by ingest`
+              + (ingest.rejectionReasons.length > 0
+                ? `: ${[...new Set(ingest.rejectionReasons)].slice(0, 3).join('; ')}.`
+                : '.'),
+          ]
+        : []),
+      ...(ingest.quarantined > 0 ? [`${ingest.quarantined} were quarantined pending corroboration.`] : []),
+    ].join(' ');
+
     await prisma.sourceRun.update({
       where: { id: run.id },
       data: {
@@ -129,10 +158,12 @@ export async function runDemandSource(params: {
         windowStart: since,
         // The newest source date reached, not the moment the run ended.
         windowEnd: result.nextCursor ? new Date(result.nextCursor) : null,
+        outcomeReason: outcomeReason.slice(0, 4000),
         details: {
           warnings: result.warnings,
           quarantined: ingest.quarantined,
           rejectionReasons: ingest.rejectionReasons.slice(0, 10),
+          funnel: funnel as unknown as Prisma.InputJsonValue,
         } as Prisma.InputJsonValue,
       },
     });
@@ -160,6 +191,7 @@ export async function runDemandSource(params: {
       quarantined: ingest.quarantined,
       error: null,
       howToFix: null,
+      outcomeReason,
       warnings: result.warnings,
       durationMs: Date.now() - startedAt,
     };
@@ -170,6 +202,13 @@ export async function runDemandSource(params: {
         ? error.message
         : String(error).slice(0, 500);
 
+    const outcomeReason = notConfigured
+      ? `Did not run. ${message}`
+      : error instanceof AllRequestsFailedError
+        ? `Reached nothing. Every request failed, so no record was examined and the emptiness `
+          + `says nothing about the source. ${message}`
+        : `The run ended in an error before it could report a breakdown. ${message}`;
+
     await prisma.sourceRun.update({
       where: { id: run.id },
       data: {
@@ -178,6 +217,7 @@ export async function runDemandSource(params: {
         // buries a broken source under a wall of unconfigured ones.
         status: notConfigured ? 'NOT_CONFIGURED' : 'FAILED',
         error: message,
+        outcomeReason: outcomeReason.slice(0, 4000),
       },
     });
 
@@ -204,6 +244,7 @@ export async function runDemandSource(params: {
       quarantined: 0,
       error: message,
       howToFix: notConfigured ? (error as NotConfiguredError).howToFix : null,
+      outcomeReason,
       warnings: [],
       durationMs: Date.now() - startedAt,
     };
@@ -317,6 +358,17 @@ export type SourceHealth = {
   eventsRejected: number;
   error: string | null;
   nextScheduledAt: string | null;
+  /**
+   * Where the last attempt's records went.
+   *
+   * Read from the last *attempt*, not the last success, because the case this
+   * exists for is a source that has been attempting and producing nothing.
+   * Pointing at the last success would show a healthy sentence from three
+   * weeks ago next to a board that has been empty ever since.
+   */
+  outcomeReason: string | null;
+  /** Per-scope breakdown behind the sentence, for whoever wants the detail. */
+  funnel: SourceScopeReport[];
 };
 
 export async function demandSourceHealth(orgId: string): Promise<SourceHealth[]> {
@@ -364,8 +416,25 @@ export async function demandSourceHealth(orgId: string): Promise<SourceHealth[]>
       nextScheduledAt: lastAttempt
         ? new Date(lastAttempt.startedAt.getTime() + connector.pollIntervalMinutes * 60_000).toISOString()
         : null,
+      outcomeReason:
+        lastAttempt?.outcomeReason
+        ?? (lastAttempt
+          ? 'This run predates per-stage reporting, so where its records went was not recorded.'
+          : 'This source has never been attempted.'),
+      funnel: readFunnel(lastAttempt?.details),
     };
   });
+}
+
+/** The stored funnel, defensively — `details` is free-form JSON on old rows. */
+function readFunnel(details: unknown): SourceScopeReport[] {
+  if (!details || typeof details !== 'object') return [];
+  const raw = (details as Record<string, unknown>).funnel;
+  if (!Array.isArray(raw)) return [];
+  return raw.filter(
+    (s): s is SourceScopeReport =>
+      Boolean(s) && typeof (s as SourceScopeReport).scope === 'string',
+  );
 }
 
 /** Sources whose poll interval has elapsed since their last attempt. */

@@ -2953,6 +2953,16 @@ model SourceRun {
   error   String?
   details Json    @default("{}")
 
+  /// One sentence saying where the records went, written whether the run
+  /// succeeded or not.
+  ///
+  /// A run that fetches 412 rows and creates no events is indistinguishable, in
+  /// the counts alone, from a run that fetched nothing — and the two have
+  /// completely different fixes. This is the field an operator reads when the
+  /// board is empty, and it names the stage that swallowed the records rather
+  /// than leaving them to guess.
+  outcomeReason String?
+
   org        Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   dataSource DataSource?  @relation(fields: [dataSourceId], references: [id], onDelete: SetNull)
 

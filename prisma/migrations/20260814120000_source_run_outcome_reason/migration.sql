@@ -1,0 +1,12 @@
+-- A source run says where its records went.
+--
+-- Three connectors have been running on schedule for weeks and producing
+-- nothing, and the reason was invisible: `recordsExamined` and `eventsCreated`
+-- record how many rows arrived and how many survived, and nothing at all
+-- records what happened in between. A successful request returning zero rows
+-- and a successful request whose every row was discarded by a filter look
+-- identical in those two integers, and they are fixed in completely different
+-- places.
+--
+-- This is the sentence an operator reads when the board is empty.
+ALTER TABLE "SourceRun" ADD COLUMN "outcomeReason" TEXT;

@@ -1,6 +1,11 @@
 import { prisma } from '@/lib/db';
 import type { RawDemandEvent } from '../events';
-import type { DemandConnector, DemandFetchContext, DemandFetchResult } from '../connector';
+import {
+  DropTally,
+  type DemandConnector,
+  type DemandFetchContext,
+  type DemandFetchResult,
+} from '../connector';
 
 /**
  * Inbound requests and operator-entered events.
@@ -53,20 +58,41 @@ export class InboundIntakeConnector implements DemandConnector {
 
     const events: RawDemandEvent[] = [];
     const warnings: string[] = [];
+    const tally = new DropTally();
 
     for (const row of staged) {
       const payload = row.rawPayload as Record<string, unknown>;
-      const event = parseIntake(payload, row.id, row.sourceUrl);
+      const event = parseIntake(payload, row.id, row.sourceUrl, tally);
       if (!event) {
         // An intake row without a date cannot become Tier A however it
         // arrived. Saying so beats silently downgrading it.
-        warnings.push(`Intake ${row.id} has no usable event date and was skipped.`);
+        warnings.push(`Intake ${row.id} was skipped; see the source funnel for which field was missing.`);
         continue;
       }
       events.push(event);
     }
 
-    return { events, recordsExamined: staged.length, nextCursor: null, warnings };
+    return {
+      events,
+      recordsExamined: staged.length,
+      nextCursor: null,
+      warnings,
+      funnel: [
+        {
+          scope: 'Unclaimed intake rows (first-party, no network)',
+          url: null,
+          fetched: staged.length,
+          accepted: events.length,
+          drops: tally.entries(),
+          failure: null,
+          // This is the one source whose emptiness is ordinary, and saying so
+          // keeps it from adding noise to the line that does need acting on.
+          emptyMeans:
+            'Nobody has submitted a request or written up an event since the last run. '
+            + 'That is an empty queue, not a fault: this source has no upstream to break.',
+        },
+      ],
+    };
   }
 }
 
@@ -81,6 +107,7 @@ export function parseIntake(
   payload: Record<string, unknown>,
   recordId: string,
   sourceUrl: string | null,
+  tally: DropTally = new DropTally(),
 ): RawDemandEvent | null {
   const str = (key: string): string => (typeof payload[key] === 'string' ? (payload[key] as string).trim() : '');
   const date = (key: string): Date | null => {
@@ -92,7 +119,15 @@ export function parseIntake(
 
   const organisation = str('organisation') || str('company');
   const eventDate = date('eventDate');
-  if (!organisation || !eventDate) return null;
+  if (!organisation) {
+    return tally.drop('the submission names no organisation', `fields sent: ${Object.keys(payload).slice(0, 12).join(', ')}`);
+  }
+  if (!eventDate) {
+    return tally.drop(
+      'the submission carries no usable eventDate',
+      typeof payload.eventDate === 'string' ? payload.eventDate : `fields sent: ${Object.keys(payload).slice(0, 12).join(', ')}`,
+    );
+  }
 
   const type = (str('type') || 'INBOUND_REQUEST') as RawDemandEvent['type'];
   const summary = str('summary') || str('detail');

@@ -1,0 +1,80 @@
+name: Connector probe
+
+# What the demand sources actually answer.
+#
+# Every dataset identifier and column name in the connectors was written from
+# documentation. The machines this project is developed on sit behind an egress
+# allowlist that includes none of the portals, so none of it has ever been
+# checked against a live source — and three connectors have been failing on
+# schedule with `Host not in allowlist`, which says nothing at all about whether
+# they would work from somewhere that can reach the internet.
+#
+# A runner can. This issues the exact request each connector would issue and
+# reports the status, the rows, the field names actually returned, which
+# configured columns are missing, and how many rows survive each filter.
+#
+# It reads public records from documented APIs and writes nothing — no database
+# connection, no ingest, no production change. Safe to run on a schedule, and
+# scheduled weekly so a republished dataset is noticed by the report rather than
+# by an empty board.
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Monday 06:20 UTC. Off the hour so it does not join every other cron.
+    - cron: '20 6 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: connector-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    name: probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      # The probe imports the connector modules, which import the generated
+      # client's types through the shared event types.
+      - name: Generate the Prisma client
+        run: npx prisma generate
+
+      - name: Ask the sources
+        env:
+          # Optional. Raises Socrata's shared rate limit; nothing needs it.
+          SOCRATA_APP_TOKEN: ${{ secrets.SOCRATA_APP_TOKEN }}
+        run: |
+          set -o pipefail
+          npx tsx scripts/connectorProbe.ts | tee probe.txt
+
+      - name: Put it in the run summary
+        if: always()
+        run: |
+          {
+            echo '## Demand connector probe'
+            echo
+            echo '```'
+            cat probe.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: connector-probe
+          path: probe.txt
+          retention-days: 30

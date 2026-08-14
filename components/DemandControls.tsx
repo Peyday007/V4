@@ -32,6 +32,15 @@ type SourceHealth = {
   eventsRejected: number;
   error: string | null;
   nextScheduledAt: string | null;
+  outcomeReason: string | null;
+  funnel: Array<{
+    scope: string;
+    url: string | null;
+    fetched: number;
+    accepted: number;
+    drops: Array<{ reason: string; count: number; example: string | null }>;
+    failure: string | null;
+  }>;
 };
 
 type FunnelStage = { stage: string; count: number };
@@ -172,18 +181,52 @@ export function DemandControls({
         </table>
       </div>
 
-      {health.some((s) => s.error) && (
-        <ul className="list-reset tiny mt" style={{ lineHeight: 1.6 }}>
-          {health
-            .filter((s) => s.error)
-            .map((s) => (
-              <li key={s.connector}>
-                <Badge tone={s.configured ? 'danger' : ''}>{s.configured ? 'error' : 'setup'}</Badge>{' '}
-                <strong>{s.name}:</strong> {s.error}
-              </li>
-            ))}
+      {/* Where the records went — for every source, not only the ones that
+          threw. A connector that fetches four hundred rows and creates no
+          events raises no error at all, and it was the most common way for
+          this board to be empty without anybody being able to say why. */}
+      <div className="mt">
+        <div className="tiny dim">Where the last run&apos;s records went</div>
+        <ul className="list-reset tiny mt" style={{ lineHeight: 1.6 }} data-testid="source-outcomes">
+          {health.map((s) => (
+            <li key={s.connector} data-testid={`source-outcome-${s.connector}`} className="mt">
+              <Badge
+                tone={
+                  !s.configured ? '' : s.lastStatus === 'FAILED' ? 'danger' : s.eventsCreated > 0 ? 'success' : ''
+                }
+              >
+                {!s.configured ? 'setup' : s.lastStatus === 'FAILED' ? 'error' : s.lastStatus === 'OK' ? 'ran' : 'idle'}
+              </Badge>{' '}
+              <strong>{s.name}:</strong>{' '}
+              {s.outcomeReason ?? s.error ?? 'No run has been recorded yet.'}
+              {s.funnel.length > 0 && (
+                <details className="mt">
+                  <summary className="dim">Per-dataset breakdown</summary>
+                  <ul className="list-reset" style={{ paddingLeft: '1rem' }}>
+                    {s.funnel.map((scope) => (
+                      <li key={scope.scope} className="mt">
+                        <strong>{scope.scope}</strong> — {scope.accepted} of {scope.fetched} row(s) kept
+                        {scope.failure ? <> · failed: {scope.failure}</> : null}
+                        {scope.drops.length > 0 && (
+                          <ul className="list-reset dim" style={{ paddingLeft: '1rem' }}>
+                            {scope.drops.map((d) => (
+                              <li key={d.reason}>
+                                {d.count} × {d.reason}
+                                {d.example ? <> — e.g. {d.example}</> : null}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        {scope.url && <div className="dim" style={{ wordBreak: 'break-all' }}>{scope.url}</div>}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </li>
+          ))}
         </ul>
-      )}
+      </div>
 
       {unconfigured.length > 0 && (
         <div className="alert small mt">

@@ -3,9 +3,11 @@ import { cleanCity, cleanState } from '@/lib/discovery/identity';
 import type { RawDemandEvent } from '../events';
 import {
   AllRequestsFailedError,
+  DropTally,
   type DemandConnector,
   type DemandFetchContext,
   type DemandFetchResult,
+  type SourceScopeReport,
 } from '../connector';
 
 /**
@@ -58,7 +60,9 @@ export class ContractAwardsConnector implements DemandConnector {
     const since = context.since ?? new Date(Date.now() - 120 * 86_400_000);
     const events: RawDemandEvent[] = [];
     const failures: string[] = [];
+    const tally = new DropTally();
     let recordsExamined = 0;
+    let accepted = 0;
     let newest: Date | null = null;
 
     // One request per page rather than per state: the filter takes a NAICS
@@ -112,8 +116,9 @@ export class ContractAwardsConnector implements DemandConnector {
         if (rows.length === 0) break;
 
         for (const row of rows) {
-          const event = toAwardEvent(row);
+          const event = toAwardEvent(row, tally);
           if (!event) continue;
+          accepted += 1;
           if (event.eventDate && (!newest || event.eventDate > newest)) newest = event.eventDate;
           events.push(event);
         }
@@ -128,11 +133,23 @@ export class ContractAwardsConnector implements DemandConnector {
       throw new AllRequestsFailedError(this.key, failures);
     }
 
+    const funnel: SourceScopeReport[] = [
+      {
+        scope: `USAspending awards, NAICS ${CLEANING_NAICS.join('/')}, since ${since.toISOString().slice(0, 10)}`,
+        url: USASPENDING_ENDPOINT,
+        fetched: recordsExamined,
+        accepted,
+        drops: tally.entries(),
+        failure: failures.length > 0 ? failures.join('; ').slice(0, 300) : null,
+      },
+    ];
+
     return {
       events: events.slice(0, context.maxRecords),
       recordsExamined,
       nextCursor: newest ? newest.toISOString() : context.cursor,
       warnings: failures,
+      funnel,
     };
   }
 }
@@ -145,21 +162,27 @@ export class ContractAwardsConnector implements DemandConnector {
  * is where crews would be needed. Whether the two differ is left for the
  * playbook to judge.
  */
-export function toAwardEvent(row: AwardRow): RawDemandEvent | null {
+export function toAwardEvent(row: AwardRow, tally: DropTally = new DropTally()): RawDemandEvent | null {
   const str = (key: string): string => {
     const value = row[key];
     return typeof value === 'string' ? value.trim() : value == null ? '' : String(value);
   };
+  const present = () => `fields returned: ${Object.keys(row).slice(0, 14).join(', ')}`;
 
   const recipient = str('Recipient Name');
   const awardId = str('Award ID') || str('generated_internal_id');
-  if (!recipient || !awardId) return null;
+  // The field names in the request are the API's display names, and they are
+  // the part most likely to have moved. Saying which one is missing turns a
+  // silent empty run into a one-line fix.
+  if (!recipient) return tally.drop('no "Recipient Name" in the response row', present());
+  if (!awardId) return tally.drop('no "Award ID" or "generated_internal_id"', present());
 
   // The award's start date is when the obligation begins, which is when crews
   // are actually needed. No date, no event.
   const startRaw = str('Start Date');
-  const eventDate = startRaw ? new Date(startRaw) : null;
-  if (!eventDate || Number.isNaN(eventDate.getTime())) return null;
+  if (!startRaw) return tally.drop('no "Start Date"', present());
+  const eventDate = new Date(startRaw);
+  if (Number.isNaN(eventDate.getTime())) return tally.drop('"Start Date" is not a date', startRaw);
 
   const endRaw = str('End Date');
   const completesAt = endRaw ? new Date(endRaw) : null;

@@ -4,10 +4,12 @@ import { cleanCity, cleanState } from '@/lib/discovery/identity';
 import type { RawDemandEvent } from '../events';
 import {
   AllRequestsFailedError,
+  DropTally,
   NotConfiguredError,
   type DemandConnector,
   type DemandFetchContext,
   type DemandFetchResult,
+  type SourceScopeReport,
 } from '../connector';
 
 /**
@@ -243,24 +245,34 @@ export class MunicipalOpenDataConnector implements DemandConnector {
     const events: RawDemandEvent[] = [];
     const failures: string[] = [];
     const warnings: string[] = [];
+    const funnel: SourceScopeReport[] = [];
     let recordsExamined = 0;
     let newestSeen: Date | null = null;
 
     for (const jurisdiction of covering) {
       if (events.length >= context.maxRecords) break;
+      const scope = `${jurisdiction.label} (${jurisdiction.domain}/${jurisdiction.datasetId})`;
+      const url = buildQueryUrl(jurisdiction, since, perDataset);
+      const tally = new DropTally();
       try {
         const rows = await queryDataset(jurisdiction, since, perDataset, context);
         recordsExamined += rows.length;
+        let accepted = 0;
         for (const row of rows) {
-          const event = toDemandEvent(row, jurisdiction);
+          const event = toDemandEvent(row, jurisdiction, tally);
           if (!event) continue;
+          accepted += 1;
           if (event.eventDate && (!newestSeen || event.eventDate > newestSeen)) newestSeen = event.eventDate;
           events.push(event);
         }
+        funnel.push({ scope, url, fetched: rows.length, accepted, drops: tally.entries(), failure: null });
       } catch (error) {
         // One republished dataset must not take down the others, but the
         // failure is named so it can be fixed rather than absorbed.
-        failures.push(`${jurisdiction.label} (${jurisdiction.domain}/${jurisdiction.datasetId}): ${String(error).slice(0, 160)}`);
+        failures.push(`${scope}: ${String(error).slice(0, 160)}`);
+        funnel.push({
+          scope, url, fetched: 0, accepted: 0, drops: [], failure: String(error).slice(0, 300),
+        });
       }
     }
 
@@ -275,6 +287,7 @@ export class MunicipalOpenDataConnector implements DemandConnector {
       // The cursor is the newest *source* date seen, never the time this ran.
       nextCursor: newestSeen ? newestSeen.toISOString() : context.cursor,
       warnings,
+      funnel,
     };
   }
 }
@@ -348,8 +361,18 @@ async function queryDataset(
  * Returns null rather than filling gaps. A row with no date cannot support a
  * tier-A or tier-B claim and there is nothing to be gained by admitting it
  * with today's date standing in.
+ *
+ * Every rejection is counted against a named reason. A dataset that republishes
+ * `license_start_date` under a new name goes from producing hundreds of events
+ * to producing none, and without the tally that shows up as an empty board with
+ * no explanation — which is exactly the failure this connector was returning
+ * before anybody thought to count.
  */
-export function toDemandEvent(row: Row, dataset: JurisdictionDataset): RawDemandEvent | null {
+export function toDemandEvent(
+  row: Row,
+  dataset: JurisdictionDataset,
+  tally: DropTally = new DropTally(),
+): RawDemandEvent | null {
   const get = (column?: string): string => {
     if (!column) return '';
     const value = row[column];
@@ -360,12 +383,25 @@ export function toDemandEvent(row: Row, dataset: JurisdictionDataset): RawDemand
   const eventDate = rawDate ? new Date(rawDate) : null;
   // No usable source date means no event. This is the rule the old pipeline
   // broke by falling back to ingestion time.
-  if (!eventDate || Number.isNaN(eventDate.getTime())) return null;
+  if (!rawDate) {
+    return tally.drop(
+      `the row has no "${dataset.dateColumn}"`,
+      `columns present: ${Object.keys(row).slice(0, 12).join(', ')}`,
+    );
+  }
+  if (!eventDate || Number.isNaN(eventDate.getTime())) {
+    return tally.drop(`"${dataset.dateColumn}" is not a date`, rawDate);
+  }
 
   const legalName = get(dataset.columns.name);
   const dba = get(dataset.columns.doingBusinessAs);
   const name = dba || legalName;
-  if (!name || name.length < 3) return null;
+  if (!name || name.length < 3) {
+    return tally.drop(
+      `no usable name in "${dataset.columns.doingBusinessAs ?? '-'}" or "${dataset.columns.name ?? '-'}"`,
+      `columns present: ${Object.keys(row).slice(0, 12).join(', ')}`,
+    );
+  }
 
   const address = get(dataset.columns.address);
   const description = get(dataset.columns.description);
