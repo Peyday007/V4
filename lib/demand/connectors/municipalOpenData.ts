@@ -82,16 +82,34 @@ export type JurisdictionDataset = {
    * the record loses the distinction that decides who to sell to.
    */
   contractorRole?: EventPartyRole;
+  /**
+   * Why this dataset cannot currently produce events, when that is known.
+   *
+   * Set only from observed evidence — a probe run against the live portal —
+   * and never from a guess. A dataset carrying this is not requested: asking a
+   * host every four hours for something it has already said it does not have
+   * is rude to them and tells us nothing new. It stays in the configuration
+   * rather than being deleted, because the reason is the useful part, and
+   * because a city that republishes should be picked up by editing one line.
+   */
+  unusableReason?: string;
 };
 
 /**
- * Jurisdictions shipped as defaults.
+ * Jurisdictions shipped as defaults, checked against the live portals.
  *
- * Every one is a real, public, no-key Socrata dataset. Dataset identifiers do
- * change when a city republishes, so the connector fails loudly with the URL it
- * tried rather than returning nothing, and the deployed probe reports exactly
- * which jurisdiction is broken. Nothing here is claimed to have been verified
- * against the live portal from this environment — the sandbox has no egress.
+ * These were written from documentation and had never been verified, because
+ * nothing this project is developed on can reach a city portal.
+ * scripts/connectorProbe.ts, run from a job with open egress, asked all five:
+ * Chicago worked; San Francisco was producing events with four of its columns
+ * silently wrong; Seattle was discarding every row for a renamed column and an
+ * integer date; Austin's permits 400'd on a column that no longer exists and
+ * has since lost every name field; Dallas answers with an empty set whatever
+ * it is asked.
+ *
+ * What could be corrected from that evidence has been. What could not is
+ * marked with an `unusableReason` and left in place, because a guess at a
+ * replacement is worth less than a recorded fact about what broke.
  */
 export const DEFAULT_JURISDICTIONS: JurisdictionDataset[] = [
   {
@@ -165,27 +183,34 @@ export const DEFAULT_JURISDICTIONS: JurisdictionDataset[] = [
     label: 'Austin issued construction permits',
     eventType: 'RENOVATION_OR_CONSTRUCTION',
     state: 'TX',
-    dateColumn: 'issued_date',
+    // Was `issued_date`, which does not exist and made every request a 400.
+    dateColumn: 'issue_date',
     columns: {
-      name: 'applicant_organization',
       address: 'original_address1',
       city: 'original_city',
       zip: 'original_zip',
       description: 'description',
       naturalKey: 'permit_number',
-      scale: 'total_new_add_sqft',
-      applicant: 'contractor_company_name',
       status: 'status_current',
     },
     // Commercial work only. A residential remodel is not this business.
     where: "upper(permit_class_mapped) = 'COMMERCIAL'",
-    // Austin publishes the applicant organisation and the contractor in
-    // separate columns, so the organisation is the party the work is *for*.
-    // Where a portal gives only one name, it is the contractor, and filing
-    // them as a buyer would put a building firm on the board as somebody who
-    // needs cleaning.
+    // Austin used to publish the applicant organisation and the contractor in
+    // separate columns, so the organisation was the party the work is *for*.
     primaryRole: 'PROPERTY_OWNER',
     contractorRole: 'PRIME_CONTRACTOR',
+    // The date column was wrong *and* the dataset has since dropped every name
+    // column: the live schema is applieddate, description, expiresdate,
+    // issue_date, original_address1..zip, permit_class, permit_number,
+    // permittype, project_id, status_current, work_class and no more. A permit
+    // with an address and no organisation cannot be routed to anybody, and
+    // inventing an occupant from an address is precisely the invention this
+    // pipeline exists to refuse. The date fix stands so that the day Austin
+    // republishes a name, this is one line from working.
+    unusableReason:
+      'Austin no longer publishes an applicant or contractor name in this dataset, only an address. '
+      + 'There is no organisation to route the permit to, and guessing who occupies the address would be '
+      + 'inventing the buyer. Re-enable if a name column returns.',
   },
   {
     domain: 'www.dallasopendata.com',
@@ -202,6 +227,15 @@ export const DEFAULT_JURISDICTIONS: JurisdictionDataset[] = [
       scale: 'estimated_cost',
     },
     primaryRole: 'APPLICANT',
+    // Answers 200 and returns no rows at all, filtered or not, so none of the
+    // configured columns can even be checked. Something is wrong with the
+    // identifier or the dataset is empty; either way it produces nothing and
+    // there is no evidence yet for what the replacement should be. Not
+    // guessed at.
+    unusableReason:
+      'Returns an empty set for every query, so not one configured column can be confirmed to exist. '
+      + 'The dataset identifier is probably stale. Needs a replacement found and checked before it is '
+      + 'worth requesting again.',
   },
 ];
 
@@ -235,9 +269,24 @@ export class MunicipalOpenDataConnector implements DemandConnector {
       );
     }
 
-    const covering = context.states.length
+    const inScope = context.states.length
       ? jurisdictions.filter((j) => context.states.includes(j.state.toUpperCase()))
       : jurisdictions;
+
+    // Datasets already known not to work are reported rather than requested.
+    // Asking a portal every four hours for something it has said it does not
+    // have costs them bandwidth and teaches us nothing, and burying the reason
+    // in a failure count is how the last set of broken sources stayed broken.
+    const known = inScope.filter((j) => j.unusableReason);
+    const covering = inScope.filter((j) => !j.unusableReason);
+
+    if (covering.length === 0 && known.length > 0) {
+      throw new NotConfiguredError(
+        this.key,
+        `every configured jurisdiction is known to be unusable (${known.length})`,
+        known.map((j) => `${j.label}: ${j.unusableReason}`).join(' '),
+      );
+    }
 
     if (covering.length === 0) {
       throw new NotConfiguredError(
@@ -256,6 +305,21 @@ export class MunicipalOpenDataConnector implements DemandConnector {
     const funnel: SourceScopeReport[] = [];
     let recordsExamined = 0;
     let newestSeen: Date | null = null;
+
+    // The skipped ones lead the report. They are the whole reason the
+    // remaining coverage is what it is, and a source list that quietly omits
+    // them looks like a smaller ambition rather than a broken portal.
+    for (const jurisdiction of known) {
+      funnel.push({
+        scope: `${jurisdiction.label} (${jurisdiction.domain}/${jurisdiction.datasetId}) — not requested`,
+        url: null,
+        fetched: 0,
+        accepted: 0,
+        drops: [],
+        failure: null,
+        emptyMeans: `Deliberately not requested. ${jurisdiction.unusableReason}`,
+      });
+    }
 
     for (const jurisdiction of covering) {
       if (events.length >= context.maxRecords) break;

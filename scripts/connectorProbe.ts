@@ -330,12 +330,19 @@ async function probeJurisdiction(dataset: JurisdictionDataset, since: Date) {
   let accepted = 0;
   for (const row of rows) if (toDemandEvent(row, dataset, tally)) accepted += 1;
 
+  // A successful query returning nothing is the case that reads as "a quiet
+  // week" and most needs a second question: does the dataset hold anything at
+  // all, and does it still have the columns this expects?
+  const followUpOnEmpty =
+    rows.length === 0 ? await followUp(dataset.domain, dataset.datasetId, dataset.label) : {};
+
   record({
     ...base,
     status,
     transportError: null,
     rows: rows.length,
     fields,
+    ...followUpOnEmpty,
     columns: judgeColumns(
       [
         ['date', dataset.dateColumn],
@@ -396,12 +403,16 @@ async function probeSolicitation(dataset: SolicitationDataset, since: Date) {
   let accepted = 0;
   for (const row of rows) if (toSolicitationEvent(row, dataset, tally)) accepted += 1;
 
+  const followUpOnEmpty =
+    rows.length === 0 ? await followUp(dataset.domain, dataset.datasetId, dataset.label) : {};
+
   record({
     ...base,
     status,
     transportError: null,
     rows: rows.length,
     fields,
+    ...followUpOnEmpty,
     columns: judgeColumns(
       [
         ['date', dataset.dateColumn],

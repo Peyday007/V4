@@ -204,6 +204,48 @@ describe('mappers name the field that stopped them', () => {
   });
 });
 
+describe('a portal known to be broken is reported, not quietly dropped', () => {
+  const unusable = [
+    ...DEFAULT_JURISDICTIONS.filter((j) => j.unusableReason),
+    ...DEFAULT_SOLICITATION_DATASETS.filter((d) => d.unusableReason),
+  ];
+
+  it('marks exactly the datasets the probe found could not work', () => {
+    expect(unusable.map((d) => d.datasetId).sort()).toEqual(
+      ['3syk-w9eu', 'e7gq-4sah', 'sdmv-cwsk', 'wxdc-cbe2'].sort(),
+    );
+  });
+
+  it('gives every one of them a reason specific enough to act on', () => {
+    for (const dataset of unusable) {
+      // Not "broken" or "disabled" — what the host actually answered, so
+      // somebody picking this up later does not have to rediscover it.
+      expect(dataset.unusableReason!.length).toBeGreaterThan(60);
+      expect(dataset.unusableReason).not.toMatch(/^(broken|disabled|todo|n\/a)/i);
+    }
+  });
+
+  it('keeps them in the configuration rather than deleting the evidence', () => {
+    // Deleting a broken portal makes the source list look like a smaller
+    // ambition instead of a set of cities that moved.
+    expect(DEFAULT_JURISDICTIONS).toHaveLength(5);
+    expect(DEFAULT_SOLICITATION_DATASETS).toHaveLength(3);
+  });
+
+  it('leaves the working ones untouched', () => {
+    const working = DEFAULT_JURISDICTIONS.filter((j) => !j.unusableReason).map((j) => j.domain);
+    expect(working).toEqual(['data.cityofchicago.org', 'data.sfgov.org', 'data.seattle.gov']);
+  });
+
+  it('kept Austin\'s date-column correction even though the dataset is parked', () => {
+    // The column name was genuinely wrong as well as the names being gone. If
+    // Austin republishes a name column this should be one line from working,
+    // not two.
+    const austin = DEFAULT_JURISDICTIONS.find((j) => j.datasetId === '3syk-w9eu')!;
+    expect(austin.dateColumn).toBe('issue_date');
+  });
+});
+
 describe('dates as the portals actually publish them', () => {
   it('reads Seattle\'s compact integer date', () => {
     // The real value the probe found. `new Date('20261230')` is Invalid Date,
@@ -253,7 +295,7 @@ describe('dates as the portals actually publish them', () => {
     );
     expect(tally.entries()).toEqual([]);
     expect(event).not.toBeNull();
-    expect(event!.eventDate.toISOString().slice(0, 10)).toBe('2026-12-30');
+    expect(event!.eventDate!.toISOString().slice(0, 10)).toBe('2026-12-30');
     expect(event!.addressLine1).toBe('1200 5th Ave');
     expect(event!.postalCode).toBe('98101');
     // The source's own identifier, not a key derived because the column name

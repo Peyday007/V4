@@ -57,12 +57,25 @@ export class NotJsonError extends Error {
 /** Names what came back instead, from the shapes that actually turn up. */
 function describeNonJson(body: string): string {
   const title = /<title[^>]*>([^<]{1,80})/i.exec(body)?.[1]?.trim();
-  if (/Web Page Blocked|attack_ID|Access Denied|Request Rejected/i.test(body)) {
-    return 'a filtering appliance\'s block page';
-  }
+  if (looksLikeBlockPage(body)) return 'a filtering appliance\'s block page';
   if (title) return `an HTML page titled "${title}"`;
   if (/^\s*</.test(body)) return 'an HTML page';
   return `${body.slice(0, 60).replace(/\s+/g, ' ')}…`;
+}
+
+/**
+ * Whether a response is an appliance talking rather than the API.
+ *
+ * Worth its own function because the distinction changes who has to act. An API
+ * rejecting a query is a bug in the query, and the fix is here. A filter
+ * dropping the request before it arrives is a fact about where the requests
+ * leave from, and no amount of work on the query will touch it — telling an
+ * operator to check their filters would send them somewhere with nothing to
+ * find. USAspending answers this way from Vercel's egress and from a GitHub
+ * runner alike, with a 500 whose body is a block page.
+ */
+export function looksLikeBlockPage(body: string): boolean {
+  return /Web Page Blocked|attack_ID|Access Denied|Request Rejected|blocked by/i.test(body);
 }
 
 export class MissingCredentialError extends Error {

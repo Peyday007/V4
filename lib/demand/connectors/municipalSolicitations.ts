@@ -80,6 +80,16 @@ export type SolicitationDataset = {
     awardee?: string;
   };
   where?: string;
+  /**
+   * Why this portal cannot currently produce events, when that is known.
+   *
+   * Set only from a probe run against the live host, never from a guess. A
+   * portal carrying this is not requested — asking every four hours for
+   * something it has already said it does not serve is rude and teaches us
+   * nothing — but it stays in the configuration, because the reason is the
+   * useful part and a city that comes back should be one line from working.
+   */
+  unusableReason?: string;
 };
 
 /**
@@ -99,12 +109,14 @@ const SUPPLY_TERMS = /\b(suppl|product|consumable|paper|liner|chemical|dispenser
 const VENDOR_LIST_TERMS = /\b(vendor\s*list|vendor\s*registration|prequalif|pre-?qualif|sources\s*sought|rfi|request\s*for\s*information|supplier\s*registration)\b/i;
 
 /**
- * Jurisdictions shipped as defaults.
+ * Portals shipped as defaults, and what each was actually found to do.
  *
- * Real, public, no-key Socrata datasets. Dataset identifiers change when a
- * city republishes, so a failure names the URL it tried and the deployed probe
- * reports exactly which one broke. None has been verified from this
- * environment, which has no egress.
+ * These were written from documentation and, until scripts/connectorProbe.ts
+ * ran against the live hosts, none had ever been checked. Two of the three
+ * turned out not to work at all: Baltimore had left Socrata and Austin's
+ * dataset was gone. Both carry an `unusableReason` recording exactly what the
+ * portal answered, and both stay here rather than being deleted, because the
+ * evidence is the useful part and a city that comes back is one line away.
  */
 export const DEFAULT_SOLICITATION_DATASETS: SolicitationDataset[] = [
   {
@@ -139,6 +151,14 @@ export const DEFAULT_SOLICITATION_DATASETS: SolicitationDataset[] = [
       noticeType: 'type',
       status: 'status',
     },
+    // The host is up and answers 200 — with an ArcGIS Hub page. Baltimore
+    // moved its open data off Socrata and left the domain serving the new
+    // platform's front end, which is why this read as healthy from every
+    // angle except the content. Finding the equivalent on ArcGIS is real work
+    // and a different API; it is not a dataset identifier to swap in.
+    unusableReason:
+      'data.baltimorecity.gov has moved off Socrata to ArcGIS Hub and answers this path with an HTML page. '
+      + 'A replacement needs the ArcGIS API, not a new four-by-four.',
   },
   {
     domain: 'data.austintexas.gov',
@@ -155,6 +175,13 @@ export const DEFAULT_SOLICITATION_DATASETS: SolicitationDataset[] = [
       noticeType: 'solicitation_type',
       status: 'status',
     },
+    // 404 dataset.missing, and the portal's own catalogue offered nothing
+    // under this name. Republished or withdrawn; either way there is no
+    // evidence for what should replace it, and a plausible-looking substitute
+    // chosen unread is the same guess that put fixture data in the portfolio.
+    unusableReason:
+      'The portal returns 404 dataset.missing for sdmv-cwsk and its catalogue offers no obvious successor. '
+      + 'Needs a replacement identified and its columns checked before it is requested again.',
   },
 ];
 
@@ -187,9 +214,21 @@ export class MunicipalSolicitationsConnector implements DemandConnector {
       );
     }
 
-    const covering = context.states.length
+    const inScope = context.states.length
       ? datasets.filter((d) => context.states.includes(d.state.toUpperCase()))
       : datasets;
+
+    // Portals already known not to serve this are reported, not requested.
+    const known = inScope.filter((d) => d.unusableReason);
+    const covering = inScope.filter((d) => !d.unusableReason);
+
+    if (covering.length === 0 && known.length > 0) {
+      throw new NotConfiguredError(
+        this.key,
+        `every configured portal is known to be unusable (${known.length})`,
+        known.map((d) => `${d.label}: ${d.unusableReason}`).join(' '),
+      );
+    }
     if (covering.length === 0) {
       throw new NotConfiguredError(
         this.key,
@@ -206,6 +245,18 @@ export class MunicipalSolicitationsConnector implements DemandConnector {
     const funnel: SourceScopeReport[] = [];
     let recordsExamined = 0;
     let newest: Date | null = null;
+
+    for (const dataset of known) {
+      funnel.push({
+        scope: `${dataset.label} (${dataset.domain}/${dataset.datasetId}) — not requested`,
+        url: null,
+        fetched: 0,
+        accepted: 0,
+        drops: [],
+        failure: null,
+        emptyMeans: `Deliberately not requested. ${dataset.unusableReason}`,
+      });
+    }
 
     for (const dataset of covering) {
       if (events.length >= context.maxRecords) break;

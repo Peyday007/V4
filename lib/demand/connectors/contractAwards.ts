@@ -1,4 +1,4 @@
-import { httpJson } from '@/lib/discovery/http';
+import { httpJson, looksLikeBlockPage } from '@/lib/discovery/http';
 import { cleanCity, cleanState } from '@/lib/discovery/identity';
 import type { RawDemandEvent } from '../events';
 import {
@@ -130,6 +130,20 @@ export class ContractAwardsConnector implements DemandConnector {
     // Every page failing is an outage or a changed contract, not a quiet
     // quarter. Reporting it as a successful empty run leaves nothing to act on.
     if (failures.length > 0 && events.length === 0) {
+      // A block page is a filter in front of the API, not the API refusing the
+      // query: the request carries no credential and the endpoint is public,
+      // so nothing here can be fixed by changing what is asked. The probe sees
+      // this from a GitHub runner and the deployment sees it from Vercel, and
+      // sending somebody to check their filters would send them nowhere.
+      if (failures.some(looksLikeBlockPage)) {
+        throw new AllRequestsFailedError(this.key, [
+          'A network filter in front of USAspending is answering instead of the API — the response is a '
+          + 'block page, not an API error, so the request never arrived. Nothing in the query will change '
+          + 'that: try a different DISCOVERY_USER_AGENT, request from somewhere else, or turn this source '
+          + 'off. The municipal sources are unaffected.',
+          ...failures.slice(0, 2),
+        ]);
+      }
       throw new AllRequestsFailedError(this.key, failures);
     }
 
