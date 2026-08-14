@@ -80,6 +80,21 @@ const ENRICHMENT: Record<string, { label: string; tone: string; hint: string }> 
 
 type Summary = Record<string, number>;
 
+/**
+ * Why the board is empty, from the server.
+ *
+ * Computed only when there is nothing to show, because answering it costs
+ * several queries and a board full of work has no use for the answer.
+ */
+type Emptiness = {
+  nothingCollected: boolean;
+  totalRoutes: number;
+  totalEvents: number;
+  headline: string;
+  brokenStage: { stage: string; detail: string; fix: string } | null;
+  sources: Array<{ connector: string; name: string; state: string; reason: string }>;
+};
+
 const VIEWS: Array<{ key: string; label: string; hint: string }> = [
   { key: 'call_now', label: 'Call now', hint: 'Live demand, a phone number, nothing scheduled for later.' },
   { key: 'follow_up', label: 'Follow up', hint: 'Scheduled. Overdue first.' },
@@ -158,6 +173,7 @@ export function DemandQueue({
 }) {
   const [view, setView] = useState('call_now');
   const [rows, setRows] = useState<Row[]>([]);
+  const [emptiness, setEmptiness] = useState<Emptiness | null>(null);
   const [summary, setSummary] = useState<Summary>({});
   const [total, setTotal] = useState(0);
   const [cursor, setCursor] = useState<number | null>(0);
@@ -210,6 +226,7 @@ export function DemandQueue({
         setTotal(body.total);
         setCursor(body.nextCursor);
         if (body.summary) setSummary(body.summary);
+        setEmptiness(body.emptiness ?? null);
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : String(caught));
       } finally {
@@ -397,11 +414,48 @@ export function DemandQueue({
         </div>
       )}
 
+      {/* An empty board has to say which of three things it is: a filter with
+          nothing behind it, an engine that has collected nothing because a
+          source is broken, or an engine that is working and has genuinely
+          found nothing yet. Only the last is "not an error", and this used to
+          claim it unconditionally — while four datasets had moved and a fifth
+          was answering with a block page. */}
       {!loading && rows.length === 0 && (
-        <div className="card">
-          <p className="small muted">
-            Nothing in this view. That is a result, not an error — the other tabs may have work.
-          </p>
+        <div className="card" data-testid="board-empty">
+          <p className="small">{emptiness?.headline ?? 'Nothing in this view.'}</p>
+
+          {emptiness?.brokenStage && (
+            <div className="alert warning small" data-testid="broken-stage">
+              <strong>First broken stage: {emptiness.brokenStage.stage}.</strong>{' '}
+              {emptiness.brokenStage.detail}
+              <div className="mt">{emptiness.brokenStage.fix}</div>
+            </div>
+          )}
+
+          {emptiness?.nothingCollected && !emptiness.brokenStage && (
+            <p className="small muted">
+              Every source ran and none reported a fault. Nothing has been published that matches what this
+              business does — that is a result, not an error.
+            </p>
+          )}
+
+          {emptiness && emptiness.sources.length > 0 && (
+            <details className="mt">
+              <summary className="tiny dim">What each source last did</summary>
+              <ul className="list-reset tiny mt" style={{ lineHeight: 1.6 }}>
+                {emptiness.sources.map((source) => (
+                  <li key={source.connector} className="mt">
+                    <Badge tone={source.state === 'working' ? 'success' : source.state === 'failing' ? 'danger' : ''}>
+                      {source.state}
+                    </Badge>{' '}
+                    <strong>{source.name}:</strong> {source.reason}
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+
+          <a className="btn secondary mt" href="/demand/sources">Source health</a>
         </div>
       )}
 

@@ -5,6 +5,7 @@ import { can, requireUser } from '@/lib/auth/session';
 import { computePipelineAnalytics } from '@/lib/ai/analytics';
 import { computePipelineMetrics, generateDailyPlan } from '@/lib/ai/planner';
 import { grossProfitPipeline } from '@/lib/evidence/economics';
+import { boardEmptiness } from '@/lib/demand/emptyState';
 import { ActionButton } from '@/components/ActionButton';
 import { Badge, Empty, humanize, money, PriorityBadge, relativeDays, Stat, TypeBadge } from '@/components/ui';
 
@@ -24,10 +25,11 @@ export default async function DashboardPage() {
     plan = await prisma.dailyPlan.findUnique({ where: { orgId_planDate: { orgId: user.orgId, planDate } } });
   }
 
-  const [metrics, analytics, pipeline, closest, blocked, noAction, movable, supplyGaps] = await Promise.all([
+  const [metrics, analytics, pipeline, emptiness, closest, blocked, noAction, movable, supplyGaps] = await Promise.all([
     computePipelineMetrics(user.orgId),
     computePipelineAnalytics(user.orgId),
     grossProfitPipeline({ orgId: user.orgId }),
+    boardEmptiness(user.orgId),
     prisma.opportunity.findMany({
       where: { orgId: user.orgId, status: { in: ['ACTIVE', 'WAITING'] } },
       orderBy: [{ closingProbability: 'desc' }, { expectedValue: 'desc' }],
@@ -137,7 +139,25 @@ export default async function DashboardPage() {
               <span className="tiny dim">{plan?.createdAt ? `generated ${relativeDays(plan.createdAt)}` : ''}</span>
             </div>
             {priorities.length === 0 ? (
-              <Empty>Nothing requires attention. Run discovery or import accounts to create work.</Empty>
+              /* "Run discovery to create work" is advice for an engine that is
+                 working and idle. When the collection chain is broken it sends
+                 the owner to press a button that will fail again, so the
+                 broken stage is named here instead. */
+              emptiness.brokenStage ? (
+                <div className="alert warning small" data-testid="dashboard-broken-stage">
+                  <strong>No work, and it is not because the day is quiet.</strong>
+                  <div className="mt">
+                    First broken stage: {emptiness.brokenStage.stage}. {emptiness.brokenStage.detail}
+                  </div>
+                  <div className="mt">{emptiness.brokenStage.fix}</div>
+                  <Link href="/demand/sources" className="btn secondary mt">Source health</Link>
+                </div>
+              ) : (
+                <Empty>
+                  Nothing requires attention. Every source ran and reported no fault; there is genuinely
+                  nothing waiting.
+                </Empty>
+              )
             ) : (
               <ol className="list-reset">
                 {priorities.map((priority) => (

@@ -1,6 +1,7 @@
 import { requirePermission } from '@/lib/auth/session';
 import { handleRouteError, json } from '@/lib/api';
 import { queryQueue, queueSummary, type QueueFilters, type QueueView } from '@/lib/demand/queue';
+import { boardEmptiness } from '@/lib/demand/emptyState';
 
 export const dynamic = 'force-dynamic';
 
@@ -39,7 +40,13 @@ export async function GET(request: Request) {
       url.searchParams.get('summary') === 'skip' ? Promise.resolve(null) : queueSummary(user.orgId),
     ]);
 
-    return json({ ...page, summary });
+    // Only when there is nothing to show. An empty board has to say which
+    // stage of the chain from source to callable route stopped, and that
+    // question costs a handful of queries nobody should pay for on a board
+    // that is full of work.
+    const emptiness = page.rows.length === 0 ? await boardEmptiness(user.orgId) : null;
+
+    return json({ ...page, summary, emptiness });
   } catch (error) {
     return handleRouteError(error);
   }
