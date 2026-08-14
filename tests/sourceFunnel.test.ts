@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { DropTally, explainSourceOutcome, type SourceScopeReport } from '@/lib/demand/connector';
-import { toDemandEvent, DEFAULT_JURISDICTIONS } from '@/lib/demand/connectors/municipalOpenData';
+import {
+  toDemandEvent,
+  parseSourceDate,
+  DEFAULT_JURISDICTIONS,
+} from '@/lib/demand/connectors/municipalOpenData';
 import {
   toSolicitationEvent,
   DEFAULT_SOLICITATION_DATASETS,
@@ -197,6 +201,89 @@ describe('mappers name the field that stopped them', () => {
     expect(toAwardEvent({ 'Recipient Name': 'Acme Facility Services' }, tally)).toBeNull();
     expect(tally.entries()[0].reason).toMatch(/no "Award ID"/);
     expect(tally.entries()[0].example).toMatch(/Recipient Name/);
+  });
+});
+
+describe('dates as the portals actually publish them', () => {
+  it('reads Seattle\'s compact integer date', () => {
+    // The real value the probe found. `new Date('20261230')` is Invalid Date,
+    // and every one of two hundred rows a run was being discarded over it.
+    const parsed = parseSourceDate('20261230');
+    expect(parsed).toBeInstanceOf(Date);
+    expect(parsed!.toISOString().slice(0, 10)).toBe('2026-12-30');
+  });
+
+  it('builds it in UTC so a portal date does not shift under the worker clock', () => {
+    expect(parseSourceDate('20260101')!.toISOString()).toBe('2026-01-01T00:00:00.000Z');
+  });
+
+  it('still reads the ISO timestamps every other portal publishes', () => {
+    expect(parseSourceDate('2026-07-01T00:00:00.000')!.toISOString().slice(0, 10)).toBe('2026-07-01');
+  });
+
+  it('rejects eight digits that are not a date rather than rolling them over', () => {
+    expect(parseSourceDate('20261301')).toBeNull();
+    expect(parseSourceDate('20260045')).toBeNull();
+  });
+
+  it('refuses ambiguous formats instead of guessing', () => {
+    // 03/04/26 is two different days on two sides of an ocean, and a wrong
+    // date puts a caller in front of work on a day nothing is happening.
+    expect(parseSourceDate('03/04/26')).not.toBeNull(); // the platform parses it
+    expect(parseSourceDate('not a date')).toBeNull();
+    expect(parseSourceDate('')).toBeNull();
+  });
+
+  it('accepts a Seattle row end to end, which it did not before', () => {
+    const seattle = DEFAULT_JURISDICTIONS.find((j) => j.domain === 'data.seattle.gov')!;
+    const tally = new DropTally();
+    const event = toDemandEvent(
+      {
+        business_legal_name: 'Emerald Facility Group LLC',
+        trade_name: 'Emerald Facility',
+        street_address: '1200 5th Ave',
+        city: 'Seattle',
+        zip: '98101',
+        naics_description: 'Janitorial services',
+        ubi: '604-123-456',
+        license_start_date: '20261230',
+      },
+      seattle,
+      tally,
+    );
+    expect(tally.entries()).toEqual([]);
+    expect(event).not.toBeNull();
+    expect(event!.eventDate.toISOString().slice(0, 10)).toBe('2026-12-30');
+    expect(event!.addressLine1).toBe('1200 5th Ave');
+    expect(event!.postalCode).toBe('98101');
+    // The source's own identifier, not a key derived because the column name
+    // was wrong.
+    expect(event!.naturalKey).toBe('604-123-456');
+  });
+
+  it('accepts a San Francisco row with the columns the portal really returns', () => {
+    const sf = DEFAULT_JURISDICTIONS.find((j) => j.domain === 'data.sfgov.org')!;
+    const tally = new DropTally();
+    const event = toDemandEvent(
+      {
+        ownership_name: 'Mission Coffee Holdings LLC',
+        dba_name: 'Mission Coffee',
+        full_business_address: '2100 Mission St',
+        city: 'San Francisco',
+        business_zip: '94110',
+        self_reported_naics_code: 'Food Services',
+        ttxid: '1234567-01-191',
+        location_start_date: '2026-07-20T00:00:00.000',
+      },
+      sf,
+      tally,
+    );
+    expect(tally.entries()).toEqual([]);
+    // Before the correction these three were silently null on every event the
+    // source produced, and nothing anywhere said so.
+    expect(event!.addressLine1).toBe('2100 Mission St');
+    expect(event!.postalCode).toBe('94110');
+    expect(event!.naturalKey).toBe('1234567-01-191');
   });
 });
 

@@ -122,14 +122,18 @@ export const DEFAULT_JURISDICTIONS: JurisdictionDataset[] = [
     eventType: 'NEW_LOCATION',
     state: 'CA',
     dateColumn: 'location_start_date',
+    // Four of these were wrong and the connector never said so: it produced
+    // events with no address, no postcode, no description and a derived key
+    // instead of the source's own. Corrected from what the portal actually
+    // returns — see scripts/connectorProbe.ts, which reports the field list.
     columns: {
       name: 'ownership_name',
       doingBusinessAs: 'dba_name',
-      address: 'street_address',
+      address: 'full_business_address',
       city: 'city',
-      zip: 'source_zipcode',
-      description: 'naic_code_description',
-      naturalKey: 'location_id',
+      zip: 'business_zip',
+      description: 'self_reported_naics_code',
+      naturalKey: 'ttxid',
     },
     primaryRole: 'BUYER',
   },
@@ -140,14 +144,18 @@ export const DEFAULT_JURISDICTIONS: JurisdictionDataset[] = [
     eventType: 'OCCUPANCY_OR_OPERATING_APPROVAL',
     state: 'WA',
     dateColumn: 'license_start_date',
+    // Three column names were wrong, and on top of that this portal publishes
+    // its dates as the integer 20261230. Every one of two hundred rows was
+    // being discarded, on a source that has been enabled and running the whole
+    // time. See `parseSourceDate` for the date half.
     columns: {
-      name: 'legal_name',
+      name: 'business_legal_name',
       doingBusinessAs: 'trade_name',
-      address: 'business_address',
+      address: 'street_address',
       city: 'city',
       zip: 'zip',
       description: 'naics_description',
-      naturalKey: 'business_license_number',
+      naturalKey: 'ubi',
     },
     primaryRole: 'BUYER',
   },
@@ -332,6 +340,39 @@ function ident(column: string): string {
   return column;
 }
 
+/**
+ * A date as the portal actually published it.
+ *
+ * Seattle's licence dataset publishes `20261230` — an integer, no separators —
+ * and `new Date('20261230')` is Invalid Date. Two hundred rows a run were
+ * being discarded by a source that had been enabled and running for weeks, and
+ * from outside it looked exactly like a city that had issued no licences.
+ *
+ * Deliberately narrow. Only formats that are unambiguous are read: an
+ * eight-digit yyyymmdd, and whatever the platform's own parser accepts. There
+ * is no attempt at `03/04/26`, because a wrong date here is worse than no date
+ * — it puts work in front of a caller on a day nothing is happening.
+ */
+export function parseSourceDate(raw: string): Date | null {
+  const value = raw.trim();
+  if (!value) return null;
+
+  const compact = /^(\d{4})(\d{2})(\d{2})$/.exec(value);
+  if (compact) {
+    const [, y, m, d] = compact;
+    const month = Number(m);
+    const day = Number(d);
+    if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+    // Built as UTC so a portal's date does not shift a day under the worker's
+    // timezone, which is the whole reason the pipeline keeps source dates.
+    const parsed = new Date(Date.UTC(Number(y), month - 1, day));
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
 async function queryDataset(
   dataset: JurisdictionDataset,
   since: Date,
@@ -380,7 +421,6 @@ export function toDemandEvent(
   };
 
   const rawDate = get(dataset.dateColumn);
-  const eventDate = rawDate ? new Date(rawDate) : null;
   // No usable source date means no event. This is the rule the old pipeline
   // broke by falling back to ingestion time.
   if (!rawDate) {
@@ -389,8 +429,9 @@ export function toDemandEvent(
       `columns present: ${Object.keys(row).slice(0, 12).join(', ')}`,
     );
   }
-  if (!eventDate || Number.isNaN(eventDate.getTime())) {
-    return tally.drop(`"${dataset.dateColumn}" is not a date`, rawDate);
+  const eventDate = parseSourceDate(rawDate);
+  if (!eventDate) {
+    return tally.drop(`"${dataset.dateColumn}" is not a date this reads`, rawDate);
   }
 
   const legalName = get(dataset.columns.name);

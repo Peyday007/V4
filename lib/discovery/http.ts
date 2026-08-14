@@ -31,6 +31,40 @@ export class HttpError extends Error {
   }
 }
 
+/**
+ * A successful response that is not the API's data.
+ *
+ * Baltimore's open-data host answers 200 with an ArcGIS Hub page: the city
+ * moved off Socrata and left the domain answering, so the request looks
+ * healthy at every level except the one that matters. Left as a JSON parse
+ * failure it reached the operator as `Unexpected token <`, which describes the
+ * fifth character of the problem and none of the rest.
+ */
+export class NotJsonError extends Error {
+  constructor(
+    readonly host: string,
+    readonly body: string,
+  ) {
+    super(
+      `${host} answered 200 with ${describeNonJson(body)} rather than JSON. `
+        + 'The host is up but is not serving this API — the dataset has usually moved to a different '
+        + 'platform, or something in front of it answered instead.',
+    );
+    this.name = 'NotJsonError';
+  }
+}
+
+/** Names what came back instead, from the shapes that actually turn up. */
+function describeNonJson(body: string): string {
+  const title = /<title[^>]*>([^<]{1,80})/i.exec(body)?.[1]?.trim();
+  if (/Web Page Blocked|attack_ID|Access Denied|Request Rejected/i.test(body)) {
+    return 'a filtering appliance\'s block page';
+  }
+  if (title) return `an HTML page titled "${title}"`;
+  if (/^\s*</.test(body)) return 'an HTML page';
+  return `${body.slice(0, 60).replace(/\s+/g, ' ')}…`;
+}
+
 export class MissingCredentialError extends Error {
   constructor(readonly envVar: string, sourceName: string) {
     super(
@@ -167,7 +201,16 @@ export async function httpJson<T = unknown>(options: HttpJsonOptions): Promise<T
       if (text.length > MAX_RESPONSE_BYTES) {
         throw new Error(`Response from ${hostOf(options.url)} exceeded ${MAX_RESPONSE_BYTES} bytes; narrow the query.`);
       }
-      return JSON.parse(text) as T;
+      try {
+        return JSON.parse(text) as T;
+      } catch {
+        // A 200 carrying HTML is not a parse problem, it is an answer: the
+        // host is no longer serving this API and something else — a portal
+        // migration, a login wall, a filtering appliance — replied instead.
+        // `SyntaxError: Unexpected token <` names none of that, and it was
+        // what a whole city's move off Socrata looked like from inside.
+        throw new NotJsonError(hostOf(options.url), text);
+      }
     } catch (error) {
       lastError = error;
       const retryable = error instanceof HttpError ? error.retryable : true;

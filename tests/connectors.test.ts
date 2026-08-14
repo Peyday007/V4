@@ -826,6 +826,34 @@ describe('network-level blocks are named as such', () => {
     ).rejects.toThrow(/network filter in front of the API.*DISCOVERY_USER_AGENT/s);
   }, 30_000);
 
+  it('names a 200 that is not JSON as a moved API rather than a parse error', async () => {
+    // Baltimore's open-data host answers 200 with an ArcGIS Hub page: the city
+    // left Socrata and left the domain up, so the request succeeds at every
+    // level except the one that matters. As a bare JSON parse failure this
+    // reached the operator as "Unexpected token <".
+    setTransport(async () =>
+      new Response(
+        '<!DOCTYPE html>\n<html>\n<head>\n  <title>ArcGIS Hub Uh oh</title>\n</head>\n<body></body></html>',
+        { status: 200, headers: { 'content-type': 'text/html' } },
+      ),
+    );
+    await expect(httpJson({ url: 'https://data.baltimorecity.gov/resource/wxdc-cbe2.json' })).rejects.toThrow(
+      /data\.baltimorecity\.gov answered 200 with an HTML page titled "ArcGIS Hub Uh oh".*not serving this API/s,
+    );
+  }, 30_000);
+
+  it('recognises a block page served with a 200 as an appliance, not a migration', async () => {
+    setTransport(async () =>
+      new Response('<html><body>Web Page Blocked! attack_ID 20000051</body></html>', {
+        status: 200,
+        headers: { 'content-type': 'text/html' },
+      }),
+    );
+    await expect(httpJson({ url: 'https://api.usaspending.gov/api/v2/search/' })).rejects.toThrow(
+      /filtering appliance's block page/,
+    );
+  }, 30_000);
+
   it('lets the user agent be overridden without a deploy', async () => {
     vi.stubEnv('DISCOVERY_USER_AGENT', 'CustomAgent/9.9');
     let seen = '';

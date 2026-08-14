@@ -67,6 +67,18 @@ type Probe = {
   columns: Array<{ role: string; column: string; verdict: ColumnVerdict }>;
   accepted: number | null;
   drops: Array<{ reason: string; count: number; example: string | null }>;
+  /**
+   * When the configured query failed, the columns the dataset really has —
+   * fetched unfiltered, because a 400 that says "no such column: issued_date"
+   * tells you what is wrong and not what is right.
+   */
+  actualColumns?: string[];
+  /**
+   * When the dataset is gone, what the portal's own catalogue offers instead.
+   * Suggestions to check, never something to adopt unread: a plausible name is
+   * not evidence that a dataset holds what this connector needs.
+   */
+  candidates?: Array<{ id: string; name: string; updatedAt: string | null }>;
   /** What this means and what to do, in one sentence. */
   verdict: string;
 };
@@ -74,22 +86,97 @@ type Probe = {
 const probes: Probe[] = [];
 
 async function getJson(url: string): Promise<{ status: number; body: unknown; text: string }> {
-  const response = await fetch(url, {
-    headers: {
-      accept: 'application/json',
-      'user-agent': USER_AGENT,
-      ...(process.env.SOCRATA_APP_TOKEN ? { 'X-App-Token': process.env.SOCRATA_APP_TOKEN } : {}),
-    },
-    signal: AbortSignal.timeout(30_000),
-  });
-  const text = await response.text();
-  let body: unknown = null;
-  try {
-    body = JSON.parse(text);
-  } catch {
-    body = null;
+  // Two attempts. The first run of this probe reported Chicago as unreachable
+  // on a single `fetch failed`, which is a transient answer being read as a
+  // permanent one — the opposite of the mistake this whole exercise exists to
+  // correct.
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        headers: {
+          accept: 'application/json',
+          'user-agent': USER_AGENT,
+          ...(process.env.SOCRATA_APP_TOKEN ? { 'X-App-Token': process.env.SOCRATA_APP_TOKEN } : {}),
+        },
+        signal: AbortSignal.timeout(30_000),
+      });
+      const text = await response.text();
+      let body: unknown = null;
+      try {
+        body = JSON.parse(text);
+      } catch {
+        body = null;
+      }
+      return { status: response.status, body, text };
+    } catch (error) {
+      lastError = error;
+      if (attempt < 2) await new Promise((r) => setTimeout(r, 1500));
+    }
   }
-  return { status: response.status, body, text };
+  throw lastError;
+}
+
+/**
+ * Everything a broken scope can be asked after the fact.
+ *
+ * Run for any scope that did not come back as a row array, because those are
+ * precisely the ones whose diagnosis is incomplete without a second question.
+ */
+async function followUp(domain: string, datasetId: string, label: string) {
+  const [columns, candidates] = await Promise.all([
+    actualColumns(domain, datasetId),
+    catalogueCandidates(domain, label),
+  ]);
+  return { actualColumns: columns, candidates };
+}
+
+/**
+ * The columns a dataset really has, asked without any predicate.
+ *
+ * The reason the first run of this probe could not finish the diagnosis: a 400
+ * naming a column that does not exist leaves you knowing one wrong name and no
+ * right ones. One unfiltered row answers it.
+ */
+async function actualColumns(domain: string, datasetId: string): Promise<string[]> {
+  try {
+    const { status, body } = await getJson(`https://${domain}/resource/${datasetId}.json?$limit=1`);
+    if (status !== 200 || !Array.isArray(body) || body.length === 0) return [];
+    return Object.keys(body[0] as Record<string, unknown>).sort();
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * What the portal publishes now, from Socrata's own catalogue.
+ *
+ * A dataset identifier changes when a city republishes, and hunting for the
+ * new one by hand is how a source stays broken for months. The discovery API
+ * is public and documented; this asks it and prints what it says. Nothing is
+ * adopted automatically — a dataset whose title matches is not proof that its
+ * columns do, and picking one unread is exactly the kind of guess that put
+ * fixture data in the portfolio.
+ */
+async function catalogueCandidates(domain: string, query: string): Promise<Probe['candidates']> {
+  try {
+    const url =
+      'https://api.us.socrata.com/api/catalog/v1'
+      + `?domains=${encodeURIComponent(domain)}&q=${encodeURIComponent(query)}&only=dataset&limit=8`;
+    const { status, body } = await getJson(url);
+    if (status !== 200) return [];
+    const results = (body as { results?: Array<Record<string, unknown>> } | null)?.results ?? [];
+    return results.map((r) => {
+      const resource = (r.resource ?? {}) as Record<string, unknown>;
+      return {
+        id: String(resource.id ?? ''),
+        name: String(resource.name ?? '').slice(0, 70),
+        updatedAt: typeof resource.updatedAt === 'string' ? resource.updatedAt.slice(0, 10) : null,
+      };
+    });
+  } catch {
+    return [];
+  }
 }
 
 /** Field names across the sample, and which of them are never populated. */
@@ -142,7 +229,26 @@ function verdictFor(p: Omit<Probe, 'verdict'>): string {
     return 'The dataset exists but rejected the query. A column named in the predicate or the sort no '
       + 'longer exists — the response body names which.';
   }
+  if (p.status === 500 && p.drops.some((d) => /Web Page Blocked|attack_ID/i.test(d.example ?? ''))) {
+    return 'A filtering appliance answered instead of the API, and told this client so. The request never '
+      + 'reached USAspending, so nothing here says whether the query is right. This is an egress or '
+      + 'reputation problem to solve where the requests come from, not in the connector.';
+  }
   if (p.status !== 200) return `Unexpected status ${p.status}.`;
+
+  // A 200 that is not an array of rows is the case that read as healthy in the
+  // first run of this probe and was not: Baltimore's open-data host answers 200
+  // with an ArcGIS Hub page, because the city moved off Socrata and left the
+  // domain up. Every other check downstream of `rows` is meaningless here, so
+  // it has to be caught before them rather than falling through.
+  if (p.rows === null) {
+    const body = p.drops.find((d) => d.reason === 'response body')?.example ?? '';
+    const title = /<title[^>]*>([^<]{1,80})/i.exec(body)?.[1]?.trim();
+    return 'The host answered 200 with something that is not a row array'
+      + (title ? ` — an HTML page titled "${title}"` : '')
+      + '. The domain is up but is no longer serving this dataset through the SODA API; the city has '
+      + 'usually moved to a different platform.';
+  }
 
   const missing = p.columns.filter((c) => c.verdict === 'missing');
   const empty = p.columns.filter((c) => c.verdict === 'always null');
@@ -191,7 +297,11 @@ async function probeJurisdiction(dataset: JurisdictionDataset, since: Date) {
   try {
     ({ status, body, text } = await getJson(url));
   } catch (error) {
-    record({ ...base, status: null, transportError: String(error).slice(0, 200), rows: null, fields: [], columns: [], accepted: null, drops: [] });
+    record({
+      ...base, status: null, transportError: String(error).slice(0, 200), rows: null, fields: [],
+      columns: [], accepted: null, drops: [],
+      ...(await followUp(dataset.domain, dataset.datasetId, dataset.label)),
+    });
     return;
   }
 
@@ -207,6 +317,9 @@ async function probeJurisdiction(dataset: JurisdictionDataset, since: Date) {
       // The portal's own error text is the fastest route to the fix, so it is
       // carried through rather than replaced with a summary of it.
       drops: [{ reason: 'response body', count: 1, example: text.slice(0, 300) }],
+      // And when the configured query fails, the columns it should have named,
+      // plus what the portal publishes under this name now.
+      ...(await followUp(dataset.domain, dataset.datasetId, dataset.label)),
     });
     return;
   }
@@ -260,7 +373,11 @@ async function probeSolicitation(dataset: SolicitationDataset, since: Date) {
   try {
     ({ status, body, text } = await getJson(url));
   } catch (error) {
-    record({ ...base, status: null, transportError: String(error).slice(0, 200), rows: null, fields: [], columns: [], accepted: null, drops: [] });
+    record({
+      ...base, status: null, transportError: String(error).slice(0, 200), rows: null, fields: [],
+      columns: [], accepted: null, drops: [],
+      ...(await followUp(dataset.domain, dataset.datasetId, dataset.label)),
+    });
     return;
   }
 
@@ -268,6 +385,7 @@ async function probeSolicitation(dataset: SolicitationDataset, since: Date) {
     record({
       ...base, status, transportError: null, rows: null, fields: [], columns: [], accepted: null,
       drops: [{ reason: 'response body', count: 1, example: text.slice(0, 300) }],
+      ...(await followUp(dataset.domain, dataset.datasetId, dataset.label)),
     });
     return;
   }
@@ -424,6 +542,15 @@ function print() {
     if (p.fields.length > 0) console.log(`  fields returned: ${p.fields.join(', ').slice(0, 400)}`);
     for (const d of p.drops.slice(0, 6)) {
       console.log(`  dropped ${String(d.count).padStart(4)} × ${d.reason}${d.example ? ` — e.g. ${d.example}` : ''}`);
+    }
+    if (p.actualColumns && p.actualColumns.length > 0) {
+      console.log(`  the dataset's real columns: ${p.actualColumns.join(', ').slice(0, 500)}`);
+    }
+    if (p.candidates && p.candidates.length > 0) {
+      console.log('  the portal publishes these under a similar name — check before adopting any:');
+      for (const c of p.candidates.slice(0, 6)) {
+        console.log(`     ${c.id}  ${c.updatedAt ?? '          '}  ${c.name}`);
+      }
     }
     console.log(`  → ${p.verdict}`);
   }

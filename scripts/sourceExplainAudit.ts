@@ -19,7 +19,7 @@
  */
 
 import { prisma } from '@/lib/db';
-import { setTransport } from '@/lib/discovery/http';
+import { setTransport, resetTransport } from '@/lib/discovery/http';
 import { runDemandSource, demandSourceHealth } from '@/lib/demand/run';
 
 let passed = 0;
@@ -260,13 +260,13 @@ async function main() {
 
 main()
   .then(async () => {
-    setTransport(null);
+    resetTransport();
     await prisma.$disconnect();
     process.exit(process.exitCode ?? 0);
   })
   .catch(async (e) => {
     console.error(e);
-    setTransport(null);
+    resetTransport();
     await prisma.$disconnect();
     process.exit(1);
   });
