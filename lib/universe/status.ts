@@ -2,6 +2,7 @@ import type { DemandEventType } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { DEFAULT_JURISDICTIONS } from '@/lib/demand/connectors/municipalOpenData';
 import { DEFAULT_SOLICITATION_DATASETS } from '@/lib/demand/connectors/municipalSolicitations';
+import { ContractAwardsConnector } from '@/lib/demand/connectors/contractAwards';
 import { playbookByKey, type Playbook } from '@/lib/demand/playbooks';
 import { MINI_PATHS, type MiniPath, type MiniPathKey } from './registry';
 
@@ -138,14 +139,12 @@ export function sourceReachability(): SourceReachability {
   // an empty queue is an empty queue, not a fault.
   reachable.add('INBOUND_REQUEST');
 
-  // Federal award records. Configured, and answered by a network filter rather
-  // than by the API, which is a configuration problem rather than a quiet week.
-  if (!reachable.has('CONTRACT_AWARD')) {
-    blocked.set(
-      'CONTRACT_AWARD',
-      'A network filter in front of USAspending answers instead of the API, so federal award records cannot '
-      + 'be collected from this deployment.',
-    );
+  // Federal award records. The reason is read from the connector rather than
+  // written again here: two authored descriptions of the same hold drift, and
+  // this module exists to stop labels outliving the thing they describe.
+  const awards = new ContractAwardsConnector();
+  if (awards.blockedExternally && !reachable.has('CONTRACT_AWARD')) {
+    blocked.set('CONTRACT_AWARD', awards.blockedExternally.because);
   }
 
   // Anything the reachable set covers is not blocked, whatever else failed.

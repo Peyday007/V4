@@ -297,6 +297,11 @@ export async function enabledConnectors(orgId: string): Promise<DemandConnector[
   return listDemandConnectors().filter((connector) => {
     const explicit = byKey.get(connector.key);
     if (explicit === false) return false;
+    // A known external block is not a fault to rediscover every hour. It keeps
+    // its health entry and its diagnostic; it just stops filling the run log
+    // with the same failure and burying the sources that are genuinely
+    // misbehaving.
+    if (connector.blockedExternally) return false;
     if (connector.credentialEnvVar && !hasCredential(connector.credentialEnvVar)) return false;
     return true;
   });
@@ -347,6 +352,12 @@ export type SourceHealth = {
   configurationNote: string;
   credentialEnvVar: string | null;
   credentialPresent: boolean;
+  /**
+   * Set when the source is correct and something outside this codebase is
+   * stopping it. Distinct from unconfigured: nothing an owner types will fix
+   * it, and distinct from broken: the query is right.
+   */
+  blockedExternally: { because: string; whatWouldUnblock: string } | null;
   eventFamilies: string[];
   pollIntervalMinutes: number;
   lastAttemptAt: string | null;
@@ -389,20 +400,24 @@ export async function demandSourceHealth(orgId: string): Promise<SourceHealth[]>
     const lastAttempt = mine[0] ?? null;
     const lastSuccess = mine.find((r) => r.status === 'OK') ?? null;
     const credentialPresent = connector.credentialEnvVar ? hasCredential(connector.credentialEnvVar) : true;
-    const enabled = enabledByKey.get(connector.key) !== false && credentialPresent;
+    const blocked = connector.blockedExternally ?? null;
+    const enabled = enabledByKey.get(connector.key) !== false && credentialPresent && !blocked;
 
     return {
       connector: connector.key,
       name: connector.name,
       enabled,
       configured: credentialPresent,
-      configurationNote: connector.credentialEnvVar
-        ? credentialPresent
-          ? `${connector.credentialEnvVar} is set.`
-          : `${connector.credentialEnvVar} is not set, so this source is skipped. It is optional.`
-        : 'No credential required.',
+      configurationNote: blocked
+        ? `Held. ${blocked.because} ${blocked.whatWouldUnblock}`
+        : connector.credentialEnvVar
+          ? credentialPresent
+            ? `${connector.credentialEnvVar} is set.`
+            : `${connector.credentialEnvVar} is not set, so this source is skipped. It is optional.`
+          : 'No credential required.',
       credentialEnvVar: connector.credentialEnvVar,
       credentialPresent,
+      blockedExternally: blocked,
       eventFamilies: connector.eventFamilies,
       pollIntervalMinutes: connector.pollIntervalMinutes,
       lastAttemptAt: lastAttempt?.startedAt.toISOString() ?? null,
@@ -413,9 +428,13 @@ export async function demandSourceHealth(orgId: string): Promise<SourceHealth[]>
       eventsUpdated: lastSuccess?.eventsUpdated ?? 0,
       eventsRejected: lastSuccess?.eventsRejected ?? 0,
       error: lastAttempt?.error ?? null,
-      nextScheduledAt: lastAttempt
-        ? new Date(lastAttempt.startedAt.getTime() + connector.pollIntervalMinutes * 60_000).toISOString()
-        : null,
+      // A held source is not scheduled. Showing a next attempt time for one
+      // that will never be attempted is the kind of small lie the rest of this
+      // panel exists to avoid.
+      nextScheduledAt:
+        blocked || !lastAttempt
+          ? null
+          : new Date(lastAttempt.startedAt.getTime() + connector.pollIntervalMinutes * 60_000).toISOString(),
       outcomeReason:
         lastAttempt?.outcomeReason
         ?? (lastAttempt

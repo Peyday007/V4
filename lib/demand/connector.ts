@@ -216,6 +216,27 @@ export interface DemandConnector {
   readonly eventFamilies: string[];
   /** Suggested minutes between runs. */
   readonly pollIntervalMinutes: number;
+  /**
+   * The source is reachable in principle and something outside this codebase
+   * is preventing it.
+   *
+   * Set to stop a connector attempting on every tick when the failure is known,
+   * external and unchanged by retrying. The distinction from `credentialEnvVar`
+   * matters: a missing credential is something an owner can supply, while this
+   * is a network path or an upstream policy that no configuration here will
+   * move.
+   *
+   * A blocked connector is skipped by the recurring path and keeps its entry in
+   * the health panel, because the diagnostic is the whole value — a source that
+   * silently disappeared would be indistinguishable from one nobody had
+   * configured, which is the state this product spent weeks getting out of.
+   */
+  readonly blockedExternally?: {
+    /** Why, in the words the health panel shows. */
+    because: string;
+    /** What would have to change. Not a promise that it will. */
+    whatWouldUnblock: string;
+  };
 
   fetch(context: DemandFetchContext): Promise<DemandFetchResult>;
 }

@@ -21,6 +21,7 @@ type SourceHealth = {
   configurationNote: string;
   credentialEnvVar: string | null;
   credentialPresent: boolean;
+  blockedExternally: { because: string; whatWouldUnblock: string } | null;
   eventFamilies: string[];
   pollIntervalMinutes: number;
   lastAttemptAt: string | null;
@@ -107,7 +108,8 @@ export function DemandControls({
   }
 
   const runnable = health.filter((h) => h.enabled);
-  const unconfigured = health.filter((h) => !h.configured);
+  const unconfigured = health.filter((h) => !h.configured && !h.blockedExternally);
+  const held = health.filter((h) => h.blockedExternally);
 
   return (
     <div className="card">
@@ -162,10 +164,24 @@ export function DemandControls({
                 <td>
                   <Badge
                     tone={
-                      !source.configured ? '' : source.lastStatus === 'FAILED' ? 'danger' : source.enabled ? 'success' : ''
+                      source.blockedExternally
+                        ? 'warning'
+                        : !source.configured
+                          ? ''
+                          : source.lastStatus === 'FAILED'
+                            ? 'danger'
+                            : source.enabled
+                              ? 'success'
+                              : ''
                     }
                   >
-                    {!source.configured ? 'not configured' : source.enabled ? 'enabled' : 'disabled'}
+                    {source.blockedExternally
+                      ? 'held'
+                      : !source.configured
+                        ? 'not configured'
+                        : source.enabled
+                          ? 'enabled'
+                          : 'disabled'}
                   </Badge>
                 </td>
                 <td>{source.lastAttemptAt?.slice(0, 16).replace('T', ' ') ?? 'never'}</td>
@@ -192,13 +208,34 @@ export function DemandControls({
             <li key={s.connector} data-testid={`source-outcome-${s.connector}`} className="mt">
               <Badge
                 tone={
-                  !s.configured ? '' : s.lastStatus === 'FAILED' ? 'danger' : s.eventsCreated > 0 ? 'success' : ''
+                  s.blockedExternally
+                    ? 'warning'
+                    : !s.configured
+                      ? ''
+                      : s.lastStatus === 'FAILED'
+                        ? 'danger'
+                        : s.eventsCreated > 0
+                          ? 'success'
+                          : ''
                 }
               >
-                {!s.configured ? 'setup' : s.lastStatus === 'FAILED' ? 'error' : s.lastStatus === 'OK' ? 'ran' : 'idle'}
+                {s.blockedExternally
+                  ? 'held'
+                  : !s.configured
+                    ? 'setup'
+                    : s.lastStatus === 'FAILED'
+                      ? 'error'
+                      : s.lastStatus === 'OK'
+                        ? 'ran'
+                        : 'idle'}
               </Badge>{' '}
               <strong>{s.name}:</strong>{' '}
-              {s.outcomeReason ?? s.error ?? 'No run has been recorded yet.'}
+              {/* A held source keeps its diagnostic here rather than repeating
+                  the same failure from its last attempt, which is the thing the
+                  hold was put in place to stop. */}
+              {s.blockedExternally
+                ? `${s.blockedExternally.because} ${s.blockedExternally.whatWouldUnblock}`
+                : s.outcomeReason ?? s.error ?? 'No run has been recorded yet.'}
               {s.funnel.length > 0 && (
                 <details className="mt">
                   <summary className="dim">Per-dataset breakdown</summary>
@@ -232,6 +269,28 @@ export function DemandControls({
         <div className="alert small mt">
           <strong>Optional sources not configured:</strong>{' '}
           {unconfigured.map((s) => `${s.name} (${s.credentialEnvVar})`).join(', ')}. The engine runs without them.
+        </div>
+      )}
+
+      {/* Held sources are neither running nor broken, and collapsing them into
+          either would be wrong. Nothing an owner types fixes one, so this is
+          not a to-do list — it is the record of what this engine is not
+          collecting and why, kept where it can be checked. */}
+      {held.length > 0 && (
+        <div className="alert warning small mt" data-testid="held-sources">
+          <strong>Held, not retried:</strong>
+          <ul className="list-reset mt" style={{ paddingLeft: '1rem' }}>
+            {held.map((s) => (
+              <li key={s.connector} data-testid={`held-source-${s.connector}`} className="mt">
+                <strong>{s.name}</strong> — {s.blockedExternally!.because}{' '}
+                <span className="dim">{s.blockedExternally!.whatWouldUnblock}</span>
+              </li>
+            ))}
+          </ul>
+          <div className="tiny dim mt">
+            These are excluded from the recurring run so their failure stops burying sources that are genuinely
+            misbehaving. Nothing elsewhere in the product claims their data.
+          </div>
         </div>
       )}
 

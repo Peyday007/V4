@@ -56,6 +56,26 @@ export class ContractAwardsConnector implements DemandConnector {
   ];
   readonly pollIntervalMinutes = 12 * 60;
 
+  // The API is public and documented and this codebase is calling it correctly.
+  // From this deployment the endpoint does not answer, so the connector is held
+  // rather than retried: every attempt produced the same failure, and twelve of
+  // those a week pushed genuinely misbehaving sources down the health panel.
+  //
+  // Held, not deleted. The connector keeps its entry, its access basis and its
+  // diagnostic, because "we know exactly what this would give us and exactly
+  // what is stopping it" is a more useful thing to show an owner than silence.
+  // Nothing in the product depends on federal award data: the subcontracting
+  // playbook that consumes these events reads permits and licences too, and the
+  // capacity hypothesis it draws is unchanged in kind, only narrower in source.
+  readonly blockedExternally = {
+    because:
+      'The USAspending award API does not respond from this deployment. The requests are well-formed and the '
+      + 'dataset is public, so this is a network path rather than a fault in the query.',
+    whatWouldUnblock:
+      'Egress to api.usaspending.gov from the deployment, or a mirror of the same award data reachable from it. '
+      + 'Until then no federal award events are collected and nothing claims otherwise.',
+  };
+
   async fetch(context: DemandFetchContext): Promise<DemandFetchResult> {
     const since = context.since ?? new Date(Date.now() - 120 * 86_400_000);
     const events: RawDemandEvent[] = [];
