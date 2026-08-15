@@ -5,6 +5,9 @@ import { campaignOutcome } from '@/lib/campaign/outcomes';
 import { campaignReadiness } from '@/lib/campaign/model';
 import { configuredCoverage } from '@/lib/portfolio/concentration';
 import { Badge, Empty, money } from '@/components/ui';
+import { CampaignCreator } from '@/components/CampaignCreator';
+import { CAMPAIGN_STARTERS } from '@/lib/campaign/starters';
+import { can } from '@/lib/auth/session';
 
 export const dynamic = 'force-dynamic';
 
@@ -68,8 +71,13 @@ export default async function CampaignsPage() {
             that cost, and what came back.
           </p>
         </div>
-        <Link href="/demand/sources" className="btn secondary">Source health</Link>
+        <Link href="/universe" className="btn secondary">Opportunity universe</Link>
       </div>
+
+      {/* The creator, above the list. A page that can only be read is a
+          paperweight, and this one was — the model, the service, the conditions
+          and the generated work all existed with no way to make anything. */}
+      {can(user, 'campaign.write') && <CampaignCreator starters={CAMPAIGN_STARTERS} />}
 
       <div className="alert info small" data-testid="campaign-coverage">
         <strong>What campaigns can currently reach:</strong> {coverage.verdict}
