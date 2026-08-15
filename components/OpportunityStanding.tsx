@@ -58,6 +58,25 @@ export type StandingProps = {
   plan: Stage[];
   /** Raw diagnostics, folded away. */
   diagnostics: Array<{ label: string; value: string }>;
+  /**
+   * Every term on this record, explained against this record.
+   *
+   * Not a glossary. "Strong trigger: an event that usually creates a need" is
+   * a dictionary entry; the operator's question is why *this* one is a strong
+   * trigger and what to do about it, so each explanation is built from the
+   * record's own value and names the organisation.
+   */
+  explanations: Array<{
+    term: string;
+    value: string;
+    meaning: string;
+    whyItMatters: string;
+    howItWasWorkedOut: string;
+    standing: string;
+    standingLabel: string;
+    howToUseIt: string;
+    whatWouldImproveIt: string | null;
+  }>;
 };
 
 export function OpportunityStanding(props: StandingProps) {
@@ -206,6 +225,43 @@ export function OpportunityStanding(props: StandingProps) {
           ))}
         </ol>
       </div>
+
+      {/* ---- what every word on this page means, for this record ---- */}
+      {explain && props.explanations.length > 0 && (
+        <div className="card" data-testid="explanations">
+          <div className="card-title">
+            <h2>What these words mean here</h2>
+            <span className="tiny dim">
+              Built from this record, not from a glossary — two deals showing the same badge get different
+              answers when the reasons differ
+            </span>
+          </div>
+          {props.explanations.map((e) => (
+            <div
+              key={`${e.term}-${e.value}`}
+              data-testid={`explanation-${e.term.toLowerCase().replace(/\s+/g, '-')}`}
+              style={{ padding: '0.6rem 0', borderBottom: '1px solid var(--border)' }}
+            >
+              <div className="row" style={{ justifyContent: 'space-between' }}>
+                <strong>{e.term}: {e.value}</strong>
+                {/* The distinction the screen cannot make on its own: a tier, a
+                    friction level and a margin all look equally official and
+                    are not the same kind of thing at all. */}
+                <Badge tone={e.standing === 'FACT' ? 'success' : e.standing === 'ABSENCE' ? 'warning' : ''}>
+                  {e.standingLabel}
+                </Badge>
+              </div>
+              <p className="small mt">{e.meaning}</p>
+              <p className="small muted"><strong>Why it matters:</strong> {e.whyItMatters}</p>
+              <p className="tiny dim"><strong>How it was worked out:</strong> {e.howItWasWorkedOut}</p>
+              <p className="small"><strong>What to do with it:</strong> {e.howToUseIt}</p>
+              {e.whatWouldImproveIt && (
+                <p className="tiny"><strong>What would improve it:</strong> {e.whatWouldImproveIt}</p>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* ---- diagnostics, folded ---- */}
       {props.diagnostics.length > 0 && (

@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
+import { prisma } from '@/lib/db';
 import { requirePagePermission } from '@/lib/auth/page';
 import { loadOpportunityRecord } from '@/lib/demand/opportunityRecord';
 import { loadDealRecord } from '@/lib/deal/record';
@@ -39,6 +40,13 @@ export default async function OpportunityRecordPage({ params }: { params: { rout
   // the plan is evidence for it rather than a second opinion.
   const plan = await loadDealPlan({ orgId: user.orgId, routeId: params.routeId, record: deal });
 
+  // Two fields the assembled record does not carry, read directly rather than
+  // threaded through two layers that have no other use for them.
+  const routeFields = await prisma.routeHypothesis.findFirst({
+    where: { id: params.routeId, orgId: user.orgId },
+    select: { friction: true, requiredCapability: true },
+  });
+
   return (
     <>
       <div className="page-header">
@@ -66,6 +74,13 @@ export default async function OpportunityRecordPage({ params }: { params: { rout
             plan,
             record: deal,
             closedComparables: 0,
+            // Fields the explanations read, so "strong trigger" can be
+            // explained as this record's strong trigger rather than as a
+            // definition of the phrase.
+            tier: record.standing.tier,
+            friction: routeFields?.friction ?? null,
+            requiredCapability: routeFields?.requiredCapability ?? null,
+            sourceUrl: record.event.sourceUrl,
           })}
         />
       )}

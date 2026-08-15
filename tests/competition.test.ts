@@ -349,3 +349,68 @@ describe('the coverage matrix is honest about fifty states', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// The magnifying glass
+// ---------------------------------------------------------------------------
+
+describe('“Explain this” explains the record, not the dictionary', () => {
+  it('names the actual organisation rather than speaking in general', async () => {
+    const { explain } = await import('@/lib/explain/terms');
+    const e = explain('tier', 'STRONG_TRIGGER', { organisation: 'Goose Island Beer Company' })!;
+    expect(e.meaning).toContain('Goose Island Beer Company');
+  });
+
+  it('separates a fact from an inference, which the screen cannot', async () => {
+    const { explain } = await import('@/lib/explain/terms');
+    expect(explain('tier', 'ACTIVE_DEMAND', {})!.standing).toBe('FACT');
+    expect(explain('tier', 'STRONG_TRIGGER', {})!.standing).toBe('INFERENCE');
+    expect(explain('economicsBasis', 'PRIOR', {})!.standing).toBe('INFERENCE');
+    expect(explain('economicsBasis', 'REALISED', {})!.standing).toBe('FACT');
+    // The one that matters most: unknown is not low.
+    expect(explain('friction', 'UNKNOWN_RESEARCH_REQUIRED', {})!.standing).toBe('ABSENCE');
+  });
+
+  it('says what unknown friction is not, because that is the failure', async () => {
+    const { explain } = await import('@/lib/explain/terms');
+    const e = explain('friction', 'UNKNOWN_RESEARCH_REQUIRED', {})!;
+    expect(e.whyItMatters).toMatch(/is not low/i);
+  });
+
+  it('tells the operator what would improve anything that can be improved', async () => {
+    const { explain, explainableFields } = await import('@/lib/explain/terms');
+    const weak = [
+      ['tier', 'STRONG_TRIGGER'], ['friction', 'UNKNOWN_RESEARCH_REQUIRED'],
+      ['economicsBasis', 'PRIOR'], ['needIsConfirmed', 'false'],
+    ] as const;
+    for (const [field, value] of weak) {
+      const e = explain(field, value, { requiredCapability: 'Steel supply' })!;
+      expect(e.whatWouldImproveIt, `${field}=${value}`).toBeTruthy();
+    }
+    expect(explainableFields().length).toBeGreaterThan(3);
+  });
+
+  it('gives every explanation all six answers', async () => {
+    const { explain } = await import('@/lib/explain/terms');
+    const cases: Array<[string, string]> = [
+      ['tier', 'ACTIVE_DEMAND'], ['tier', 'DIRECTORY_PROSPECT'],
+      ['friction', 'LOW'], ['friction', 'HIGH'],
+      ['economicsBasis', 'QUOTE'], ['fulfilmentStatus', 'NO_PROVIDER'],
+      ['needIsConfirmed', 'true'],
+    ];
+    for (const [field, value] of cases) {
+      const e = explain(field, value, { organisation: 'Test Co', providerCount: 0 })!;
+      expect(e, `${field}=${value}`).toBeTruthy();
+      for (const key of ['meaning', 'whyItMatters', 'howItWasWorkedOut', 'howToUseIt'] as const) {
+        expect(e[key].length, `${field}=${value}.${key}`).toBeGreaterThan(25);
+      }
+    }
+  });
+
+  it('returns nothing rather than inventing an explanation it does not have', async () => {
+    const { explain } = await import('@/lib/explain/terms');
+    expect(explain('somethingNobodyWrote', 'VALUE', {})).toBeNull();
+    expect(explain('tier', 'A_TIER_THAT_DOES_NOT_EXIST', {})).toBeNull();
+    expect(explain('tier', null, {})).toBeNull();
+  });
+});

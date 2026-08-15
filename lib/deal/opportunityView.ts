@@ -5,6 +5,7 @@ import { buyerPriceOf, providerCostOf, grossProfitOf, presentMoney } from '@/lib
 import { gradeProviderClaim, gradeRequirementField, presentText } from '@/lib/evidence/claims';
 import { confirmed, unknown, present, type Evidenced } from '@/lib/evidence/class';
 import type { StandingProps } from '@/components/OpportunityStanding';
+import { explain, STANDING_LABEL } from '@/lib/explain/terms';
 
 /**
  * Everything the opportunity page shows, graded before it gets there.
@@ -21,10 +22,22 @@ export function buildOpportunityView(input: {
   record: DealRecord;
   /** Closed deals of this kind, for judging whether a probability means anything. */
   closedComparables: number;
+  /** Fields the explanations need, which the plan and record do not carry. */
+  tier?: string | null;
+  friction?: string | null;
+  requiredCapability?: string | null;
+  sourceUrl?: string | null;
 }): StandingProps {
   const { plan, record } = input;
 
   const standing = standingOf(plan, { organisation: input.organisation });
+
+  const explainContext = {
+    organisation: input.organisation,
+    providerCount: record.supply.candidates.length,
+    requiredCapability: input.requiredCapability ?? null,
+    sourceUrl: input.sourceUrl ?? null,
+  };
 
   // --- money -------------------------------------------------------------
   const quote = record.quotes.live;
@@ -134,6 +147,20 @@ export function buildOpportunityView(input: {
     ...plan.blockedCapabilities.map((b) => ({ label: `blocked: ${b.what}`, value: b.reason })),
   ];
 
+  // Every term this page shows, explained against this record. Assembled here
+  // rather than in the component for the same reason the graded values are:
+  // a render site that could build its own explanation would eventually build
+  // a generic one.
+  const explanations = [
+    explain('tier', input.tier ?? null, explainContext),
+    explain('friction', input.friction ?? null, explainContext),
+    explain('economicsBasis', quote?.basis ?? null, explainContext),
+    explain('fulfilmentStatus', candidates.length === 0 ? 'NO_PROVIDER' : 'HAS_CANDIDATES', explainContext),
+    explain('needIsConfirmed', confirmedFields.length > 0, explainContext),
+  ]
+    .filter((e): e is NonNullable<typeof e> => e !== null)
+    .map((e) => ({ ...e, standingLabel: STANDING_LABEL[e.standing] }));
+
   return {
     organisation: input.organisation,
     standing: {
@@ -156,6 +183,7 @@ export function buildOpportunityView(input: {
     providerTrack,
     plan: plan.stages.map(serialiseStage),
     diagnostics,
+    explanations,
   };
 }
 

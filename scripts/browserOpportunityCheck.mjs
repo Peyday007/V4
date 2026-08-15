@@ -139,6 +139,30 @@ async function main() {
   const explained = await page.locator('[data-testid="standing-explanation"]').first().innerText();
   check('with the reasoning, not a restatement', /steps are finished|judged by/.test(explained), explained.slice(0, 110));
 
+  // --- 5b. the magnifying glass ------------------------------------------
+  // The owner's actual request: take any word on the page and say what it
+  // means here. A glossary would satisfy the letter and miss the point, so
+  // this checks the explanations are built from the record.
+  const glass = page.locator('[data-testid="explanations"]');
+  check('explaining also explains every term on the record', (await glass.count()) === 1);
+  if ((await glass.count()) === 1) {
+    const text = await glass.innerText();
+    check(
+      'each term says whether it is a fact or our inference',
+      /our inference|a fact, from a source|not a finding|calculated from things/.test(text),
+      text.replace(/\s+/g, ' ').slice(0, 160),
+    );
+    check('and what to do with it', /What to do with it:/.test(text));
+    check('and how it was worked out', /How it was worked out:/.test(text));
+    // The distinguishing test: a glossary would not name the organisation.
+    const org = (await page.locator('h1').first().innerText()).trim();
+    check(
+      'and is written about this record rather than in general',
+      org.length > 0 && text.includes(org.split(' ')[0]),
+      `looking for "${org.split(' ')[0]}" in the explanations`,
+    );
+  }
+
   await toggle.first().click();
   await page.waitForTimeout(300);
   check('and clicking again hides it',
