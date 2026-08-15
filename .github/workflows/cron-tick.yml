@@ -31,6 +31,17 @@ on:
     - cron: '*/10 * * * *'
   # So a person can confirm it works without waiting ten minutes.
   workflow_dispatch:
+    inputs:
+      mode:
+        description: >-
+          Which sweep to run. "tick" is the frequent one and is what the
+          schedule fires. "daily" additionally rebuilds the demand pipeline,
+          re-matches supply and re-plans, which is the sweep that writes the
+          claim ledger onto routes built before it existed.
+        required: false
+        default: tick
+        type: choice
+        options: [tick, daily]
 
 # A slow run must not overlap the next one. The loop is safe to run
 # concurrently — claims are conditional updates — but overlapping runs spend
@@ -44,12 +55,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Fire the tick
+      - name: Fire the sweep
         env:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
           APP_BASE_URL: ${{ secrets.APP_BASE_URL }}
+          # The schedule has no inputs, so it falls back to the frequent sweep.
+          # A dispatch may ask for the daily one.
+          MODE: ${{ inputs.mode || 'tick' }}
         run: |
           set -euo pipefail
+
+          case "${MODE:-tick}" in
+            tick|daily) ;;
+            *) echo "mode must be tick or daily, not ${MODE}." >&2; exit 1 ;;
+          esac
 
           if [ -z "${CRON_SECRET:-}" ] || [ -z "${APP_BASE_URL:-}" ]; then
             echo "CRON_SECRET and APP_BASE_URL must both be set as repository secrets." >&2
@@ -117,7 +136,7 @@ jobs:
           if not isinstance(body, dict) or "ok" not in body:
               sys.exit(
                   "The response is JSON but is not a tick result — no `ok` field. "
-                  "Something other than /api/cron/tick answered. First 200 characters: %r"
+                  "Something other than /api/cron answered. First 200 characters: %r"
                   % (text[:200],)
               )
 
@@ -239,7 +258,7 @@ jobs:
                 --max-time 120 \
                 --output "$work/body" \
                 --write-out '%{http_code}\n%{num_redirects}\n%{url_effective}\n' \
-                "$base/api/cron/tick" > "$work/meta"
+                "$base/api/cron/${MODE}" > "$work/meta"
           rc=$?
           set -e
 
