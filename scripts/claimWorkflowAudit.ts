@@ -35,6 +35,7 @@ import { saveCallerCall } from '@/lib/caller/save';
 import { buildDealPlan, loadDemandContext } from '@/lib/deal/plan';
 import { loadDealRecord } from '@/lib/deal/record';
 import { currentClaims, openContradictions } from '@/lib/evidence/ledger';
+import { requiredFieldsFor } from '@/lib/caller/discovery';
 
 let passed = 0;
 let failed = 0;
@@ -123,7 +124,7 @@ async function main() {
   const route = await prisma.routeHypothesis.findFirst({
     where: { orgId: org.id, eventId: event.id },
     orderBy: { createdAt: 'desc' },
-    select: { id: true, playbookKey: true },
+    select: { id: true, playbookKey: true, route: true },
   });
   if (!route) {
     check('a route was built from the seeded event', false, 'no route — nothing further can be checked');
@@ -199,19 +200,34 @@ async function main() {
 
   check('the route was assigned to the first caller', planOne.items === 1, JSON.stringify(planOne));
 
+  // The discovery form is route-specific by design, and which route wins is the
+  // competition's decision rather than this audit's. Reading the requirement
+  // from the same function the caller view uses means a new playbook winning
+  // this event changes what is asked and not whether the audit passes.
+  const answers = (scope: string): Record<string, string> => {
+    const out: Record<string, string> = {
+      confirmedNeed: 'Two thousand pallet positions of overflow from October',
+      timing: 'October',
+      buyerRole: 'Operations manager',
+    };
+    for (const field of requiredFieldsFor('NEED_CONFIRMED', route.route)) {
+      if (out[field.key]) continue;
+      // The scope answer carries the figure the disagreement is about; every
+      // other required field gets a plain, obviously-fixture answer.
+      out[field.key] = field.key === 'scope' || field.key === 'productCategory' || field.key === 'tradeCapability'
+        ? scope
+        : `Recorded by the claim workflow audit (${field.label.toLowerCase()})`;
+    }
+    return out;
+  };
+
   const firstCall = await saveCallerCall({
     orgId: org.id,
     callerId: first.id,
     input: {
       routeId: route.id,
       disposition: 'NEED_CONFIRMED',
-      discovery: {
-        confirmedNeed: 'Two thousand pallet positions of overflow from October',
-        timing: 'October',
-        buyerRole: 'Operations manager',
-        scope: 'Overflow pallet storage, forty thousand square feet',
-        locations: 'One site, Chicago',
-      },
+      discovery: answers('Overflow pallet storage, forty thousand square feet'),
     },
   });
   check('the first call saved', firstCall.ok, firstCall.ok ? '' : firstCall.message);
@@ -253,14 +269,9 @@ async function main() {
     input: {
       routeId: route.id,
       disposition: 'NEED_CONFIRMED',
-      discovery: {
-        confirmedNeed: 'Two thousand pallet positions of overflow from October',
-        timing: 'October',
-        buyerRole: 'Operations manager',
-        // The disagreement. A different person, a materially different figure.
-        scope: 'Twelve thousand square feet, nothing like forty',
-        locations: 'One site, Chicago',
-      },
+      // The disagreement. A different person, a materially different figure,
+      // on whichever field this route calls the scope.
+      discovery: answers('Twelve thousand square feet, nothing like forty'),
     },
   });
   check('the second call saved', secondCall.ok, secondCall.ok ? '' : secondCall.message);
@@ -274,7 +285,7 @@ async function main() {
   check('both readings stay on the record', disputes.length === 2, `${disputes.length}`);
   check(
     'and the earlier answer was not quietly replaced',
-    disputes.some((c) => c.statement.includes('forty')) && disputes.some((c) => c.statement.includes('Twelve')),
+    disputes.some((c) => /forty/i.test(c.statement)) && disputes.some((c) => /twelve/i.test(c.statement)),
     disputes.map((c) => c.statement).join(' | '),
   );
 

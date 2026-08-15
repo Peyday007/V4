@@ -1,4 +1,5 @@
 import type { DemandEventType, EventPartyRole, SignalCategory } from '@prisma/client';
+import { FACILITY_PLAYBOOKS } from './facilityPlaybooks';
 import { TRADE_PLAYBOOKS } from './tradePlaybooks';
 
 /**
@@ -777,7 +778,7 @@ export const CLEANING_PLAYBOOKS: Playbook[] = [
  * contract, the reading that matches the trade wins the tie rather than the
  * reading that happens to be declared first in a file about cleaning.
  */
-export const PLAYBOOKS: Playbook[] = [...TRADE_PLAYBOOKS, ...CLEANING_PLAYBOOKS];
+export const PLAYBOOKS: Playbook[] = [...TRADE_PLAYBOOKS, ...FACILITY_PLAYBOOKS, ...CLEANING_PLAYBOOKS];
 
 export function playbooksFor(eventType: DemandEventType): Playbook[] {
   return PLAYBOOKS.filter((p) => p.qualifyingEvents.includes(eventType));

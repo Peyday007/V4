@@ -433,6 +433,46 @@ export const MINI_PATHS: MiniPath[] = [
     playbookKey: null,
   },
   {
+    key: 'brokerage.facility.waste_new_site',
+    model: 'brokerage',
+    vertical: 'Facility services',
+    subvertical: 'Waste and recycling',
+    label: 'Waste collection for a new site',
+    plainDescription:
+      'A building that has just been approved to open needs somewhere for its rubbish to go from the first '
+      + 'day, and we hold the contract and place a hauler underneath us.',
+    whatCreatesDemand:
+      'A certificate of occupancy or an operating licence. A building physically cannot trade without a waste '
+      + 'arrangement, so the decision is forced by the opening date rather than by anybody feeling a need.',
+    buyerTypes: ['Operators of newly opened premises', 'Property managers', 'Landlords letting a new unit'],
+    providerTypes: ['Commercial waste haulers', 'Recycling operators', 'Roll-off operators'],
+    intermediaryAdvantage:
+      'Route density decides the price and is invisible from outside: the hauler already driving that street '
+      + 'can serve it for a fraction of the one who is not, and the buyer has no way to find out which is which.',
+    lanes: ['TRIGGER_BACKED'],
+    playbookKey: 'facility.brokerage.waste_collection',
+  },
+  {
+    key: 'brokerage.facility.grounds_new_site',
+    model: 'brokerage',
+    vertical: 'Facility services',
+    subvertical: 'Landscaping and grounds',
+    label: 'Grounds maintenance for a new site',
+    plainDescription:
+      'A newly opened site with its own grounds needs them kept, and we hold the contract and place a '
+      + 'landscaper underneath us.',
+    whatCreatesDemand:
+      'A site opening with grounds attached to it. Distinct from a portfolio contract: this is one building '
+      + 'whose grass has started growing.',
+    buyerTypes: ['Operators of standalone premises', 'Property managers', 'Owners of a single site'],
+    providerTypes: ['Landscaping contractors', 'Snow contractors', 'Grounds crews'],
+    intermediaryAdvantage:
+      'Seasonal capacity is booked months ahead and fails publicly when it is short. Knowing who still has a '
+      + 'crew free in October is worth paying for in November.',
+    lanes: ['TRIGGER_BACKED'],
+    playbookKey: 'facility.brokerage.grounds',
+  },
+  {
     key: 'brokerage.space.commercial',
     model: 'brokerage',
     vertical: 'Commercial space',
@@ -510,7 +550,7 @@ export const MINI_PATHS: MiniPath[] = [
     providerTypes: ['Trade subcontractors', 'Specialty crews'],
     intermediaryAdvantage: 'Primes need vetted trades on a schedule, and a gap costs them liquidated damages.',
     lanes: ['DIRECT_DEMAND', 'TRIGGER_BACKED'],
-    playbookKey: null,
+    playbookKey: 'construction.subcontracting.trade_packages',
   },
   {
     key: 'subcontracting.awards.capacity_gap',
@@ -748,7 +788,7 @@ export const MINI_PATHS: MiniPath[] = [
     providerTypes: ['Hospitality distributors', 'Manufacturers'],
     intermediaryAdvantage: 'Openings are dated and the buying window is short.',
     lanes: ['TRIGGER_BACKED'],
-    playbookKey: null,
+    playbookKey: 'hospitality.distribution.opening_supply',
   },
   {
     key: 'distribution.supplies.restaurant',
@@ -762,7 +802,7 @@ export const MINI_PATHS: MiniPath[] = [
     providerTypes: ['Food-service distributors'],
     intermediaryAdvantage: 'Openings are public and dated; incumbents are not yet in place.',
     lanes: ['TRIGGER_BACKED'],
-    playbookKey: null,
+    playbookKey: 'restaurant.distribution.opening_supply',
   },
   {
     key: 'distribution.supplies.packaging',
@@ -776,7 +816,7 @@ export const MINI_PATHS: MiniPath[] = [
     providerTypes: ['Packaging converters', 'Distributors'],
     intermediaryAdvantage: 'Specification matching and volume pricing across converters.',
     lanes: ['DIRECT_DEMAND', 'MARKET_DEVELOPMENT'],
-    playbookKey: null,
+    playbookKey: 'distribution.packaging.opening_supply',
   },
   {
     key: 'distribution.supplies.medical',

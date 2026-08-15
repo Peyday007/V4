@@ -123,6 +123,20 @@ const TRADE_LANGUAGE: Record<string, RegExp> = {
   'brokerage.warehousing.overflow': /warehous|storage|distribution cent|fulfil|pallet|3pl|logistics|cold stor/i,
   'distribution.materials.steel': /steel|rebar|structural|metal|fabricat|beam|joist|deck|erect/i,
   'subcontracting.facility.commercial': /facilit|janitor|maintenance|custodial|building service|grounds|portfolio/i,
+
+  // The facility and supply paths, added with their playbooks. Without an entry
+  // here a reading scores zero on economic fit — neither supported nor
+  // penalised — which is how six new playbooks would have quietly started
+  // splitting every occupancy approval six ways.
+  'construction.subcontracting.trade_packages':
+    /construct|renovat|build|contractor|alteration|tenant improvement|permit|remodel/i,
+  'facility.brokerage.waste_collection': /waste|refuse|recycl|dumpster|roll.?off|trash|compact/i,
+  'facility.brokerage.grounds': /landscap|grounds|lawn|snow|irrigation|parking lot|exterior/i,
+  'restaurant.distribution.opening_supply':
+    /restaurant|food|kitchen|cafe|caf\u00e9|bar|tavern|grill|bakery|deli|retail food/i,
+  'hospitality.distribution.opening_supply': /hotel|motel|lodging|inn|hospitality|guest room|bed and breakfast/i,
+  'distribution.packaging.opening_supply':
+    /warehous|distribution cent|fulfil|packag|shipping|pallet|carton|3pl/i,
 };
 
 export function scoreCandidate(candidate: Candidate, lane: AcquisitionLane): ScoredCandidate {
