@@ -9,6 +9,8 @@ import { enrichmentOverview } from '@/lib/enrichment/report';
 import { ChainHealth } from '@/components/ChainHealth';
 import { PortfolioShape } from '@/components/PortfolioShape';
 import { portfolioShape, configuredCoverage } from '@/lib/portfolio/concentration';
+import { coverageMatrix } from '@/lib/demand/coverage';
+import { CoverageMatrixPanel } from '@/components/CoverageMatrix';
 import { chainHealth } from '@/lib/health/chain';
 
 export const dynamic = 'force-dynamic';
@@ -37,6 +39,7 @@ export default async function SourcesPage() {
   // Loaded after the rest so the panels it summarises are already resolved.
   const chain = await chainHealth(user.orgId);
   const shape = await portfolioShape({ orgId: user.orgId });
+  const matrix = await coverageMatrix({ orgId: user.orgId });
 
   return (
     <>
@@ -53,6 +56,11 @@ export default async function SourcesPage() {
       <ChainHealth health={chain} />
 
       <PortfolioShape shape={shape} coverage={configuredCoverage()} />
+
+      {/* Above the per-source panels, because "which states can this reach at
+          all" has to be answered before "how is each source performing" means
+          anything. */}
+      <CoverageMatrixPanel matrix={matrix} />
 
       <EnrichmentPanel overview={enrichment} />
 

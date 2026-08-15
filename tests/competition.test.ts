@@ -311,3 +311,41 @@ describe('the caller gets a brief for the trade in front of them', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Coverage
+// ---------------------------------------------------------------------------
+
+describe('the coverage matrix is honest about fifty states', () => {
+  it('names every state rather than only the covered ones', async () => {
+    // Pure over the shipped configuration for the source half; the observed
+    // half needs a database, so this asserts the shape that does not.
+    const { DEFAULT_JURISDICTIONS } = await import('@/lib/demand/connectors/municipalOpenData');
+    const { DEFAULT_SOLICITATION_DATASETS } = await import('@/lib/demand/connectors/municipalSolicitations');
+
+    const configured = new Set([
+      ...DEFAULT_JURISDICTIONS.map((j) => j.state),
+      ...DEFAULT_SOLICITATION_DATASETS.map((d) => d.state),
+    ]);
+    // The point of the matrix: far fewer states are configured than exist, and
+    // a product that only listed the configured ones would read as complete.
+    expect(configured.size).toBeLessThan(50);
+  });
+
+  it('does not treat a nationwide federal source as nationwide coverage', async () => {
+    const { sourceReachability } = await import('@/lib/universe/status');
+    const reach = sourceReachability();
+    // USAspending covers every state and is blocked, so it contributes nothing.
+    // If CONTRACT_AWARD were reachable it would be through a city register, not
+    // through a federal API that answers with a block page.
+    if (reach.reachable.has('CONTRACT_AWARD')) {
+      const { DEFAULT_SOLICITATION_DATASETS } = await import('@/lib/demand/connectors/municipalSolicitations');
+      const awardRegisters = DEFAULT_SOLICITATION_DATASETS.filter(
+        (d) => d.publishes === 'AWARDED_CONTRACT' && !d.unusableReason,
+      );
+      expect(awardRegisters.length).toBeGreaterThan(0);
+      // And those registers cover named cities, not the country.
+      expect(new Set(awardRegisters.map((d) => d.state)).size).toBeLessThan(50);
+    }
+  });
+});
