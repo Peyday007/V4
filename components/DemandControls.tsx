@@ -190,7 +190,18 @@ export function DemandControls({
                 <td>{source.eventsCreated}</td>
                 <td>{source.eventsUpdated}</td>
                 <td>{source.eventsRejected}</td>
-                <td>{source.nextScheduledAt?.slice(0, 16).replace('T', ' ') ?? '—'}</td>
+                {/* A word, never a dash. A held source has no next attempt and
+                    a never-run source has not had a first one, and those are
+                    different facts — an em dash says neither. */}
+                <td className="tiny">
+                  {source.nextScheduledAt
+                    ? source.nextScheduledAt.slice(0, 16).replace('T', ' ')
+                    : source.blockedExternally
+                      ? <span className="dim">held — not scheduled</span>
+                      : !source.configured
+                        ? <span className="dim">not configured</span>
+                        : <span className="dim">after its first run</span>}
+                </td>
               </tr>
             ))}
           </tbody>

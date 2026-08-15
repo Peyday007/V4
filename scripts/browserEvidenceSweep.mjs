@@ -66,6 +66,16 @@ async function main() {
     .getAttribute('href')
     .catch(() => null);
 
+  // A demand-side record too, so the surfaces built on the claim ledger are
+  // swept rather than only the legacy opportunity pages.
+  await page.goto(`${BASE}/demand`, { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(900);
+  const firstRoute = await page
+    .locator('a[href^="/demand/opportunity/"]')
+    .first()
+    .getAttribute('href')
+    .catch(() => null);
+
   const routes = [
     '/board',
     '/opportunities',
@@ -73,6 +83,17 @@ async function main() {
     '/dashboard',
     '/approvals',
     '/analytics',
+    // Everything added since this sweep was written. A page that is not on this
+    // list is a page where the fabrication could come back unnoticed, which is
+    // the only way this check ever stops working.
+    '/demand',
+    ...(firstRoute ? [firstRoute] : []),
+    '/demand/sources',
+    '/demand/reconcile',
+    '/universe',
+    '/supply',
+    '/campaigns',
+    '/callers',
   ];
 
   for (const route of routes) {
