@@ -1,30 +1,26 @@
-name: Deployed walkthrough
+name: Deployed surfaces
 
-# The owner-to-caller shift, driven against the real deployment.
+# The pages an owner opens, against the real deployment, changing nothing.
 #
-# Run from here rather than from a developer's machine for two reasons. The
-# deployment's address is a repository secret, so it belongs somewhere that can
-# read secrets without anybody pasting it around; and the machines this project
-# is developed on sit behind an egress allowlist that does not include the
-# deployment host, so a browser started there cannot reach it at all.
+# Separate from the deployed walkthrough on purpose. That one drives a shift —
+# it creates a sandbox caller, assigns practice work and saves an outcome — and
+# is manual because doing that against a live application is not something to
+# put on a timer. This one only reads, so it is safe to run whenever anybody
+# wants to know what production actually looks like.
 #
-# Manual only. It signs in, creates a sandbox caller, assigns practice work and
-# saves an outcome against the live application, and that is not something to do
-# on a timer.
+# It runs from here rather than from a developer's machine because the machines
+# this project is developed on sit behind an egress allowlist that does not
+# include the deployment host. A browser started there cannot reach it at all,
+# so "verified against the deployment" is a claim only this runner can make.
 #
 # Secrets it uses:
 #   APP_BASE_URL    the deployment, https, no trailing slash   (required)
-#   CRON_SECRET     to read which commit answered              (optional)
 #   OWNER_PASSWORD  the owner account's password               (optional; the
 #                   seed's documented default is used if unset)
 
 on:
   workflow_dispatch:
     inputs:
-      expect_commit:
-        description: 'Commit the deployment must report (first 12 characters). Leave blank to skip.'
-        required: false
-        default: ''
       owner_email:
         description: 'Owner account to sign in as.'
         required: false
@@ -34,16 +30,16 @@ permissions:
   contents: read
 
 concurrency:
-  # One at a time. Two runs would each create a caller, assign the same three
-  # practice records and reset the sandbox under one another.
-  group: deployed-walkthrough
-  cancel-in-progress: false
+  # Not strictly necessary — nothing here writes — but two browsers signing in
+  # as the same owner produces confusing logs for no benefit.
+  group: deployed-surfaces
+  cancel-in-progress: true
 
 jobs:
-  walkthrough:
-    name: walkthrough
+  surfaces:
+    name: surfaces
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
 
     steps:
       - uses: actions/checkout@v4
@@ -59,16 +55,11 @@ jobs:
       - name: Install the browser
         run: npx playwright install --with-deps chromium
 
-      - name: Walk the shift
+      - name: Read the deployment
         env:
           BASE_URL: ${{ secrets.APP_BASE_URL }}
-          CRON_SECRET: ${{ secrets.CRON_SECRET }}
           OWNER_EMAIL: ${{ inputs.owner_email }}
           OWNER_PASSWORD: ${{ secrets.OWNER_PASSWORD }}
-          EXPECT_COMMIT: ${{ inputs.expect_commit }}
-          # The newest migration, so a deployment running old code is caught
-          # here rather than by a caller hitting a column that does not exist.
-          EXPECT_MIGRATION: 20260815110000_economics_as_ranges
         run: |
           set -u
           if [ -z "${BASE_URL:-}" ]; then
@@ -82,4 +73,4 @@ jobs:
             echo "OWNER_PASSWORD is not set; using the seed's documented default."
             export OWNER_PASSWORD='demo-password-123'
           fi
-          node scripts/deployedWalkthroughCheck.mjs
+          node scripts/deployedSurfacesCheck.mjs
