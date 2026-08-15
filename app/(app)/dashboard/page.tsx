@@ -12,6 +12,7 @@ import { FigureChip } from '@/components/Figure';
 import { closedComparablesByType, gradeOpportunity, STAGE_ORDER } from '@/lib/evidence/opportunity';
 import { presentMoney } from '@/lib/evidence/economics';
 import { gradeRate, presentPercent } from '@/lib/evidence/claims';
+import { commandCentre } from '@/lib/operator/commandCenter';
 
 export const dynamic = 'force-dynamic';
 
@@ -85,6 +86,8 @@ export default async function DashboardPage() {
     .sort((a, b) => b.depth - a.depth || a.opportunity.stageEnteredAt.getTime() - b.opportunity.stageEnteredAt.getTime())
     .slice(0, 6);
 
+  const centre = await commandCentre({ orgId: user.orgId });
+
   const priorities = (plan?.priorities ?? []) as Array<{
     rank: number;
     headline: string;
@@ -101,8 +104,9 @@ export default async function DashboardPage() {
         <div>
           <h1>Operations dashboard</h1>
           <p>
-            What should happen today, what is blocked, and where the money is. The AI ranks work by expected value, not by
-            volume — the list below is the order to work in.
+            Work in order of how close it is to collected money, nearest first. Nothing here is ranked by a
+            predicted score — a deal is in a band because of what is true about it, and the last band is what
+            the engine read and could not build a case from.
           </p>
         </div>
         <div className="row">
@@ -117,7 +121,62 @@ export default async function DashboardPage() {
         </div>
       </div>
 
-      <div className="grid grid-4 mb">
+      {/* ---- work, banded by distance from money ------------------------
+          This is the first thing on the page now. What used to be here was a
+          row of record counts and an operating plan ranked by an expected
+          value built on a closing probability nobody had set — an owner
+          reading it learned how much the system had done, which is the one
+          thing that does not matter. */}
+      <div className="alert info" data-testid="command-headline">
+        <strong>{centre.headline}</strong>
+      </div>
+
+      <div className="two-col" data-testid="command-centre">
+        {centre.bands.filter((b) => b.count > 0 || b.key === 'no_credible_thesis').map((band) => (
+          <div className="card" key={band.key} data-testid={`band-${band.key}`}>
+            <div className="card-title">
+              <h2>{band.label}</h2>
+              <Badge tone={band.count === 0 ? '' : band.key === 'fulfilment_at_risk' ? 'danger' : band.key === 'money_ready' ? 'success' : ''}>
+                {band.count}
+              </Badge>
+            </div>
+            <p className="tiny dim">{band.meaning}</p>
+            {band.count > 0 && <p className="small"><strong>What to do:</strong> {band.whatToDo}</p>}
+            {showMoney && band.money !== null && (
+              <p className="small"><strong>{money(band.money)}</strong> <span className="dim">gross profit, both sides contracted</span></p>
+            )}
+            {band.items.length === 0 ? (
+              <p className="small dim">
+                {band.key === 'no_credible_thesis'
+                  ? 'Nothing has been read and rejected. If the board is emptier than expected, the demand '
+                    + 'sources are the place to look rather than this.'
+                  : 'Nothing here.'}
+              </p>
+            ) : (
+              <ul className="list-reset small">
+                {band.items.map((item) => (
+                  <li key={item.id} style={{ padding: '0.4rem 0', borderBottom: '1px solid var(--border)' }}>
+                    <Link href={item.href}><strong>{item.subject}</strong></Link>
+                    {item.ageDays !== null && <span className="tiny dim"> · {item.ageDays}d</span>}
+                    {showMoney && item.amount !== null && <span className="tiny"> · {money(item.amount)}</span>}
+                    <div className="tiny dim">{item.line}</div>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {band.count > band.items.length && (
+              <p className="tiny dim mt">{band.count - band.items.length} more not shown.</p>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <details className="card" data-testid="dashboard-counts">
+        <summary>
+          <strong>Counts and rates</strong>
+          <span className="tiny dim"> — useful for checking the engine, not for deciding what to do today</span>
+        </summary>
+        <div className="grid grid-4 mt">
         <Stat label="Active opportunities" value={metrics.activeOpportunities} sub={`${metrics.totalOpportunities} total`} />
         {showMoney && (
           <>
@@ -157,7 +216,8 @@ export default async function DashboardPage() {
           value={noAction}
           sub={noAction > 0 ? 'These are drifting — run the planner' : 'Every active deal has an owner and a step'}
         />
-      </div>
+        </div>
+      </details>
 
       <div className="two-col">
         <div>
