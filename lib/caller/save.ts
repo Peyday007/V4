@@ -4,6 +4,8 @@ import { saveDisposition } from '@/lib/demand/outreach';
 import { sanitiseDiscovery, validateDisposition } from './discovery';
 import { markWorked } from './packets';
 import { progressFromCall, type ProgressResult } from '@/lib/deal/fromCall';
+import { answersAgree, callClaims } from '@/lib/evidence/callClaims';
+import { recordPersonClaims } from '@/lib/evidence/ledger';
 
 /**
  * Saving a caller's call.
@@ -46,6 +48,13 @@ export type CallerSaveResult =
        * disappearing into a form.
        */
       progress?: ProgressResult;
+      /**
+       * Answers that disagree with something already established by another
+       * person. Reported back so the caller sees it immediately rather than
+       * finding out three weeks later that their answer was silently kept or
+       * silently dropped.
+       */
+      contradictions?: Array<{ key: string; wasSaid: string; nowSaid: string }>;
     }
   | {
       ok: false;
@@ -82,7 +91,10 @@ export async function saveCallerCall(params: {
       status: { in: ['PENDING', 'IN_PROGRESS'] },
       packet: { callerId: params.callerId, status: 'OPEN' },
     },
-    select: { id: true, route: { select: { route: true } } },
+    select: {
+      id: true,
+      route: { select: { route: true, companyId: true, company: { select: { legalName: true } } } },
+    },
   });
 
   if (!item) {
@@ -166,6 +178,46 @@ export async function saveCallerCall(params: {
       now,
     });
 
+    // --- what the call established ----------------------------------------
+    //
+    // The discovery answers become claims: a named person, on a dated call,
+    // answering a specific question about their own business. That is the
+    // strongest evidence this system collects, and until now it was stored as
+    // JSON nothing read while the route's columns went on reporting what a
+    // playbook had inferred weeks earlier.
+    //
+    // Where an answer disagrees with something another person established, both
+    // stay on the record and the disagreement is reported back to the caller.
+    // Failures here raise no incident and lose nothing: the attempt is already
+    // written, and a ledger fault must not cost the caller their call.
+    let contradictions: Array<{ key: string; wasSaid: string; nowSaid: string }> = [];
+    try {
+      const caller = await prisma.user.findUnique({
+        where: { id: params.callerId },
+        select: { name: true },
+      });
+      const written = await recordPersonClaims({
+        orgId: params.orgId,
+        routeId: input.routeId,
+        claims: callClaims({
+          routeId: input.routeId,
+          companyId: item.route.companyId,
+          organisation: item.route.company?.legalName ?? 'The account',
+          disposition: input.disposition,
+          discovery,
+          // Never invented. An unnamed caller is recorded as unnamed.
+          callerName: caller?.name?.trim() || 'A caller whose name is not on the record',
+          attemptId: saved.attemptId,
+          calledAt: now,
+        }),
+        agree: (incoming, existing) => answersAgree(incoming, existing),
+        now,
+      });
+      contradictions = written.contradicted;
+    } catch {
+      // Deliberately silent to the caller. The call is saved either way.
+    }
+
     return {
       ok: true,
       attemptId: saved.attemptId,
@@ -173,6 +225,7 @@ export async function saveCallerCall(params: {
       effect: saved.effect,
       attempts: saved.attempts,
       progress,
+      contradictions: contradictions.length > 0 ? contradictions : undefined,
     };
   } catch (error) {
     // --- ours, not theirs -------------------------------------------------

@@ -11,6 +11,8 @@ import { loadDealPlan } from '@/lib/deal/plan';
 import { DealActions } from '@/components/DealActions';
 import { can } from '@/lib/auth/session';
 import { Badge } from '@/components/ui';
+import { ClaimLedger, ContradictionAlert } from '@/components/ClaimLedger';
+import { currentClaims } from '@/lib/evidence/ledger';
 
 export const dynamic = 'force-dynamic';
 
@@ -46,6 +48,11 @@ export default async function OpportunityRecordPage({ params }: { params: { rout
     where: { id: params.routeId, orgId: user.orgId },
     select: { friction: true, requiredCapability: true },
   });
+
+  // The ledger. Everything this system claims about the deal, and what each
+  // claim rests on — read here rather than reconstructed from side channels on
+  // the way to the screen.
+  const claims = await currentClaims(params.routeId);
 
   return (
     <>
@@ -85,6 +92,10 @@ export default async function OpportunityRecordPage({ params }: { params: { rout
         />
       )}
 
+      {/* A disagreement between two sources sits above the actions, because it
+          makes every action below it unsafe and it is settled by one call. */}
+      <ContradictionAlert claims={claims} />
+
       <DealActions
         context={{
           routeId: params.routeId,
@@ -105,6 +116,8 @@ export default async function OpportunityRecordPage({ params }: { params: { rout
       />
 
       <DealProgress record={deal} canSeeMargin={can(user, 'finance.margin.read')} />
+
+      <ClaimLedger claims={claims} />
 
       <details className="card" data-testid="evidence-detail">
         <summary>

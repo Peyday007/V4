@@ -19,6 +19,7 @@ const demand = (over: Partial<DemandContext> = {}): DemandContext => ({
   contactBlocker: null,
   discoveryAttempts: 1,
   lastAttemptAt: new Date('2026-08-05'),
+  disputedClaims: [],
   terminalReason: null,
   ...over,
 });

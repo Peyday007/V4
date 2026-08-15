@@ -27,6 +27,7 @@ export type StageKey =
   | 'DATED_DEMAND'
   | 'RESOLVED_CONTACT'
   | 'DISCOVERY'
+  | 'UNDISPUTED'
   | 'REQUIREMENT'
   | 'PROVIDER'
   | 'PROVIDER_COST'
@@ -101,6 +102,14 @@ export type DemandContext = {
   /** Somebody has actually spoken to them and written down what was said. */
   discoveryAttempts: number;
   lastAttemptAt: Date | null;
+  /**
+   * Claims two sources disagree about, unresolved.
+   *
+   * A rung of its own rather than a warning, because a disputed square footage
+   * makes the price under it wrong and the product has no business quoting past
+   * it. It is also the cheapest rung on the chain to clear: one call.
+   */
+  disputedClaims: Array<{ key: string; statement: string; settleBy: string }>;
   /** Set when the route is closed for a reason that ends the chain. */
   terminalReason: string | null;
 };
@@ -159,6 +168,23 @@ export async function loadDemandContext(params: {
     || route.company.contacts.some((c) => c.phone || c.mobile || c.email),
   );
 
+  // One row per disputed key. Both sides of a disagreement are on the ledger,
+  // and the chain only needs to know that the question is open.
+  const disputed = await prisma.claim.findMany({
+    where: { orgId: params.orgId, routeId: params.routeId, standing: 'CONTRADICTED', supersededAt: null },
+    orderBy: { recordedAt: 'desc' },
+    select: { key: true, statement: true, correctiveAction: true },
+  });
+  const disputedByKey = new Map<string, { key: string; statement: string; settleBy: string }>();
+  for (const claim of disputed) {
+    if (disputedByKey.has(claim.key)) continue;
+    disputedByKey.set(claim.key, {
+      key: claim.key,
+      statement: claim.statement,
+      settleBy: claim.correctiveAction ?? 'Ring back and establish which answer holds.',
+    });
+  }
+
   return {
     // A date the source itself stated, in its own words. `discoveredAt` is our
     // clock and is deliberately not eligible here.
@@ -169,6 +195,7 @@ export async function loadDemandContext(params: {
     contactBlocker: hasContactRoute ? null : 'No phone number or address for anybody at this organisation.',
     discoveryAttempts: attempts,
     lastAttemptAt: last?.occurredAt ?? null,
+    disputedClaims: [...disputedByKey.values()],
     terminalReason: ['EXPIRED', 'REJECTED', 'COLD'].includes(route.status)
       ? (route.statusReason ?? `The route is ${route.status.toLowerCase()}.`)
       : null,
@@ -246,7 +273,31 @@ export function buildDealPlan(input: {
     needsAuthority: false,
   });
 
-  // --- 4. a requirement they confirmed -----------------------------------
+  // --- 4. nothing in dispute ---------------------------------------------
+  //
+  // Placed before the requirement rung rather than after it, because a disputed
+  // answer is not a thinner requirement — it is a requirement whose price would
+  // be wrong, and pricing past it is how a middleman loses money on a deal that
+  // looked finished.
+  const disputed = demand.disputedClaims;
+  stages.push({
+    key: 'UNDISPUTED',
+    label: 'Nothing about this in dispute',
+    state: disputed.length === 0 ? 'DONE' : 'BLOCKED',
+    because:
+      disputed.length === 0
+        ? 'No two sources disagree about anything on this deal.'
+        : `Two sources disagree about ${disputed.length === 1 ? 'this' : `${disputed.length} things`}: `
+          + disputed.map((d) => `“${d.statement}”`).join('; '),
+    nextAction: disputed.length === 0 ? null : disputed[0].settleBy,
+    owner: disputed.length === 0 ? OWNER_SYSTEM : OWNER_CALLER,
+    deadline: null,
+    completionCondition: 'No claim on this deal is marked as disputed.',
+    evidenceRequired: 'A confirmed answer settling each disagreement, recorded against the deal.',
+    needsAuthority: false,
+  });
+
+  // --- 5. a requirement they confirmed -----------------------------------
   const req = record.requirement;
   stages.push({
     key: 'REQUIREMENT',

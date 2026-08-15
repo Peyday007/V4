@@ -35,6 +35,8 @@ import {
 } from './risk';
 import { buildThesis } from './thesis';
 import { recordOutcome, recordPipelineMilestones } from './performance';
+import { discoveryClaims } from '@/lib/evidence/discoveryClaims';
+import { recordEngineClaims } from '@/lib/evidence/ledger';
 import { scheduleContactResolution } from '@/lib/enrichment/schedule';
 import { enqueue } from '@/lib/jobs/queue';
 
@@ -509,6 +511,9 @@ export type RouteBuildOutcome = {
   byTier: Record<string, number>;
   byFriction: Record<string, number>;
   lowFrictionQueue: number;
+  /** Claims written to the ledger, and disagreements the rebuild uncovered. */
+  claimsRecorded: number;
+  claimsContradicted: number;
 };
 
 /**
@@ -533,6 +538,8 @@ export async function rebuildRoutes(params: { orgId: string; now?: Date }): Prom
     byTier: {},
     byFriction: {},
     lowFrictionQueue: 0,
+    claimsRecorded: 0,
+    claimsContradicted: 0,
   };
 
   const [events, paths, providerIndex, catalogue, providers] = await Promise.all([
@@ -891,6 +898,57 @@ export async function rebuildRoutes(params: { orgId: string; now?: Date }): Prom
         : await prisma.routeHypothesis.create({ data: { ...record, eventId: event.id, companyId: account.id } });
       if (existing) outcome.routesUpdated += 1;
       else outcome.routesCreated += 1;
+
+      // What this route claims, and what each claim rests on.
+      //
+      // The columns above hold the current reading; this holds its provenance.
+      // Written on every pass, and yielding on every key a person has already
+      // established — a nightly rebuild must not overwrite what a caller
+      // learned with the category prior it started from.
+      //
+      // Failures are swallowed deliberately. A malformed claim is a defect
+      // worth fixing and is never worth losing a route over, and the pipeline
+      // processes hundreds of events per run.
+      try {
+        const written = await recordEngineClaims({
+          orgId: params.orgId,
+          routeId: saved.id,
+          claims: discoveryClaims({
+            routeId: saved.id,
+            companyId: account.id,
+            organisation: account.legalName,
+            event: {
+              type: event.type,
+              headline: event.headline,
+              sourceUrl: event.sourceUrl,
+              connector: event.connector,
+              eventDate: event.eventDate,
+            },
+            playbook: { key: playbook.key, label: playbook.label, route: playbook.route },
+            needIsConfirmed: decision.needIsConfirmed,
+            rationale: decision.rationale,
+            buyerRole: decision.buyerRole,
+            window: window ? { label: describeWindow(window, now), closesAt: window.closesAt } : null,
+            fulfilment: {
+              status: fulfilment.status,
+              reason: fulfilment.reason,
+              providerCount: fulfilment.matched.length,
+            },
+            economics: {
+              buyerPrice: economics.buyerPrice,
+              providerCost: economics.providerCost,
+              grossProfit: economics.grossProfit,
+              basis: economics.basis,
+            },
+            compliance: { status: compliance.status, gaps: compliance.gaps },
+            structure: { structure: structure.structure, reason: structure.reason },
+          }),
+          now,
+        });
+        outcome.claimsRecorded += written.recorded;
+      } catch {
+        // Left uncounted rather than reported as recorded.
+      }
 
       milestones.push({
         id: saved.id,

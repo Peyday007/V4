@@ -678,6 +678,7 @@ model Organization {
   campaignChannels       CampaignChannel[]
   campaignConditions     CampaignCondition[]
   campaignTasks          CampaignTask[]
+  claims                 Claim[]
 }
 
 model Permission {
@@ -1321,6 +1322,7 @@ model Company {
   contactResolution ContactResolution?
   contactProvenance ContactProvenance[]
   campaignTasks     CampaignTask[]
+  claims            Claim[]
 
   @@unique([orgId, legalName])
   @@index([orgId, companyRole])
@@ -1449,6 +1451,7 @@ model Contact {
   dealsCommitted      RouteDeal[]        @relation("DealBuyerContact")
   dealRooms           DealRoom[]
   callSessions        CallSession[]
+  claims              Claim[]
 
   @@index([orgId, companyId])
   @@index([orgId, lastName])
@@ -2989,6 +2992,11 @@ model RouteHypothesis {
   callSessions     CallSession[]
   interventions    Intervention[]
   consistencyCases ConsistencyCase[]
+  /// Everything this system claims about the deal, and what each claim rests
+  /// on. The ledger rather than the columns above is the answer to "how do we
+  /// know that" — the columns hold the current reading, this holds its
+  /// provenance and every reading before it.
+  claims           Claim[]
 
   @@unique([eventId, companyId, playbookKey])
   @@index([orgId, dataMode, status], map: "RouteHypothesis_dataMode_idx")
@@ -5386,4 +5394,137 @@ model CampaignTask {
 
   @@index([orgId, campaignId, status])
   @@index([orgId, dataMode, status])
+}
+
+// ---------------------------------------------------------------------------
+// The claim ledger
+// ---------------------------------------------------------------------------
+
+/// What a single claim about a deal rests on.
+///
+/// Four states, and the fourth is the one the product did not have. Everything
+/// before this could say a thing was confirmed, guessed, or missing; nothing
+/// could say two sources disagree. So a permit that said forty thousand square
+/// feet and a facilities manager who said twelve thousand both went onto the
+/// record, the later write won, and the disagreement — which is the single most
+/// valuable thing a caller ever produces — vanished.
+enum ClaimStanding {
+  /// A named person stated it, or an external record with a durable reference
+  /// published it. Checkable by somebody who does not trust us.
+  CONFIRMED
+  /// We worked it out. Possibly well; still ours.
+  INFERRED
+  /// Nobody has established it and nobody has guessed. Recorded rather than
+  /// omitted, because a known gap is actionable and an absent row is not.
+  UNKNOWN
+  /// Something later disagrees with it, and the disagreement is unresolved.
+  /// Not the same as being wrong — it is the same as needing one phone call.
+  CONTRADICTED
+}
+
+/// Who or what put a claim on the record.
+enum ClaimSourceKind {
+  /// A named person said it, on a call or in writing.
+  PERSON
+  /// An external source with a durable reference.
+  PUBLISHED_RECORD
+  /// Derived from other claims. Inherits the weakest of them.
+  CALCULATION
+  /// A playbook or scoring rule concluded it from what was collected.
+  ENGINE_INFERENCE
+  /// The owner typed it.
+  OPERATOR
+  /// Recorded because it is missing, so the gap is visible and has an owner.
+  ABSENCE
+}
+
+/// Which side of the deal a claim concerns, for grouping on screen.
+enum ClaimAbout {
+  DEMAND
+  BUYER
+  PROVIDER
+  ECONOMICS
+  TIMING
+  COMPLIANCE
+  STRUCTURE
+  CONTACT
+}
+
+/// One thing this system claims about one deal, and what that claim rests on.
+///
+/// Append-only. A newer claim on the same key supersedes the older one rather
+/// than overwriting it, so the record answers "what did we believe in March, and
+/// what changed it" — which is the question that decides whether a playbook is
+/// working or a caller is guessing.
+///
+/// Every claim carries the same five things, and the shape is the point: what is
+/// claimed, what standing it has, where it came from, when the source said it,
+/// and what would settle it. A field on a table can carry a value; only a row
+/// like this can carry a value that knows how well it is known.
+model Claim {
+  id       String   @id @default(cuid())
+  orgId    String
+  /// Inherited from the route by trigger, on the same rule as everything else.
+  dataMode DataMode @default(PRODUCTION)
+  routeId  String
+
+  about     ClaimAbout
+  /// Stable dotted key. Rows sharing one are the same claim over time.
+  key       String
+  /// The claim in a sentence, as it is shown. Written for a person, not parsed.
+  statement String
+  /// The value behind the sentence, where one exists, so two claims about the
+  /// same thing can be compared rather than merely read.
+  value     Json?
+
+  standing    ClaimStanding
+  sourceKind  ClaimSourceKind
+  /// Where it came from, in a phrase somebody can act on.
+  sourceLabel String
+  /// Something reopenable: a URL, an attempt id, a person and a date.
+  sourceRef   String?
+  /// When the source said it. Distinct from when we wrote it down — a permit
+  /// filed in January read in August is eight months old, and the record has to
+  /// know that.
+  observedAt  DateTime?
+  recordedAt  DateTime        @default(now())
+
+  /// Only meaningful for INFERRED, and null everywhere else deliberately: a
+  /// confidence on a confirmed fact is noise, and a confidence on an unknown is
+  /// a contradiction in terms.
+  confidence Float?
+
+  /// What would settle it. Required by the writer for anything not CONFIRMED,
+  /// because a claim nobody can act on is a claim that stays where it is.
+  correctiveAction String?
+
+  /// Append-only supersession. Null on the current claim for a key.
+  ///
+  /// One-to-many rather than one-to-one, which the first version got wrong:
+  /// settling a disagreement supersedes *both* sides at once, and a unique
+  /// index here made that impossible. The audit caught it; the shape is the
+  /// business rule, not a modelling nicety.
+  supersededAt   DateTime?
+  supersededById String?
+  supersededBy   Claim?    @relation("ClaimSupersession", fields: [supersededById], references: [id], onDelete: SetNull)
+  supersedes     Claim[]   @relation("ClaimSupersession")
+
+  /// The claim this one disagrees with, when it does.
+  contradictsId  String?
+  contradicts    Claim?  @relation("ClaimContradiction", fields: [contradictsId], references: [id], onDelete: SetNull)
+  contradictedBy Claim[] @relation("ClaimContradiction")
+
+  /// Narrowing, where a claim is about a particular party rather than the deal.
+  companyId String?
+  contactId String?
+
+  org     Organization    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  route   RouteHypothesis @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  company Company?        @relation(fields: [companyId], references: [id], onDelete: SetNull)
+  contact Contact?        @relation(fields: [contactId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, routeId, key])
+  @@index([routeId, supersededAt])
+  @@index([orgId, dataMode, standing])
+  @@index([supersededById])
 }
