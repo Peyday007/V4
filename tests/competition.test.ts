@@ -3,6 +3,7 @@ import { compete, scoreCandidate, laneFor, CREDIBILITY_GATE, type Candidate } fr
 import { playbookByKey, playbooksFor } from '@/lib/demand/playbooks';
 import { MINI_PATHS, COMMERCIAL_MODELS, PROVEN_PATH_TARGETS } from '@/lib/universe/registry';
 import { assessMiniPath, sourceReachability } from '@/lib/universe/status';
+import { buildCallBrief } from '@/lib/demand/callBrief';
 
 /**
  * One event, one primary reading.
@@ -242,6 +243,71 @@ describe('the opportunity universe', () => {
       for (const [j, b] of questions.entries()) {
         if (i < j) expect(a).not.toBe(b);
       }
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Different paths, different calls
+// ---------------------------------------------------------------------------
+
+describe('the caller gets a brief for the trade in front of them', () => {
+  const base = {
+    organisation: 'Northline Constructors',
+    eventDate: new Date('2026-09-01T00:00:00Z'),
+    deadlineAt: null,
+    confirmedFacts: ['Structural steel supply and erection'],
+    needIsConfirmed: false,
+    tier: 'STRONG_TRIGGER' as const,
+    friction: 'MODERATE' as const,
+    fulfilmentStatus: 'UNKNOWN',
+    thesis: null,
+  };
+
+  const briefs = PROVEN_PATH_TARGETS.map((key) => {
+    const path = MINI_PATHS.find((p) => p.key === key)!;
+    const playbook = playbookByKey(path.playbookKey!)!;
+    return buildCallBrief({
+      ...base,
+      eventType: playbook.qualifyingEvents[0],
+      playbookKey: playbook.key,
+      route: playbook.route,
+      requiredCapability: playbook.requiredCapability,
+    });
+  });
+
+  it('asks the questions the trade actually needs answered', () => {
+    const [warehousing, steel, subcontracting] = briefs.map((b) => b.discoveryObjective.join(' ').toLowerCase());
+    expect(warehousing).toMatch(/pallet/);
+    expect(steel).toMatch(/sections|tonnage/);
+    expect(subcontracting).toMatch(/head contract|subcontract|onboarding/);
+  });
+
+  it('never hands two trades the same objectives', () => {
+    const objectives = briefs.map((b) => b.discoveryObjective.join('|'));
+    expect(new Set(objectives).size).toBe(objectives.length);
+  });
+
+  it('names what is being sold rather than defaulting to consumables', () => {
+    // "Supplying the consumables" was correct while cleaning was the only
+    // trade and became wrong the moment steel existed.
+    const steelBrief = briefs[1];
+    expect(steelBrief.offerDirection.toLowerCase()).not.toMatch(/consumable/);
+    expect(steelBrief.offerDirection.toLowerCase()).toMatch(/steel|material/);
+  });
+
+  it('still refuses to assert the buyer’s position in any of them', () => {
+    for (const brief of briefs) {
+      const opening = brief.opening.toLowerCase();
+      // The lie a script generator writes when it is optimising for a smooth
+      // opening: stating what the buyer wants. The buyer has asked for nothing
+      // — these are all trigger-backed — and would catch it on the first reply.
+      expect(opening, brief.offerDirection).not.toMatch(
+        /i understand you|you'?re looking for|you are seeking|since you need|you'?ll be needing/,
+      );
+      // And it has to say so out loud rather than merely omitting the claim.
+      expect(opening, brief.offerDirection).toMatch(/don'?t know whether|what i'?m ringing to find out/);
+      expect(brief.doNotClaim.length).toBeGreaterThan(0);
     }
   });
 });

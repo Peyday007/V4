@@ -51,15 +51,33 @@ export type CallBrief = {
  * guarding is simply wrong. The offer now names the route and the capability
  * is filled in by the caller's card, which knows it.
  */
-const ROUTE_OFFER: Record<SignalCategory, string> = {
-  BROKERAGE: 'arranging a crew for the work',
-  DISTRIBUTION: 'supplying the consumables',
-  SUBCONTRACTING: 'providing local crew capacity under their contract',
-  DIRECT_SERVICE: 'doing the work ourselves',
-  SUPPLIER_DEVELOPMENT: 'helping them take on work they cannot cover today',
-  PROVIDER_RECRUITMENT: 'putting work their way when we have it',
-  GENERAL: 'facility services',
-};
+function routeOffer(route: SignalCategory, capability: string | null): string {
+  // The capability is what is actually being sold, so it belongs in the
+  // sentence. "Supplying the consumables" was correct while cleaning was the
+  // only trade the engine could route, and became wrong the moment a steel
+  // playbook existed — a caller opening a structural-steel conversation with
+  // "supplying the consumables" has lost it in the first sentence.
+  const what = capability?.toLowerCase() ?? null;
+
+  switch (route) {
+    case 'BROKERAGE':
+      return what ? `arranging ${what} for the work` : 'arranging a crew for the work';
+    case 'DISTRIBUTION':
+      return what ? `supplying the ${what}` : 'supplying the materials';
+    case 'SUBCONTRACTING':
+      return what
+        ? `providing local ${what} capacity under their contract`
+        : 'providing local crew capacity under their contract';
+    case 'DIRECT_SERVICE':
+      return what ? `doing the ${what} ourselves` : 'doing the work ourselves';
+    case 'SUPPLIER_DEVELOPMENT':
+      return 'helping them take on work they cannot cover today';
+    case 'PROVIDER_RECRUITMENT':
+      return 'putting work their way when we have it';
+    default:
+      return what ?? 'facility services';
+  }
+}
 
 /**
  * The opening line for each event type.
@@ -147,7 +165,7 @@ export function buildCallBrief(input: {
 }): CallBrief {
   const playbook = playbookByKey(input.playbookKey);
   const observation = observationFor(input.eventType, input.eventDate, Boolean(input.deadlineAt));
-  const offer = ROUTE_OFFER[input.route] ?? ROUTE_OFFER.GENERAL;
+  const offer = routeOffer(input.route, input.requiredCapability);
   const need = input.requiredCapability?.toLowerCase() ?? 'facility services';
 
   // The reason for calling, in our voice. The buyer's position is never stated
