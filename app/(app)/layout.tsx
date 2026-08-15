@@ -112,6 +112,11 @@ export default async function AppLayout({ children }: { children: React.ReactNod
                 chosen from — an owner picking a market should be able to see
                 which paths can actually be operated first. */}
             <NavLink href="/universe">Opportunity universe</NavLink>
+            {/* The other direction. Beside the universe rather than under
+                discovery, because starting from a provider is a strategic
+                choice about which half of a deal to find first, not a variant
+                of the demand board. */}
+            <NavLink href="/supply">Working from supply</NavLink>
             <NavLink href="/campaigns" count={runningCampaigns} note={runningCampaigns > 0 ? 'running' : undefined}>
               Commercial campaigns
             </NavLink>
