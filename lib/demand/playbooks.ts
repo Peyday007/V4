@@ -1,4 +1,5 @@
 import type { DemandEventType, EventPartyRole, SignalCategory } from '@prisma/client';
+import { TRADE_PLAYBOOKS } from './tradePlaybooks';
 
 /**
  * Job-generation playbooks.
@@ -76,6 +77,21 @@ export type Playbook = {
   /** Sources that reliably carry this event type, and ones that do not. */
   authoritativeSources: string[];
   noisySources: string[];
+  /**
+   * This playbook may read a contract award as a capacity gap.
+   *
+   * An award is not an open subcontracting job, and treating it as one is how a
+   * public award register becomes a fake pipeline. The narrow exception that
+   * holds up is geographic: work being performed in a state where the winner
+   * has no presence does need crews on the ground there. A playbook opting in
+   * here is subjected to that test — the award must name where the prime is
+   * based, the event must name a place of performance, and the two must differ.
+   *
+   * Declared rather than keyed off a playbook name, because the first version
+   * of this was an `if` on one hardcoded string and the second subcontracting
+   * playbook silently could not fire.
+   */
+  readsAwardsAsCapacityGap?: boolean;
 };
 
 const CLEANING_COMPLIANCE = [
@@ -342,6 +358,7 @@ export const CLEANING_PLAYBOOKS: Playbook[] = [
   {
     key: 'cleaning.subcontracting.award_capacity_gap',
     route: 'SUBCONTRACTING',
+    readsAwardsAsCapacityGap: true,
     vertical: 'Commercial facility services',
     subvertical: 'Cleaning',
     label: 'Local crew for an out-of-area prime',
@@ -751,7 +768,16 @@ export const CLEANING_PLAYBOOKS: Playbook[] = [
   },
 ];
 
-export const PLAYBOOKS: Playbook[] = [...CLEANING_PLAYBOOKS];
+/**
+ * Every playbook the engine can fire, cleaning and otherwise.
+ *
+ * The trade playbooks come first deliberately. `playbooksFor` preserves this
+ * order, and the hypothesis competition breaks ties by it — so when a
+ * construction award could plausibly be read as a steel order or as a cleaning
+ * contract, the reading that matches the trade wins the tie rather than the
+ * reading that happens to be declared first in a file about cleaning.
+ */
+export const PLAYBOOKS: Playbook[] = [...TRADE_PLAYBOOKS, ...CLEANING_PLAYBOOKS];
 
 export function playbooksFor(eventType: DemandEventType): Playbook[] {
   return PLAYBOOKS.filter((p) => p.qualifyingEvents.includes(eventType));

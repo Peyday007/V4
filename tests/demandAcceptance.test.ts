@@ -178,11 +178,17 @@ describe('4. a prime contractor explicitly asking for a local cleaning crew', ()
   });
 
   it('keeps the prime and the provider as different roles', () => {
-    const playbook = playbooksFor('SUBCONTRACTOR_REQUEST').find((p) => p.route === 'SUBCONTRACTING')!;
-    // We buy from nobody here — the prime is who we sell capacity to.
-    expect(playbook.likelyBuyerRoles).toContain('PRIME_CONTRACTOR');
-    expect(playbook.requiredEvidence.join(' ')).toMatch(/named prime contractor/i);
-    expect(playbook.requiredEvidence.join(' ')).toMatch(/seeking local fulfilment capacity/i);
+    // Every subcontracting playbook, not whichever one happens to be first.
+    // The invariant is about the model, so a second subcontracting playbook
+    // that got this wrong would previously have gone unnoticed — and one did.
+    const playbooks = playbooksFor('SUBCONTRACTOR_REQUEST').filter((p) => p.route === 'SUBCONTRACTING');
+    expect(playbooks.length).toBeGreaterThan(0);
+    for (const playbook of playbooks) {
+      // We buy from nobody here — the prime is who we sell capacity to.
+      expect(playbook.likelyBuyerRoles, playbook.key).toContain('PRIME_CONTRACTOR');
+      expect(playbook.requiredEvidence.join(' '), playbook.key).toMatch(/named prime contractor|contract holder/i);
+      expect(playbook.requiredEvidence.join(' '), playbook.key).toMatch(/local fulfilment capacity|do not obviously already cover/i);
+    }
   });
 });
 
@@ -192,12 +198,24 @@ describe('5. a contract award with no evidence of a subcontracting need', () => 
     // automatically. What keeps it honest is the required evidence: work
     // performed where the winner already sits creates no capacity gap, and the
     // playbook says so rather than treating every award as an open job.
-    const playbook = playbooksFor('CONTRACT_AWARD').find((p) => p.route === 'SUBCONTRACTING')!;
-    expect(playbook.key).toBe('cleaning.subcontracting.award_capacity_gap');
-    expect(playbook.requiredEvidence.join(' ')).toMatch(/not already established in that market/i);
-    expect(playbook.likelyBuyerRoles).toEqual(['PRIME_CONTRACTOR']);
-    // The prime is who we sell capacity to. They are never a cleaning buyer.
-    expect(playbook.likelyBuyerRoles).not.toContain('BUYER');
+    // Reading an award as a capacity gap is now a declared property rather
+    // than a hardcoded playbook name, so the invariant is asserted against
+    // every playbook that opts in. The first version of this checked one key
+    // and would have missed a second playbook claiming awards without earning
+    // them — which is exactly what was about to happen.
+    const awardReaders = playbooksFor('CONTRACT_AWARD').filter((p) => p.route === 'SUBCONTRACTING');
+    expect(awardReaders.length).toBeGreaterThan(0);
+    for (const playbook of awardReaders) {
+      expect(playbook.readsAwardsAsCapacityGap, playbook.key).toBe(true);
+      // The geography gap is the whole justification, so it has to be stated
+      // in the evidence the playbook requires rather than assumed in code.
+      expect(playbook.requiredEvidence.join(' '), playbook.key)
+        .toMatch(/not already established in that market|do not obviously already cover/i);
+      // The prime holds the work. They are who we sell capacity to, and they
+      // are never the end buyer of the service.
+      expect(playbook.likelyBuyerRoles, playbook.key).toContain('PRIME_CONTRACTOR');
+      expect(playbook.likelyBuyerRoles[0], playbook.key).toBe('PRIME_CONTRACTOR');
+    }
   });
 
   it('carries the prime’s own state so the mismatch can be checked', () => {

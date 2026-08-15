@@ -22,6 +22,7 @@ import {
   type RawDemandEvent,
 } from './events';
 import { playbooksFor, windowFor, type Playbook } from './playbooks';
+import { compete } from './competition';
 import { assessFriction, qualifiesForLowFrictionQueue, UNKNOWN_SIGNALS, type FrictionSignals } from './friction';
 import { chooseStructure, estimateEconomics, meetsEconomicFloor } from './economics';
 import { assessFulfilment, loadProviders, type FulfilmentAssessment, type ProviderCandidate } from './fulfilment';
@@ -575,15 +576,24 @@ export async function rebuildRoutes(params: { orgId: string; now?: Date }): Prom
       continue;
     }
 
+    // ---- one event, one primary reading ---------------------------------
+    //
+    // This used to be `for (const playbook of playbooks)`, creating a route for
+    // every playbook that matched. That is how two events became 54 routes and
+    // a board that looked like a business turned out to be two phone calls.
+    // Every applicable reading now states its case, the cases are scored
+    // against the same six questions, and one wins.
+    // Narrowed to the applying branch, so everything downstream keeps the fields
+    // an applicable decision carries without re-checking `applies` at each one.
+    type Applied = Extract<PlaybookDecision, { applies: true }>;
+    const applicable: Array<{ playbook: Playbook; decision: Applied }> = [];
     for (const playbook of playbooks) {
       const decision = evaluatePlaybook({ event, playbook, now });
       if (!decision.applies) {
         outcome.skipped.push({ event: event.headline, playbook: playbook.key, because: decision.because });
         continue;
       }
-
-      const account = decision.account;
-      if (!account) {
+      if (!decision.account) {
         outcome.skipped.push({
           event: event.headline,
           playbook: playbook.key,
@@ -591,6 +601,66 @@ export async function rebuildRoutes(params: { orgId: string; now?: Date }): Prom
         });
         continue;
       }
+      applicable.push({ playbook, decision: decision as Applied });
+    }
+
+    const competition = compete({
+      eventType: event.type,
+      candidates: applicable.map(({ playbook, decision }) => ({
+        playbook,
+        confirmedFacts: factStrings(event.confirmedFacts),
+        inferredFacts: factStrings(event.inferredFacts),
+        // Scored before a winner is chosen, because supply feasibility is one
+        // of the things that decides which reading is credible at all.
+        providerCount: assessFulfilment({
+          requiredCapability: playbook.requiredCapability,
+          stateCode: event.stateCode,
+          cityName: event.cityName,
+          neededBy: event.deadlineAt ?? null,
+          providers,
+          now,
+        }).matched.length,
+        buyerIdentified: Boolean(decision.account),
+        insideWindow: windowFor(playbook, event.eventDate) !== null,
+        headline: event.headline,
+        scopeText: typeof (event.rawPayload as Record<string, unknown>)?.__scope === 'string'
+          ? ((event.rawPayload as Record<string, unknown>).__scope as string)
+          : null,
+      })),
+    });
+
+    // The decision is recorded whether or not anything won, because a silent
+    // refusal is an unusable decision — an operator seeing nothing on the board
+    // has to be able to find out that a reading was considered and rejected.
+    await prisma.demandEvent.update({
+      where: { id: event.id },
+      data: { competition: competition as unknown as Prisma.InputJsonValue },
+    }).catch(() => {
+      // A diagnostic write must never take the ingest down with it.
+    });
+
+    if (!competition.primary) {
+      outcome.skipped.push({
+        event: event.headline,
+        playbook: applicable[0]?.playbook.key ?? '—',
+        because: competition.verdict,
+      });
+      continue;
+    }
+
+    const winner = applicable.find((a) => a.playbook.key === competition.primary!.playbookKey);
+    // Alternatives are kept on the event above and deliberately not queued.
+    for (const alternative of competition.alternatives) {
+      outcome.skipped.push({
+        event: event.headline,
+        playbook: alternative.playbookKey,
+        because: `Kept as a secondary hypothesis, not queued. ${alternative.lostBecause ?? ''}`.trim(),
+      });
+    }
+
+    for (const { playbook, decision } of winner ? [winner] : []) {
+      const account = decision.account;
+      if (!account) continue;
 
       const tier = assertTierEligibility({
         type: event.type,
@@ -723,6 +793,12 @@ export async function rebuildRoutes(params: { orgId: string; now?: Date }): Prom
 
       const record = {
         orgId: params.orgId,
+        // A route is about the same world as the event that produced it.
+        // Without this the record defaulted to PRODUCTION and the isolation
+        // trigger refused every route built from a practice event — which
+        // meant the sandbox could never exercise the real pipeline, and every
+        // "end to end" proof had to go around the thing it was proving.
+        dataMode: event.dataMode,
         route: playbook.route,
         playbookKey: playbook.key,
         pathId: path?.id ?? null,
@@ -877,6 +953,30 @@ type PlaybookDecision =
  * a stated capacity requirement; without them it does not fire, however much
  * the event looks adjacent.
  */
+/**
+ * The stated facts on an event, flattened to strings for evidence matching.
+ *
+ * `confirmedFacts` and `inferredFacts` are stored as loose JSON because sources
+ * publish different shapes. Anything that is not a readable string is dropped
+ * rather than stringified, because `[object Object]` matching nothing is
+ * better than it matching everything.
+ */
+function factStrings(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((entry) => {
+      if (typeof entry === 'string') return entry;
+      if (entry && typeof entry === 'object') {
+        const record = entry as Record<string, unknown>;
+        const parts = [record.label, record.field, record.value, record.claim]
+          .filter((p): p is string => typeof p === 'string');
+        return parts.join(' ');
+      }
+      return '';
+    })
+    .filter((s) => s.length > 0);
+}
+
 export function evaluatePlaybook(input: {
   event: EventWithParties;
   playbook: Playbook;
@@ -920,7 +1020,7 @@ export function evaluatePlaybook(input: {
       // than this test. Without that exception, awards could never produce a
       // subcontracting route at all, and automatic discovery of primes needing
       // local crews would not exist.
-      playbook.key === 'cleaning.subcontracting.award_capacity_gap';
+      playbook.readsAwardsAsCapacityGap === true;
     if (!requestsCapacity) {
       return {
         applies: false,
@@ -938,7 +1038,7 @@ export function evaluatePlaybook(input: {
   // crews on the ground there. That requires the geography to actually differ,
   // and the award to say where the prime is based. Where it does not say, no
   // hypothesis is available and the route does not fire.
-  if (playbook.key === 'cleaning.subcontracting.award_capacity_gap') {
+  if (playbook.readsAwardsAsCapacityGap) {
     const payload = event.rawPayload as Record<string, unknown>;
     const primeState = typeof payload.__recipientState === 'string' ? payload.__recipientState : null;
     if (!primeState) {

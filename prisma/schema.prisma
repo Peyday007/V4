@@ -2806,6 +2806,12 @@ model DemandEvent {
   addressLine1 String?
 
   /// Facts the source states outright.
+  /// How the competing commercial readings of this event scored, which one
+  /// won, and why the others did not. Written on every pipeline pass, including
+  /// the passes where nothing won — a refusal nobody can inspect is not a
+  /// decision, and "no credible route" is the most important thing this engine
+  /// can say.
+  competition    Json?
   confirmedFacts Json     @default("[]")
   /// What we concluded from them. Never presented as stated.
   inferredFacts  Json     @default("[]")

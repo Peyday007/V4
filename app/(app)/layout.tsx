@@ -108,6 +108,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
                 of the graph get worked. Reached from the sidebar rather than
                 only from a deep link, or nobody opens it. */}
             <div className="nav-section">Strategy</div>
+            {/* Above campaigns, because the universe is what a campaign is
+                chosen from — an owner picking a market should be able to see
+                which paths can actually be operated first. */}
+            <NavLink href="/universe">Opportunity universe</NavLink>
             <NavLink href="/campaigns" count={runningCampaigns} note={runningCampaigns > 0 ? 'running' : undefined}>
               Commercial campaigns
             </NavLink>

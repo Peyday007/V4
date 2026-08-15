@@ -354,7 +354,12 @@ describe('working capital reflects who holds the contract', () => {
 });
 
 describe('compliance separates a task from a disqualification', () => {
-  const playbook = playbooksFor('FACILITY_OPENING')[0];
+  // Named rather than taken by array position. This used to be
+  // `playbooksFor('FACILITY_OPENING')[0]`, which silently changed meaning the
+  // moment a warehousing playbook was added ahead of it — and warehousing
+  // genuinely does carry harder compliance than routine trade cover, so the
+  // test was asserting the wrong thing about the wrong playbook.
+  const playbook = playbooksFor('FACILITY_OPENING').find((p) => p.key === 'cleaning.brokerage.pre_opening')!;
 
   it('treats routine trade cover as nearly ready', () => {
     const result = assessCompliance({ playbook, satisfied: [], knownBlockers: [], providerInsured: false });
