@@ -1,5 +1,6 @@
 import type { FrictionLevel, SignalCategory } from '@prisma/client';
 import type { Playbook } from './playbooks';
+import type { StructureKey } from '@/lib/deal/structures';
 
 /**
  * Economics, and choosing the commercial structure.
@@ -215,14 +216,20 @@ function scaleBand(low: number, high: number, scale: number): { low: number; hig
 // Commercial structure
 // ---------------------------------------------------------------------------
 
-export type CommercialStructure =
-  | 'REFERRAL'
-  | 'BROKERAGE'
-  | 'SUBCONTRACTING'
-  | 'DISTRIBUTION_RESALE'
-  | 'PROCUREMENT_AGENT'
-  | 'MANAGED_SERVICE'
-  | 'DIRECT_INTRODUCTION';
+/**
+ * The pipeline's opening proposal, drawn from the full catalogue.
+ *
+ * One definition of what a commercial structure is, in `lib/deal/structures`,
+ * because two lists of the same thing drift the first time somebody adds to one
+ * of them and the drift is silent. What this module does is narrower than that
+ * catalogue: it proposes an opening position from what the event alone can
+ * support, and it cannot know the two things that actually decide the question
+ * — how much cash the owner will risk and how far they trust the provider.
+ *
+ * So the pipeline proposes and the comparison decides. This type exists to keep
+ * the proposal inside the same vocabulary the decision uses.
+ */
+export type CommercialStructure = StructureKey;
 
 export type StructureChoice = {
   structure: CommercialStructure;

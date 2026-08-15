@@ -13,6 +13,9 @@ import { can } from '@/lib/auth/session';
 import { Badge } from '@/components/ui';
 import { ClaimLedger, ContradictionAlert } from '@/components/ClaimLedger';
 import { currentClaims } from '@/lib/evidence/ledger';
+import { StructureComparison } from '@/components/StructureComparison';
+import { compareStructures } from '@/lib/deal/structures';
+import { structureContextFor } from '@/lib/deal/structureContext';
 
 export const dynamic = 'force-dynamic';
 
@@ -53,6 +56,11 @@ export default async function OpportunityRecordPage({ params }: { params: { rout
   // claim rests on — read here rather than reconstructed from side channels on
   // the way to the screen.
   const claims = await currentClaims(params.routeId);
+
+  // How this deal would actually be transacted. Twelve structures, the same
+  // five questions answered for each, and the choice left with the person who
+  // carries it.
+  const structures = await structureContextFor({ orgId: user.orgId, routeId: params.routeId });
 
   return (
     <>
@@ -116,6 +124,16 @@ export default async function OpportunityRecordPage({ params }: { params: { rout
       />
 
       <DealProgress record={deal} canSeeMargin={can(user, 'finance.margin.read')} />
+
+      {structures && (
+        <StructureComparison
+          routeId={params.routeId}
+          assessments={compareStructures(structures.context)}
+          chosen={structures.chosen}
+          chosenReason={structures.chosenReason}
+          canWrite={can(user, 'deal.write')}
+        />
+      )}
 
       <ClaimLedger claims={claims} />
 
