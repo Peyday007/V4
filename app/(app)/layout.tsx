@@ -117,6 +117,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
                 choice about which half of a deal to find first, not a variant
                 of the demand board. */}
             <NavLink href="/supply">Working from supply</NavLink>
+            {/* Reachable rather than a deep link, because the refraction it
+                reports is on the board every morning and nobody goes looking
+                for a page they have not been told exists. */}
+            <NavLink href="/demand/reconcile">Reconcile the board</NavLink>
             <NavLink href="/campaigns" count={runningCampaigns} note={runningCampaigns > 0 ? 'running' : undefined}>
               Commercial campaigns
             </NavLink>
