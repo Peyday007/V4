@@ -4,7 +4,7 @@ import { prisma } from '@/lib/db';
 import { can } from '@/lib/auth/session';
 import { requirePagePermission } from '@/lib/auth/page';
 import { recommendExpansion, recommendWedge } from '@/lib/ai/vulnerability';
-import { Badge, Empty, humanize, Meter, money, relativeDays, Stat } from '@/components/ui';
+import { Badge, Empty, humanize, money, relativeDays, Stat } from '@/components/ui';
 
 export const dynamic = 'force-dynamic';
 
@@ -77,8 +77,40 @@ export default async function CompanyPage({ params }: { params: { id: string } }
       </div>
 
       <div className="grid grid-4 mb">
-        <Stat label="Movability" value={`${Math.round(company.movabilityScore * 100)}%`} sub={<Meter value={company.movabilityScore} />} />
-        <Stat label="Relationship strength" value={`${Math.round(company.relationshipStrength * 100)}%`} sub={<Meter value={company.relationshipStrength} />} />
+        {/* The last two meters in the product, and the last two percentages
+            with nothing behind them.
+
+            A movability score is derived from the vulnerability signals on the
+            account, so it is exactly as good as those signals and worthless
+            without any — and the column defaults to zero, which rendered as a
+            confident "0%" on every account nobody had looked at. A bar filled
+            to a tenth of its width makes the same claim as "10%" and makes it
+            harder to argue with, which is why there is no bar here now.
+
+            Both are shown as the count of what they rest on, with the reasons
+            immediately below. */}
+        <Stat
+          label="Movability"
+          value={
+            company.movabilityReasons.length === 0
+              ? <span className="dim">nothing recorded</span>
+              : `${company.movabilityReasons.length} signal(s)`
+          }
+          sub={
+            company.movabilityReasons.length === 0
+              ? 'Nobody has established their current arrangement. The reasons are listed below when there are any.'
+              : humanize(company.movability)
+          }
+        />
+        <Stat
+          label="Relationship"
+          value={humanize(company.accountStage)}
+          sub={
+            company.lastVerifiedAt
+              ? `Last checked ${relativeDays(company.lastVerifiedAt)}.`
+              : 'Nothing about this account has been verified by a person.'
+          }
+        />
         <Stat label="Open opportunities" value={company.opportunityParties.filter((p) => !['WON', 'LOST', 'DISQUALIFIED'].includes(p.opportunity.status)).length} />
         <Stat label="Contacts" value={company.contacts.length} sub={`${company.contacts.filter((c) => c.consentToCall).length} callable`} />
         {showMoney && company.estimatedLifetimeValue && <Stat label="Lifetime value" value={money(company.estimatedLifetimeValue)} />}

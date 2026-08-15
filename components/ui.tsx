@@ -83,14 +83,20 @@ export function TypeBadge({ type }: { type: string }) {
   return <Badge tone={TYPE_TONE[type]}>{humanize(type)}</Badge>;
 }
 
-export function Meter({ value, tone }: { value: number; tone?: 'success' | 'warning' | 'danger' }) {
-  const width = Math.max(0, Math.min(100, value * 100));
-  return (
-    <div className="meter">
-      <div className={`meter-fill${tone ? ` ${tone}` : ''}`} style={{ width: `${width}%` }} />
-    </div>
-  );
-}
+/*
+ * There is no Meter component any more, and this note is here so nobody adds
+ * one back.
+ *
+ * A bar filled to a tenth of its width makes exactly the same claim as "10%"
+ * and makes it harder to argue with, because there is no figure on screen to
+ * question. Every meter this product had sat on a score with a column default
+ * underneath it, and the two that survived longest were on an account page
+ * where they read as measurements of a relationship nobody had checked.
+ *
+ * Where a proportion genuinely needs showing, show the numerator and the
+ * denominator — "3 of 11" is the same information, and it cannot be read as
+ * more certain than it is.
+ */
 
 export function Stat({ label, value, sub }: { label: string; value: ReactNode; sub?: ReactNode }) {
   return (

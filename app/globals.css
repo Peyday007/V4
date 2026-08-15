@@ -46,6 +46,11 @@ h3 { font-size: 0.95rem; }
 h4 { font-size: 0.85rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
 p { margin: 0 0 0.75rem; }
 
+/* No .meter rules. A bar filled to a tenth of its width makes the same claim
+   as "10%" and is harder to argue with, so the component and its styling were
+   both removed rather than left available. Show a numerator and a denominator
+   instead. */
+
 /* ---------- Layout shell ---------- */
 .shell { display: flex; min-height: 100vh; }
 
@@ -267,11 +272,6 @@ label { display: block; font-size: 0.75rem; color: var(--text-muted); margin-bot
 .alert.info { border-color: var(--accent-dim); background: #101c2e; color: #b9d2ff; }
 .alert.success { border-color: #1b5b45; background: var(--success-dim); color: #9beccd; }
 
-.meter { height: 5px; background: var(--bg-hover); border-radius: 3px; overflow: hidden; margin-top: 0.25rem; }
-.meter-fill { height: 100%; background: var(--accent); border-radius: 3px; }
-.meter-fill.success { background: var(--success); }
-.meter-fill.warning { background: var(--warning); }
-.meter-fill.danger { background: var(--danger); }
 
 .empty { padding: 2rem 1rem; text-align: center; color: var(--text-dim); font-size: 0.85rem; }
 
