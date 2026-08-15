@@ -2918,11 +2918,28 @@ model RouteHypothesis {
   providerCount    Float  @default(0)
 
   /// Economics, null wherever they cannot honestly be estimated.
-  estimatedBuyerPrice   Decimal? @db.Decimal(14, 2)
-  estimatedProviderCost Decimal? @db.Decimal(14, 2)
-  estimatedGrossProfit  Decimal? @db.Decimal(14, 2)
-  estimatedHumanMinutes Int?
-  economicsBasis        String?
+  ///
+  /// Held as ranges. A modelled figure is a category prior — this kind of work
+  /// sells between these two numbers — and collapsing it to a midpoint produced
+  /// four significant figures out of a band spanning five times itself, which
+  /// every reader downstream then treated as an estimate of *this* deal.
+  ///
+  /// The point columns remain, and are the midpoint, for ranking only: sorting
+  /// a board needs one number per row and a range cannot supply one. No surface
+  /// displays them alone.
+  estimatedBuyerPrice       Decimal? @db.Decimal(14, 2)
+  estimatedBuyerPriceLow    Decimal? @db.Decimal(14, 2)
+  estimatedBuyerPriceHigh   Decimal? @db.Decimal(14, 2)
+  estimatedProviderCost     Decimal? @db.Decimal(14, 2)
+  estimatedProviderCostLow  Decimal? @db.Decimal(14, 2)
+  estimatedProviderCostHigh Decimal? @db.Decimal(14, 2)
+  estimatedGrossProfit      Decimal? @db.Decimal(14, 2)
+  estimatedGrossProfitLow   Decimal? @db.Decimal(14, 2)
+  estimatedGrossProfitHigh  Decimal? @db.Decimal(14, 2)
+  estimatedHumanMinutes     Int?
+  economicsBasis            String?
+  /// What actually moved the range, each item checkable by a person.
+  economicsInputs           String[] @default([])
 
   /// Chosen commercial structure, and why. Never taken from the connector name.
   commercialStructure String?

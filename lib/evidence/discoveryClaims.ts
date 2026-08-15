@@ -1,3 +1,4 @@
+import type { MoneyRange } from '@/lib/demand/economics';
 import type { ClaimInput } from './ledger';
 
 /**
@@ -51,9 +52,9 @@ export type DiscoveryClaimInput = {
   window: { label: string; closesAt: Date | null } | null;
   fulfilment: { status: string; reason: string; providerCount: number };
   economics: {
-    buyerPrice: number | null;
-    providerCost: number | null;
-    grossProfit: number | null;
+    buyerPrice: MoneyRange | null;
+    providerCost: MoneyRange | null;
+    grossProfit: MoneyRange | null;
     basis: string | null;
   };
   compliance: { status: string; gaps: string[] };
@@ -205,13 +206,13 @@ export function discoveryClaims(input: DiscoveryClaimInput): ClaimInput[] {
   // Recorded as inference whatever the basis, because at discovery nobody has
   // quoted anything. The basis is on the claim so the figure can be argued with
   // rather than merely disbelieved.
-  const money: Array<[string, number | null, string]> = [
+  const money: Array<[string, MoneyRange | null, string]> = [
     ['economics.buyerPrice', input.economics.buyerPrice, 'What the buyer would pay'],
     ['economics.providerCost', input.economics.providerCost, 'What the provider would charge'],
     ['economics.grossProfit', input.economics.grossProfit, 'What would be left'],
   ];
-  for (const [key, value, label] of money) {
-    if (value === null) {
+  for (const [key, range, label] of money) {
+    if (range === null) {
       claims.push({
         ...common,
         about: 'ECONOMICS',
@@ -229,20 +230,27 @@ export function discoveryClaims(input: DiscoveryClaimInput): ClaimInput[] {
       });
       continue;
     }
+    // The range, never the midpoint. A band is the honest form of a category
+    // prior, and its width is the most useful thing on the row: it says how
+    // little is known, in the same units as the money.
     claims.push({
       ...common,
       about: 'ECONOMICS',
       key,
-      statement: `${label}: about $${Math.round(value).toLocaleString()}.`,
-      value: { amount: value, basis: input.economics.basis },
+      statement:
+        `${label}: somewhere between $${range.low.toLocaleString()} and $${range.high.toLocaleString()}.`,
+      value: { low: range.low, high: range.high, basis: input.economics.basis, inputs: range.inputs },
       standing: 'INFERRED',
       sourceKind: 'ENGINE_INFERENCE',
-      sourceLabel: `Modelled on the ${input.economics.basis ?? 'unstated'} basis. Nobody has quoted this.`,
+      sourceLabel: `${range.basis} ${range.inputs.join(' ')}`,
       correctiveAction:
         key === 'economics.providerCost'
-          ? 'Ask a provider for a real price. Until then this is a category average.'
-          : 'Confirm the scope with the buyer, then get it priced.',
-      confidence: 0.3,
+          ? 'Ask a provider for a real price. Until then this is the band a category sells in, not a quote.'
+          : 'Confirm the scope with the buyer, then get it priced. A quote replaces the whole band.',
+      // How wide the band is against how big the number is. A range spanning
+      // five times its own floor is barely worth calling an estimate, and the
+      // confidence figure says so rather than defaulting to a comfortable third.
+      confidence: rangeConfidence(range),
     });
   }
 
@@ -283,4 +291,26 @@ export function discoveryClaims(input: DiscoveryClaimInput): ClaimInput[] {
   });
 
   return claims;
+}
+
+/**
+ * How much an estimate is worth, from how wide it is.
+ *
+ * Not a judgement about the playbook — a measurement of the band it produced.
+ * A range from eight hundred to nine hundred is nearly a price; one from eight
+ * hundred to four and a half thousand is a category. Deriving this from the
+ * width rather than picking a comfortable default means the figure moves when
+ * the estimate genuinely improves, which is the only thing that makes a
+ * confidence worth showing at all.
+ *
+ * Capped at 0.6: nothing modelled, however tight, is more than an inference,
+ * and a provider's actual price replaces the whole band rather than raising it.
+ */
+function rangeConfidence(range: MoneyRange): number {
+  if (range.low <= 0) return 0.2;
+  const spread = (range.high - range.low) / range.low;
+  if (spread <= 0.25) return 0.6;
+  if (spread <= 0.75) return 0.45;
+  if (spread <= 2) return 0.3;
+  return 0.15;
 }

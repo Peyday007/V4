@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Claim } from '@prisma/client';
 import { validateClaim, claimToEvidenced, ledgerSummary, type ClaimInput } from '@/lib/evidence/ledger';
 import { discoveryClaims } from '@/lib/evidence/discoveryClaims';
+import type { MoneyRange } from '@/lib/demand/economics';
 import { answersAgree, callClaims } from '@/lib/evidence/callClaims';
 
 /**
@@ -160,6 +161,15 @@ describe('what a ledger says about itself', () => {
 
 // ---------------------------------------------------------------------------
 
+/** A modelled band, in the shape the pipeline now produces. */
+const money = (low: number, high: number): MoneyRange => ({
+  low,
+  high,
+  midpoint: Math.round((low + high) / 2),
+  basis: 'Category prior for overflow storage, not a quote.',
+  inputs: ['Overflow storage sells between $18,000 and $30,000 in this catalogue.'],
+});
+
 const discovery = {
   routeId: 'r1',
   companyId: 'co1',
@@ -177,7 +187,12 @@ const discovery = {
   buyerRole: 'BUYER',
   window: { label: 'Likely buying in the next 60 days', closesAt: new Date('2026-09-01') },
   fulfilment: { status: 'PROVIDERS_AVAILABLE', reason: 'Three matched.', providerCount: 3 },
-  economics: { buyerPrice: 24000, providerCost: 18000, grossProfit: 6000, basis: 'CATEGORY_TYPICAL' },
+  economics: {
+    buyerPrice: money(18_000, 30_000),
+    providerCost: money(13_500, 22_500),
+    grossProfit: money(4_500, 7_500),
+    basis: 'CATEGORY_TYPICAL',
+  },
   compliance: { status: 'UNKNOWN', gaps: [] },
   structure: { structure: 'BROKERED_SERVICE', reason: 'We hold the buyer contract.' },
 };
@@ -210,7 +225,9 @@ describe('what discovery claims when it builds a route', () => {
     const money = claims.filter((c) => c.key.startsWith('economics.'));
     expect(money.length).toBeGreaterThan(0);
     expect(money.every((c) => c.standing === 'INFERRED' || c.standing === 'UNKNOWN')).toBe(true);
-    expect(money.every((c) => c.sourceLabel.includes('CATEGORY_TYPICAL') || c.standing === 'UNKNOWN')).toBe(true);
+    // And every figure that is shown is a band, never a point.
+    expect(money.every((c) => c.standing !== 'INFERRED' || /between \$[\d,]+ and \$[\d,]+/.test(c.statement)))
+      .toBe(true);
   });
 
   it('records a missing figure as a gap with an owner rather than omitting it', () => {

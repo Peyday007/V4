@@ -403,6 +403,7 @@ describe('every tier A/B route carries a complete thesis', () => {
     buyingWindow: 'WITHIN_30_DAYS',
     windowClosesAt: ahead(19),
     grossProfit: 795,
+    grossProfitHigh: 1_240,
     humanMinutes: 45,
     economicsBasis: 'Playbook prior. Not a quote.',
     paymentRisk: 'UNKNOWN',

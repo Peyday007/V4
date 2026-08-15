@@ -31,6 +31,7 @@ type Row = {
   status: string;
   statusReason: string | null;
   nextAction: string | null;
+  /** The low end of the modelled band, per hour of attention. */
   profitPerHour: number | null;
   expectedGrossProfit: number | null;
   eventId: string;
@@ -473,7 +474,7 @@ export function DemandQueue({
               <th>Supply</th>
               <th>Outreach</th>
               <th>Next action</th>
-              <th>$/hr</th>
+              <th>$/hr, at worst</th>
               <th />
             </tr>
           </thead>
@@ -532,7 +533,14 @@ export function DemandQueue({
                       {row.snoozeUntil && <div className="dim">until {dayOnly(row.snoozeUntil)}</div>}
                     </td>
                     <td style={{ maxWidth: '18rem' }}>{row.nextAction ?? '—'}</td>
-                    <td>{row.profitPerHour !== null ? `$${row.profitPerHour}` : <span className="dim">—</span>}</td>
+                    {/* The floor of the modelled band rather than its middle,
+                        so ordering a morning by this column cannot promise what
+                        the optimistic reading of a category prior would. */}
+                    <td title="The low end of the modelled band. Nothing here has been quoted.">
+                      {row.profitPerHour !== null
+                        ? `$${row.profitPerHour}+`
+                        : <span className="dim">not modelled</span>}
+                    </td>
                     <td>
                       <div className="row" style={{ gap: '0.3rem' }}>
                         <button className="btn secondary tiny" onClick={() => openEvidence(row.routeId)}>

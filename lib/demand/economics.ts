@@ -27,15 +27,55 @@ export type EconomicsInput = {
   friction: FrictionLevel;
 };
 
+/**
+ * A modelled amount, as a range rather than a point.
+ *
+ * The single figure was the problem. A playbook says this kind of work sells
+ * between eight hundred and four and a half thousand dollars; the old code took
+ * the midpoint, rounded it, and put $2,650 on a screen. Every reader downstream
+ * then treated it as an estimate of *this* deal rather than as the middle of a
+ * category, and the precision — four significant figures from a range spanning
+ * five times itself — did the persuading.
+ *
+ * So the range travels intact. A reader who sees "$800–$4,500" cannot mistake
+ * it for a quote, and the width is itself the most useful thing on the row: it
+ * says how little is known, in the same units as the money.
+ *
+ * `inputs` names what actually moved the number, so an operator can argue with
+ * it rather than merely disbelieve it.
+ */
+export type MoneyRange = {
+  low: number;
+  high: number;
+  /**
+   * The middle, for ranking only.
+   *
+   * Never displayed on its own. Sorting needs one number per row and a range
+   * cannot provide one; every surface that shows the figure shows the range.
+   */
+  midpoint: number;
+  /** Where the range came from, in a phrase an operator can check. */
+  basis: string;
+  /** What moved it, each one checkable. */
+  inputs: string[];
+};
+
 export type Economics = {
-  buyerPrice: number | null;
-  providerCost: number | null;
-  grossProfit: number | null;
+  buyerPrice: MoneyRange | null;
+  providerCost: MoneyRange | null;
+  grossProfit: MoneyRange | null;
   marginPct: number | null;
   humanMinutes: number;
   /** Where these numbers came from. Always present when a number is. */
   basis: string;
-  /** Profit per hour of human attention. The number that ranks work. */
+  /**
+   * Profit per hour of human attention, at the *low* end of the range.
+   *
+   * Deliberately the pessimistic end rather than the midpoint. This figure
+   * decides whether an opportunity is worth somebody's morning, and ranking a
+   * board by the optimistic reading of a category prior is how a queue fills
+   * with work that turns out not to pay.
+   */
   profitPerHumanHour: number | null;
 };
 
@@ -75,14 +115,42 @@ export function estimateEconomics(input: EconomicsInput): Economics {
     };
   }
 
-  // Midpoint of the playbook range, nudged by scale where the source gave one.
   const { low, high } = playbook.typicalBuyerPrice;
-  const midpoint = (low + high) / 2;
-  const scaled = input.scaleHint ? scaleAdjust(midpoint, low, high, input.scaleHint) : midpoint;
+  const inputs = [
+    `${playbook.label} sells between $${low.toLocaleString()} and $${high.toLocaleString()} in this catalogue.`,
+    `A typical margin of ${playbook.typicalMarginPct}% for this kind of work.`,
+  ];
 
-  const buyerPrice = Math.round(scaled);
-  const grossProfit = Math.round(buyerPrice * (playbook.typicalMarginPct / 100));
-  const providerCost = buyerPrice - grossProfit;
+  // A stated scale narrows the range rather than picking a point inside it.
+  // The source published a square footage; that is real information about size
+  // and no information at all about what this buyer would pay per square foot.
+  const band = input.scaleHint
+    ? scaleBand(low, high, input.scaleHint)
+    : { low, high };
+  if (input.scaleHint) {
+    inputs.push(
+      `A stated scale of ${input.scaleHint.toLocaleString()}, which narrows the range without leaving it.`,
+    );
+  }
+
+  const priceBasis =
+    `Category prior for ${playbook.label.toLowerCase()}, not a quote. No provider has priced this and no `
+    + 'buyer has been asked what they would pay.';
+
+  const buyerPrice = range(band.low, band.high, priceBasis, inputs);
+  const margin = playbook.typicalMarginPct / 100;
+  const grossProfit = range(
+    band.low * margin,
+    band.high * margin,
+    `The same prior at a ${playbook.typicalMarginPct}% margin. Every dollar of this is modelled.`,
+    inputs,
+  );
+  const providerCost = range(
+    band.low * (1 - margin),
+    band.high * (1 - margin),
+    'What a provider would have to charge for the margin above to hold. Nobody has quoted it.',
+    inputs,
+  );
 
   return {
     buyerPrice,
@@ -93,23 +161,54 @@ export function estimateEconomics(input: EconomicsInput): Economics {
     basis:
       `Playbook prior for ${playbook.label.toLowerCase()}: $${low.toLocaleString()}–$${high.toLocaleString()} ` +
       `at ${playbook.typicalMarginPct}% margin` +
-      `${input.scaleHint ? `, adjusted for a stated scale of ${input.scaleHint.toLocaleString()}` : ''}. ` +
+      `${input.scaleHint ? `, narrowed for a stated scale of ${input.scaleHint.toLocaleString()}` : ''}. ` +
       `Not a quote — no provider has priced this and no buyer has been asked.`,
-    profitPerHumanHour: humanMinutes > 0 ? Math.round((grossProfit / humanMinutes) * 60) : null,
+    // The low end, so a board ranked by this cannot promise what the optimistic
+    // reading of a category average would.
+    profitPerHumanHour: humanMinutes > 0 ? Math.round((grossProfit.low / humanMinutes) * 60) : null,
   };
 }
 
+function range(low: number, high: number, basis: string, inputs: string[]): MoneyRange {
+  const lo = Math.round(Math.min(low, high));
+  const hi = Math.round(Math.max(low, high));
+  return { low: lo, high: hi, midpoint: Math.round((lo + hi) / 2), basis, inputs };
+}
+
 /**
- * Nudges the midpoint by scale without ever leaving the playbook's range.
+ * Narrows the playbook's range around a stated scale, without leaving it.
  *
- * A stated square footage is real information and should move the estimate,
- * but not out of the band the playbook says this kind of work sells in — a
- * large number in a permit record is not licence to invent a large deal.
+ * A stated square footage is real information and should move the estimate, but
+ * not out of the band the playbook says this kind of work sells in — a large
+ * number in a permit record is not licence to invent a large deal. And it
+ * narrows rather than collapses: knowing the size of a building tells you
+ * something about the size of the job and nothing about the price per unit,
+ * so the remaining width is honest.
  */
-function scaleAdjust(midpoint: number, low: number, high: number, scale: number): number {
+function scaleBand(low: number, high: number, scale: number): { low: number; high: number } {
   const TYPICAL_SCALE = 4000;
   const ratio = Math.max(0.4, Math.min(2.5, scale / TYPICAL_SCALE));
-  return Math.max(low, Math.min(high, midpoint * ratio));
+
+  // Clamp the scaled centre into the band *before* building a width around it.
+  // Clamping only the ends let a very large permit push both of them past the
+  // ceiling, and the sort that follows put the band back the right way round —
+  // producing a high above anything the playbook says this work sells for. A
+  // permit for a nine-hundred-thousand-square-foot building is still a permit.
+  const centre = Math.max(low, Math.min(high, ((low + high) / 2) * ratio));
+
+  // A quarter of the band on each side, so the range narrows without ever
+  // collapsing: knowing the size of a job says nothing about the price per
+  // unit, and a range that becomes a point is the point estimate this replaced.
+  const halfWidth = (high - low) / 4;
+  const bandLow = Math.max(low, centre - halfWidth);
+  const bandHigh = Math.min(high, centre + halfWidth);
+
+  // At the very ends of the band the clamps can meet. Widen back inwards rather
+  // than returning a point.
+  if (bandHigh - bandLow >= halfWidth) return { low: bandLow, high: bandHigh };
+  return bandLow <= low
+    ? { low, high: Math.min(high, low + halfWidth * 2) }
+    : { low: Math.max(low, high - halfWidth * 2), high };
 }
 
 // ---------------------------------------------------------------------------

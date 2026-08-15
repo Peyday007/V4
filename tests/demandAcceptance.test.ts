@@ -668,8 +668,12 @@ describe('connector output preserves what the source said', () => {
     // the playbook's band.
     const playbook = playbooksFor('RENOVATION_OR_CONSTRUCTION')[0];
     const economics = estimateEconomics({ playbook, scaleHint: 5200, availableProviders: 3, friction: 'LOW' });
-    expect(economics.buyerPrice!).toBeLessThanOrEqual(playbook.typicalBuyerPrice.high);
-    expect(economics.buyerPrice!).toBeGreaterThanOrEqual(playbook.typicalBuyerPrice.low);
+    // And it narrows the band rather than collapsing it to a point: a stated
+    // square footage says something about the size of the job and nothing about
+    // the price per unit.
+    expect(economics.buyerPrice!.high).toBeLessThanOrEqual(playbook.typicalBuyerPrice.high);
+    expect(economics.buyerPrice!.low).toBeGreaterThanOrEqual(playbook.typicalBuyerPrice.low);
+    expect(economics.buyerPrice!.high).toBeGreaterThan(economics.buyerPrice!.low);
   });
 });
 

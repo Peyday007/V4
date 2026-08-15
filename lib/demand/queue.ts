@@ -164,11 +164,20 @@ const EMAIL_EXPR = Prisma.sql`COALESCE(os."correctedEmail", ct."email")`;
  * The ranking tie-breaker. Gross profit alone would put a slow high-friction
  * deal above three quick ones worth more together, which is the wrong order
  * for a day of calling.
+ *
+ * Taken from the *low* end of the modelled band, falling back to the stored
+ * midpoint on routes built before economics became a range. Ranking a caller's
+ * day by the optimistic reading of a category prior is how a queue fills with
+ * work that turns out not to pay, and the pessimistic end costs nothing: it
+ * reorders the same routes, it does not hide any of them.
  */
 const PROFIT_PER_HOUR = Prisma.sql`
   CASE
-    WHEN r."estimatedGrossProfit" IS NULL OR COALESCE(r."estimatedHumanMinutes", 0) = 0 THEN NULL
-    ELSE ROUND(r."estimatedGrossProfit" / r."estimatedHumanMinutes" * 60)::int
+    WHEN COALESCE(r."estimatedGrossProfitLow", r."estimatedGrossProfit") IS NULL
+      OR COALESCE(r."estimatedHumanMinutes", 0) = 0 THEN NULL
+    ELSE ROUND(
+      COALESCE(r."estimatedGrossProfitLow", r."estimatedGrossProfit") / r."estimatedHumanMinutes" * 60
+    )::int
   END
 `;
 

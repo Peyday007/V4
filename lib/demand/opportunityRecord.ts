@@ -160,19 +160,50 @@ export async function loadOpportunityRecord(params: {
   }
 
   // --- arithmetic, labelled as arithmetic ---------------------------------
+  //
+  // Modelled money is shown as the band it came from, never as the midpoint.
+  // "$2,650" out of a category selling between $800 and $4,500 reads as an
+  // estimate of this deal; "$800–$4,500" reads as what it is, and the width is
+  // the most useful thing on the row.
   const calculated: OpportunityRecord['calculated'] = [];
-  if (route.estimatedGrossProfit !== null && (route.estimatedHumanMinutes ?? 0) > 0) {
+  const gpLow = route.estimatedGrossProfitLow === null ? null : Number(route.estimatedGrossProfitLow);
+  const gpHigh = route.estimatedGrossProfitHigh === null ? null : Number(route.estimatedGrossProfitHigh);
+  const dollars = (n: number) => `$${Math.round(n).toLocaleString()}`;
+
+  if (gpLow !== null && gpHigh !== null && (route.estimatedHumanMinutes ?? 0) > 0) {
+    const perHour = (amount: number) => Math.round((amount / route.estimatedHumanMinutes!) * 60);
     calculated.push({
       label: 'Expected profit per hour of attention',
-      value: `$${Math.round((Number(route.estimatedGrossProfit) / route.estimatedHumanMinutes!) * 60)}`,
-      from: 'estimated gross profit ÷ estimated human minutes. A playbook prior, not a quote.',
+      value: `${dollars(perHour(gpLow))}–${dollars(perHour(gpHigh))}`,
+      from:
+        'the modelled gross-profit band ÷ estimated human minutes. A category prior, not a quote. '
+        + 'Ranking uses the low end.',
     });
   }
-  if (route.estimatedGrossProfit !== null) {
+  if (gpLow !== null && gpHigh !== null) {
     calculated.push({
-      label: 'Estimated gross profit',
-      value: `$${Math.round(Number(route.estimatedGrossProfit))}`,
+      label: 'Modelled gross profit',
+      value: `${dollars(gpLow)}–${dollars(gpHigh)}`,
       from: route.economicsBasis ?? 'playbook prior',
+    });
+    if (route.economicsInputs.length > 0) {
+      calculated.push({
+        label: 'What moved that band',
+        value: route.economicsInputs.join(' '),
+        from: 'each of these is checkable, which is the point of listing them.',
+      });
+    }
+  } else if (route.estimatedGrossProfit !== null) {
+    // A route built before economics became a band. Its midpoint survives and
+    // its width does not, so it says so rather than implying a precision the
+    // record no longer holds.
+    calculated.push({
+      label: 'Modelled gross profit',
+      value: `around ${dollars(Number(route.estimatedGrossProfit))}`,
+      from:
+        `${route.economicsBasis ?? 'playbook prior'} This route predates ranged economics, so how wide the `
+        + 'band was is no longer on the record. Treat the figure as the middle of a category rather than an '
+        + 'estimate of this deal.',
     });
   }
 

@@ -723,13 +723,18 @@ export async function rebuildRoutes(params: { orgId: string; now?: Date }): Prom
         canContractWithBuyer: true,
         involvesGoods: playbook.route === 'DISTRIBUTION',
         friction: friction.level,
-        grossProfit: economics.grossProfit,
+        // The pessimistic end. Choosing to carry delivery risk on the strength
+        // of the optimistic reading of a category prior is exactly the decision
+        // this product should never make for somebody.
+        grossProfit: economics.grossProfit?.low ?? null,
         blockingCompliance: compliance.status === 'STRUCTURALLY_UNQUALIFIED' ? compliance.gaps[0] : null,
       });
 
       const capital = assessWorkingCapital({
         structure: structure.structure,
-        providerCost: economics.providerCost,
+        // The high end: working capital exposure is the number where being
+        // wrong in the optimistic direction costs money.
+        providerCost: economics.providerCost?.high ?? null,
         buyerPaymentDays: null,
         supplierTermsDays: null,
         depositPct: null,
@@ -759,7 +764,9 @@ export async function rebuildRoutes(params: { orgId: string; now?: Date }): Prom
       });
 
       const floor = meetsEconomicFloor({
-        grossProfit: economics.grossProfit,
+        // The floor is a question about whether this is worth somebody's
+        // morning, so it is asked of the pessimistic end.
+        grossProfit: economics.grossProfit?.low ?? null,
         humanMinutes: economics.humanMinutes,
         minimumProfitPerHour: 150,
       });
@@ -827,11 +834,18 @@ export async function rebuildRoutes(params: { orgId: string; now?: Date }): Prom
         fulfilmentReason: fulfilment.reason,
         matchedProviderIds: fulfilment.matched.slice(0, 5).map((m) => m.id),
         providerCount: providerCount,
-        estimatedBuyerPrice: economics.buyerPrice,
-        estimatedProviderCost: economics.providerCost,
-        estimatedGrossProfit: economics.grossProfit,
+        estimatedBuyerPrice: economics.buyerPrice?.midpoint ?? null,
+        estimatedBuyerPriceLow: economics.buyerPrice?.low ?? null,
+        estimatedBuyerPriceHigh: economics.buyerPrice?.high ?? null,
+        estimatedProviderCost: economics.providerCost?.midpoint ?? null,
+        estimatedProviderCostLow: economics.providerCost?.low ?? null,
+        estimatedProviderCostHigh: economics.providerCost?.high ?? null,
+        estimatedGrossProfit: economics.grossProfit?.midpoint ?? null,
+        estimatedGrossProfitLow: economics.grossProfit?.low ?? null,
+        estimatedGrossProfitHigh: economics.grossProfit?.high ?? null,
         estimatedHumanMinutes: economics.humanMinutes,
         economicsBasis: economics.basis,
+        economicsInputs: economics.buyerPrice?.inputs ?? [],
         commercialStructure: structure.structure,
         structureReason: structure.reason,
         status: status.status,
@@ -871,7 +885,8 @@ export async function rebuildRoutes(params: { orgId: string; now?: Date }): Prom
           fulfilmentReason: fulfilment.reason,
           buyingWindow: window ? describeWindow(window, now) : 'UNKNOWN',
           windowClosesAt: window?.closesAt ?? null,
-          grossProfit: economics.grossProfit,
+          grossProfit: economics.grossProfit?.low ?? null,
+          grossProfitHigh: economics.grossProfit?.high ?? null,
           humanMinutes: economics.humanMinutes,
           economicsBasis: economics.basis,
           paymentRisk: paymentRisk.level,

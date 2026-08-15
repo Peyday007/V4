@@ -32,7 +32,16 @@ export type CallCard = {
   friction: string;
   frictionReason: string | null;
   profitPerHour: number | null;
+  /**
+   * The low end of the modelled gross-profit band.
+   *
+   * Named `expected` for continuity and deliberately pessimistic: a caller
+   * choosing between two records should be comparing the floor of each, not the
+   * middle of two categories.
+   */
   expectedGrossProfit: number | null;
+  /** The high end, so the width of the band is visible beside the floor. */
+  expectedGrossProfitHigh: number | null;
 
   eventType: string;
   eventLabel: string;
@@ -122,6 +131,15 @@ export async function loadCallCard(params: { orgId: string; routeId: string }): 
   const phone = route.outreach?.correctedPhone ?? route.company.phone ?? contact?.phone ?? contact?.mobile ?? null;
   const email = route.outreach?.correctedEmail ?? contact?.email ?? null;
 
+  // Routes built before economics became a band carry only a midpoint. Falling
+  // back to it keeps them rankable; nothing pretends the band is known.
+  const lowGrossProfit =
+    route.estimatedGrossProfitLow !== null
+      ? Number(route.estimatedGrossProfitLow)
+      : route.estimatedGrossProfit !== null
+        ? Number(route.estimatedGrossProfit)
+        : null;
+
   const brief = buildCallBrief({
     organisation: route.company.legalName,
     eventType: route.event.type,
@@ -158,11 +176,17 @@ export async function loadCallCard(params: { orgId: string; routeId: string }): 
     route: route.route,
     friction: route.friction,
     frictionReason: route.frictionReason,
+    // The pessimistic end of the modelled band, falling back to the stored
+    // midpoint on routes built before economics became a range. This figure
+    // decides which call somebody makes first; the optimistic reading of a
+    // category prior is the wrong thing to sort a morning by.
     profitPerHour:
-      route.estimatedGrossProfit !== null && (route.estimatedHumanMinutes ?? 0) > 0
-        ? Math.round((Number(route.estimatedGrossProfit) / route.estimatedHumanMinutes!) * 60)
+      lowGrossProfit !== null && (route.estimatedHumanMinutes ?? 0) > 0
+        ? Math.round((lowGrossProfit / route.estimatedHumanMinutes!) * 60)
         : null,
-    expectedGrossProfit: route.estimatedGrossProfit !== null ? Math.round(Number(route.estimatedGrossProfit)) : null,
+    expectedGrossProfit: lowGrossProfit === null ? null : Math.round(lowGrossProfit),
+    expectedGrossProfitHigh:
+      route.estimatedGrossProfitHigh === null ? null : Math.round(Number(route.estimatedGrossProfitHigh)),
 
     eventType: route.event.type,
     eventLabel: humaniseEvent(route.event.type),
@@ -286,10 +310,17 @@ export async function loadEvidence(params: { orgId: string; routeId: string }) {
 
     economics: {
       buyerPrice: route.estimatedBuyerPrice,
+      buyerPriceLow: route.estimatedBuyerPriceLow,
+      buyerPriceHigh: route.estimatedBuyerPriceHigh,
       providerCost: route.estimatedProviderCost,
+      providerCostLow: route.estimatedProviderCostLow,
+      providerCostHigh: route.estimatedProviderCostHigh,
       grossProfit: route.estimatedGrossProfit,
+      grossProfitLow: route.estimatedGrossProfitLow,
+      grossProfitHigh: route.estimatedGrossProfitHigh,
       humanMinutes: route.estimatedHumanMinutes,
       basis: route.economicsBasis,
+      inputs: route.economicsInputs,
       structure: route.commercialStructure,
       structureReason: route.structureReason,
     },

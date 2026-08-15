@@ -93,7 +93,10 @@ export function buildThesis(input: {
   fulfilmentReason: string;
   buyingWindow: string;
   windowClosesAt: Date | null;
+  /** The low end of the modelled band. Deliberately the pessimistic one. */
   grossProfit: number | null;
+  /** The high end, so the thesis states a band rather than a figure. */
+  grossProfitHigh: number | null;
   humanMinutes: number;
   economicsBasis: string;
   paymentRisk: RiskLevel;
@@ -120,12 +123,21 @@ export function buildThesis(input: {
     : `${input.playbook.label}. This is our inference from the event, not something they have said. ` +
       `An event of this kind usually creates this work; this particular organisation has not confirmed it.`;
 
+  // A band, and the per-hour figure taken from its floor. A caller reading
+  // "roughly $6,000" prices the call in their head against a number nobody has
+  // quoted; "between $4,500 and $7,500" cannot be mistaken for one.
+  const perHour = (amount: number) =>
+    Math.round((amount / Math.max(1, input.humanMinutes)) * 60).toLocaleString();
   const economics =
     input.grossProfit === null
       ? `No gross profit can be estimated yet. ${input.economicsBasis}`
-      : `Roughly $${input.grossProfit.toLocaleString()} gross profit against ${input.humanMinutes} minutes of ` +
-        `human time — about $${Math.round((input.grossProfit / Math.max(1, input.humanMinutes)) * 60).toLocaleString()} ` +
-        `per hour of attention. ${input.economicsBasis}`;
+      : input.grossProfitHigh === null
+        ? `Around $${input.grossProfit.toLocaleString()} gross profit against ${input.humanMinutes} minutes of `
+          + `human time. This route predates ranged economics, so how wide that estimate was is no longer on `
+          + `the record. ${input.economicsBasis}`
+        : `Between $${input.grossProfit.toLocaleString()} and $${input.grossProfitHigh.toLocaleString()} gross `
+          + `profit against ${input.humanMinutes} minutes of human time — $${perHour(input.grossProfit)} to `
+          + `$${perHour(input.grossProfitHigh)} per hour of attention. ${input.economicsBasis}`;
 
   // Everything that could make this wrong, gathered rather than scattered.
   const uncertainties = [
