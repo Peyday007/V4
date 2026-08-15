@@ -58,6 +58,7 @@ export async function GET(request: Request) {
       funnel,
       scorecards,
       practice,
+      ledger,
     ] = await Promise.all([
       demandSourceHealth(orgId),
       prisma.discoverySignal.count({ where: { orgId } }),
@@ -114,6 +115,29 @@ export async function GET(request: Request) {
         prisma.routeHypothesis.count({ where: { orgId, dataMode: 'TEST' } }),
         prisma.company.count({ where: { orgId, dataMode: 'TEST' } }),
       ]).then(([events, routes, accounts]) => ({ events, routes, accounts })),
+
+      // The claim ledger, across the board rather than on one record.
+      //
+      // Added because "is the ledger actually live in production" could only be
+      // answered by opening an opportunity and looking, and the first one on
+      // the board is whichever route sorts first — which on this deployment was
+      // one built before the ledger existed. One route saying nothing has been
+      // claimed is not evidence that nothing anywhere has.
+      Promise.all([
+        prisma.claim.count({ where: { orgId, dataMode } }),
+        prisma.claim.count({ where: { orgId, dataMode, supersededAt: null } }),
+        prisma.claim.count({ where: { orgId, dataMode, supersededAt: null, standing: 'CONFIRMED' } }),
+        prisma.claim.count({ where: { orgId, dataMode, supersededAt: null, standing: 'CONTRADICTED' } }),
+        prisma.claim.count({ where: { orgId, dataMode, sourceKind: 'PERSON' } }),
+        prisma.routeHypothesis.count({ where: { orgId, dataMode, claims: { some: {} } } }),
+      ]).then(([total, current, confirmed, disputed, fromPeople, routesWithClaims]) => ({
+        total,
+        current,
+        confirmed,
+        disputed,
+        fromPeople,
+        routesWithClaims,
+      })),
     ]);
 
     // Event-date coverage is the single most diagnostic number here: an event
@@ -160,6 +184,10 @@ export async function GET(request: Request) {
       // full sandbox is visible without ever being added in.
       dataMode,
       practiceRecordsNotCounted: practice,
+      // Whether the claim ledger is actually carrying anything in this world.
+      // A route built before the ledger existed reports an empty one until the
+      // pipeline next rebuilds it, so a single record proves nothing either way.
+      claimLedger: ledger,
       environment: {
         // Whether a key is present, never its value.
         samGovConfigured: Boolean(process.env.SAM_GOV_API_KEY),

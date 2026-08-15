@@ -88,14 +88,17 @@ async function main() {
   check('it reports what it would do before anything is pressed', standing.length > 40, standing.slice(0, 200));
   report('production standing', standing.replace(/\s+/g, ' '));
 
+  // Read structurally, and absent is not nought. `Number('')` is zero, so the
+  // first version of this passed with four zeroes on a page that had redirected
+  // to the login form — a check that cannot fail is not a check.
   const counts = {};
   for (const id of ['retained', 'superseded', 'worked', 'nocredible']) {
-    const text = await page.locator(`[data-testid="reconcile-count-${id}"] .stat-value`).innerText().catch(() => '');
-    counts[id] = Number(text.trim());
+    const tile = page.locator(`[data-testid="reconcile-count-${id}"] .stat-value`);
+    counts[id] = (await tile.count()) === 1 ? Number((await tile.innerText()).trim()) : null;
   }
   check(
     'every verdict has a real count behind it',
-    Object.values(counts).every((n) => Number.isFinite(n)),
+    Object.values(counts).every((n) => n !== null && Number.isFinite(n)),
     JSON.stringify(counts),
   );
   report('verdicts', JSON.stringify(counts));
@@ -202,6 +205,52 @@ async function main() {
       const canChoose = await structures.locator('button', { hasText: 'Choose' }).count();
       report('structures offered for choice', canChoose);
     }
+  }
+
+  // --- is the ledger actually carrying anything --------------------------
+  //
+  // Asked of the whole board rather than of one record. The first opportunity
+  // on the board is whichever route sorts first, and on this deployment that
+  // was one built before the ledger existed — so its empty ledger is honest and
+  // proves nothing about whether the ledger is live.
+  console.log('\n--- the claim ledger, across the whole board ---------------------');
+  // Navigated to rather than fetched. Both a page-side `fetch` and Playwright's
+  // own request context arrived without the session cookie and got a 401, which
+  // would have read as "the diagnostic is broken" rather than "this request was
+  // made wrongly". A navigation carries the cookie the same way every other
+  // page on this run does.
+  const diagnosticNav = await page.goto(`${BASE}/api/demand/diagnostic`, { waitUntil: 'domcontentloaded' });
+  let diagnostic = null;
+  if ((diagnosticNav?.status() ?? 0) < 400) {
+    const raw = await page.locator('body').innerText();
+    try { diagnostic = JSON.parse(raw); } catch { diagnostic = null; }
+  }
+  check(
+    'the diagnostic answers',
+    diagnostic !== null,
+    `status ${diagnosticNav?.status()}`,
+  );
+  if (diagnostic?.claimLedger) {
+    const l = diagnostic.claimLedger;
+    report('claim ledger', JSON.stringify(l));
+    check(
+      'the ledger is carrying claims in production',
+      l.total > 0,
+      'No claim exists on this board yet. Discovery writes them on every pipeline pass, so this means the '
+      + 'pipeline has not run since the ledger shipped.',
+    );
+    check(
+      'and they are attached to real routes',
+      l.routesWithClaims > 0,
+      `${l.routesWithClaims} route(s) carry a ledger`,
+    );
+    check(
+      'with the composition the rules require',
+      l.current <= l.total && l.confirmed <= l.current,
+      JSON.stringify(l),
+    );
+  } else {
+    check('the diagnostic reports the claim ledger', false, 'no claimLedger in the diagnostic payload');
   }
 
   // --- working from supply -------------------------------------------------
