@@ -123,8 +123,20 @@ export function CallerAdmin({
 
       {/* Shown once and never again. There is no endpoint that reads it back. */}
       {issued && (
-        <div className="alert warning">
+        <div className="alert warning" data-testid="roster-issued-pin">
           <strong>{issued.name}&rsquo;s new PIN is {issued.pin}</strong>
+          {/* The address beside the credential. Read from the browser rather
+              than configured, so it is right on a preview deployment and on a
+              custom domain without a setting that would be wrong on one of
+              them. A PIN alone leaves the owner reciting a URL down the phone. */}
+          <div className="small mt" data-testid="roster-handover">
+            Tell them: go to{' '}
+            <code data-testid="roster-signin-url">
+              {typeof window === 'undefined' ? '/work' : `${window.location.origin}/work`}
+            </code>{' '}
+            and enter <code>{issued.pin}</code>. No email address and no password — the PIN is the whole
+            sign-in.
+          </div>
           <div className="tiny mt">
             Give it to them now — it cannot be read again, by you or by anybody else. Re-issuing replaces it.
           </div>

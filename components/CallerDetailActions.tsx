@@ -26,6 +26,18 @@ export function CallerDetailActions({
   const [notice, setNotice] = useState<string | null>(null);
   const [pin, setPin] = useState<string | null>(null);
   const [copied, setCopied] = useState<'idle' | 'done' | 'failed'>('idle');
+  const [copiedHandover, setCopiedHandover] = useState<'idle' | 'done' | 'failed'>('idle');
+
+  /**
+   * Where the caller actually signs in.
+   *
+   * Read from the browser rather than configured, so it is right on a
+   * preview deployment, on a custom domain, and on somebody's laptop, without
+   * a setting that would be wrong on two of the three. A PIN with no address
+   * beside it is a credential nobody can use, and the owner ends up guessing
+   * the URL down the phone.
+   */
+  const signInUrl = typeof window === 'undefined' ? '/work' : `${window.location.origin}/work`;
 
   async function act(body: Record<string, unknown>, onOk?: (payload: Record<string, unknown>) => void) {
     setBusy(true); setError(null); setNotice(null);
@@ -53,6 +65,20 @@ export function CallerDetailActions({
       setCopied('done');
     } catch {
       setCopied('failed');
+    }
+  }
+
+  /** The address and the credential together, in the words to send. */
+  async function copyHandover(url: string, value: string) {
+    const message =
+      `Sign in at ${url} and enter ${value}. That is the whole sign-in — no email address and no password. `
+      + 'The PIN is yours alone; everything you record is attributed to you.';
+    try {
+      if (!navigator.clipboard) throw new Error('no clipboard');
+      await navigator.clipboard.writeText(message);
+      setCopiedHandover('done');
+    } catch {
+      setCopiedHandover('failed');
     }
   }
 
@@ -85,6 +111,32 @@ export function CallerDetailActions({
           <div className="tiny mt">
             Hand it over now. It cannot be read again by anybody, including you. Rotating replaces it and the old
             one stops working immediately.
+          </div>
+
+          {/* The address, beside the credential. A PIN on its own leaves the
+              owner reciting a URL down the phone and getting it wrong. */}
+          <div className="mt" data-testid="detail-handover">
+            <div className="tiny dim">Everything {name} needs</div>
+            <div className="small">
+              Go to <code data-testid="detail-signin-url">{signInUrl}</code> and enter{' '}
+              <code>{pin}</code>. No email address, no password — the PIN is the whole sign-in.
+            </div>
+            <button
+              className="btn tiny mt"
+              data-testid="detail-copy-handover"
+              onClick={() => void copyHandover(signInUrl, pin)}
+            >
+              {copiedHandover === 'done'
+                ? 'Copied'
+                : copiedHandover === 'failed'
+                  ? 'Copy it by hand'
+                  : 'Copy the whole message'}
+            </button>
+            {copiedHandover === 'failed' && (
+              <div className="tiny mt warn" data-testid="detail-copy-handover-failed">
+                The browser refused clipboard access, so nothing was copied. Read it out yourself.
+              </div>
+            )}
           </div>
         </div>
       )}

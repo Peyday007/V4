@@ -5,6 +5,7 @@ import { requirePageAny } from '@/lib/auth/page';
 import { callerDetail } from '@/lib/caller/roster';
 import { Badge, Empty } from '@/components/ui';
 import { CallerDetailActions } from '@/components/CallerDetailActions';
+import { callerLearning } from '@/lib/caller/learning';
 import { IncidentResolution } from '@/components/IncidentResolution';
 
 export const dynamic = 'force-dynamic';
@@ -39,6 +40,10 @@ export default async function CallerDetailPage({ params }: { params: { callerId:
 
   const detail = await callerDetail({ orgId: user.orgId, callerId: params.callerId });
   if (!detail) notFound();
+
+  // What their calls established, rather than how many they made. A call count
+  // measures effort; this measures what came back.
+  const learning = await callerLearning({ orgId: user.orgId, callerId: params.callerId });
 
   const [attempts, callbacks] = await Promise.all([
     prisma.outreachAttempt.findMany({
@@ -135,6 +140,56 @@ export default async function CallerDetailPage({ params }: { params: { callerId:
         isActive={detail.isActive}
         pinStatus={detail.pin.status}
       />
+
+      {/* --- what their calls established ---------------------------------- */}
+      <div className="card" data-testid="detail-learning">
+        <div className="card-title">
+          <h2>What their calls established</h2>
+          <span className="tiny dim">What came back, not how many were made</span>
+        </div>
+        <p className="small" data-testid="detail-learning-sentence">{learning.sentence}</p>
+
+        {learning.strongest.length > 0 && (
+          <div className="mt">
+            <div className="tiny dim">What they most often get answered</div>
+            <div className="row tiny mt" style={{ flexWrap: 'wrap', gap: '0.4rem' }}>
+              {learning.strongest.map((s) => (
+                <span key={s.what} className="badge">{s.what}: <strong>{s.count}</strong></span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* A caller who disproves a thesis has done better work than one who
+            confirms a requirement nobody will buy, and this is the only place
+            that shows it. */}
+        {learning.disproved.length > 0 && (
+          <div className="mt" data-testid="detail-learning-disproved">
+            <div className="tiny dim">Hypotheses they closed, with the reason</div>
+            <ul className="list-reset small mt" style={{ lineHeight: 1.7 }}>
+              {learning.disproved.slice(0, 8).map((d) => (
+                <li key={`${d.organisation}-${d.on}`}>
+                  <strong>{d.organisation}</strong> — {d.because} <span className="dim">({d.on})</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {learning.disputes.length > 0 && (
+          <div className="alert warning small mt" data-testid="detail-learning-disputes">
+            <strong>{learning.disputes.length} answer(s) disagree with what somebody else was told.</strong>
+            <ul className="list-reset tiny mt" style={{ paddingLeft: '1rem' }}>
+              {learning.disputes.slice(0, 5).map((d) => (
+                <li key={`${d.organisation}-${d.on}`}>{d.organisation}: {d.statement}</li>
+              ))}
+            </ul>
+            <div className="tiny mt">
+              Not a fault. Two people were told different things and one call settles it.
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* --- ours to fix ---------------------------------------------------- */}
       <div className="card" data-testid="detail-incidents">

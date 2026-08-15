@@ -7,6 +7,7 @@ import { FigureChip, GradedStat } from '@/components/Figure';
 import { gradeRate, presentPercent } from '@/lib/evidence/claims';
 import { presentMoney } from '@/lib/evidence/economics';
 import { inferred, unknown, type Evidenced } from '@/lib/evidence/class';
+import { boardLearning } from '@/lib/caller/learning';
 
 export const dynamic = 'force-dynamic';
 
@@ -45,6 +46,13 @@ export default async function AnalyticsPage() {
     ? await prisma.user.findMany({ where: { orgId: user.orgId, isActive: true, role: { key: 'CALLER' } }, select: { id: true } })
     : [{ id: user.id }];
 
+  // What the calling has taught the engine. Distinct from every other figure
+  // on this page: those measure the pipeline, this measures what the pipeline
+  // learned, and a playbook that keeps producing routes disqualified for the
+  // same reason is a playbook to change rather than a conversion rate to fret
+  // about.
+  const learning = await boardLearning({ orgId: user.orgId, since: periodStart });
+
   const metrics = await Promise.all(
     callers.map((caller) => computeCallerMetrics({ orgId: user.orgId, userId: caller.id, periodStart, periodEnd })),
   );
@@ -65,6 +73,54 @@ export default async function AnalyticsPage() {
             own.
           </p>
         </div>
+
+      {/* --- what the calling taught the engine --------------------------- */}
+      <div className="card" data-testid="board-learning">
+        <div className="card-title">
+          <h2>What the calling has taught the engine</h2>
+          <span className="tiny dim">Facts on the record because somebody rang and asked</span>
+        </div>
+        <p className="small" data-testid="board-learning-sentence">{learning.sentence}</p>
+
+        {learning.whyTheyFail.length > 0 ? (
+          <>
+            <div className="tiny dim mt">Why hypotheses close</div>
+            <p className="tiny dim">
+              Grouped by outcome rather than by wording, so two callers describing the same reason in their own
+              words still group. A playbook that keeps producing routes closed for the same reason is a playbook
+              to change.
+            </p>
+            <div className="table-scroll">
+              <table className="table tiny">
+                <thead>
+                  <tr><th>Reason</th><th className="num">Times</th><th>What they said</th></tr>
+                </thead>
+                <tbody>
+                  {learning.whyTheyFail.map((row) => (
+                    <tr key={row.reason} data-testid={`learning-reason-${row.reason.replace(/\s+/g, '-')}`}>
+                      <td>{row.reason}</td>
+                      <td className="num">{row.count}</td>
+                      <td className="tiny dim">{row.examples.join(' · ')}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        ) : (
+          <p className="tiny dim">
+            No hypothesis has been closed by an answer yet. Until one is, every route on the board is still the
+            engine&apos;s reading of a public record rather than anything a person checked.
+          </p>
+        )}
+
+        {learning.openDisputes > 0 && (
+          <div className="alert warning small mt" data-testid="board-learning-disputes">
+            {learning.openDisputes} claim(s) are disputed by two sources. Each is settled by one call, and
+            nothing resting on them is safe to quote until they are.
+          </div>
+        )}
+      </div>
         <Badge>Last 90 days</Badge>
       </div>
 
