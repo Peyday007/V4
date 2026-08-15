@@ -30,10 +30,25 @@ function check(label, ok, detail = '') {
 }
 
 async function main() {
-  const routeId = process.env.ROUTE_ID;
+  // Discovered rather than hardcoded. A practice route id changes every time
+  // the sandbox is reset, and a check that depends on one silently becomes a
+  // check that a 404 page has no fabricated percentages on it.
+  let routeId = process.env.ROUTE_ID;
   if (!routeId) {
-    console.error('ROUTE_ID must name a practice route to open.');
-    process.exit(1);
+    const { PrismaClient } = await import('@prisma/client');
+    const prisma = new PrismaClient();
+    const route = await prisma.routeHypothesis.findFirst({
+      where: { dataMode: 'TEST', status: { notIn: ['EXPIRED', 'REJECTED'] } },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true },
+    });
+    await prisma.$disconnect();
+    if (!route) {
+      console.error('No practice route exists to open. Run the sandbox reset first.');
+      process.exit(1);
+    }
+    routeId = route.id;
+    console.log(`Using practice route ${routeId}.`);
   }
 
   // The environment ships one Chromium at a fixed path and the project's
