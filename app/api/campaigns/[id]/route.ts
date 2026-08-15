@@ -4,6 +4,7 @@ import { can } from '@/lib/auth/session';
 import { handleRouteError, json } from '@/lib/api';
 import { loadCampaign, transitionCampaign, recordChannelSpend } from '@/lib/campaign/service';
 import { generateCampaignWork, runCampaignTasks } from '@/lib/campaign/execute';
+import { assignCampaignWork, campaignProgress, previewCampaignAssignment } from '@/lib/campaign/assign';
 
 export const dynamic = 'force-dynamic';
 
@@ -12,7 +13,20 @@ export async function GET(_request: Request, { params }: { params: { id: string 
   try {
     const user = await requirePermission('campaign.read');
     const loaded = await loadCampaign({ orgId: user.orgId, campaignId: params.id });
-    return json(loaded);
+
+    // What it is trying to reach, and who could work it. Loaded here rather
+    // than on a second request so the page cannot render a campaign without
+    // showing whether it is going anywhere.
+    const [progress, assignment] = await Promise.all([
+      campaignProgress({ orgId: user.orgId, campaignId: params.id }),
+      previewCampaignAssignment({ orgId: user.orgId, campaignId: params.id }),
+    ]);
+
+    return json({
+      ...loaded,
+      targets: progress?.targets ?? [],
+      assignment: 'error' in assignment ? null : assignment,
+    });
   } catch (error) {
     return handleRouteError(error);
   }
@@ -32,6 +46,11 @@ const Action = z.discriminatedUnion('action', [
     amountCents: z.number().int().min(1),
   }),
   z.object({ action: z.literal('conclude'), learning: z.string().min(20).max(4000) }),
+  z.object({
+    action: z.literal('assign'),
+    callerId: z.string().min(1),
+    limit: z.number().int().min(1).max(50).optional(),
+  }),
 ]);
 
 /**
@@ -92,6 +111,23 @@ export async function POST(request: Request, { params }: { params: { id: string 
         kind: body.kind,
         amountCents: body.amountCents,
         actorId: user.id,
+      });
+      return json(result, result.ok ? 200 : 409);
+    }
+
+    if (body.action === 'assign') {
+      // Handing somebody a morning is not the same as drafting a thesis, so it
+      // needs the permission that governs work assignment rather than the one
+      // that governs writing campaigns.
+      if (!can(user, 'call.assignment.write')) {
+        return json({ error: 'Assigning work to a caller needs the assignment permission.' }, 403);
+      }
+      const result = await assignCampaignWork({
+        orgId: user.orgId,
+        campaignId: params.id,
+        callerId: body.callerId,
+        actorId: user.id,
+        limit: body.limit,
       });
       return json(result, result.ok ? 200 : 409);
     }

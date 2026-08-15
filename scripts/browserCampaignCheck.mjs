@@ -117,11 +117,48 @@ async function seed() {
     ],
   });
 
-  return { campaignId: campaign.id, orgId: org.id };
+  // One route the campaign produced, reachable, so the assignment panel is
+  // actually rendered. Without it the check only ever saw the blocker, and the
+  // half of the page that hands a thesis to a person had never been opened in a
+  // browser at all.
+  const company = await prisma.company.create({
+    data: {
+      orgId: org.id, dataMode: 'TEST', legalName: `${MARK} Wicker Park Cafe`,
+      companyRole: 'BUYER', phone: '+13125550143', cityName: 'Chicago', stateCode: 'IL',
+    },
+    select: { id: true },
+  });
+  const event = await prisma.demandEvent.create({
+    data: {
+      orgId: org.id, dataMode: 'TEST', type: 'OCCUPANCY_OR_OPERATING_APPROVAL',
+      connector: 'browser-check', sourceRecordId: `${MARK}-1`, dedupeKey: `${MARK}-1`,
+      headline: `${MARK} operating licence granted`, summary: 'Seeded by the campaign browser check.',
+      eventDate: new Date(),
+    },
+    select: { id: true },
+  });
+  await prisma.routeHypothesis.create({
+    data: {
+      orgId: org.id, dataMode: 'TEST', eventId: event.id, companyId: company.id,
+      campaignId: campaign.id, route: 'BROKERAGE', playbookKey: 'browser.check',
+      headline: `${MARK} pre-opening clean`, rationale: 'Seeded by the campaign browser check.',
+      tier: 'ACTIVE_DEMAND', status: 'RESEARCH', requiredCapability: 'Post-construction cleaning',
+    },
+  });
+
+  return { campaignId: campaign.id, orgId: org.id, eventId: event.id, companyId: company.id };
 }
 
-async function cleanUp(campaignId) {
+async function cleanUp(campaignId, eventId, companyId) {
   if (!campaignId) return;
+  const routes = await prisma.routeHypothesis.findMany({
+    where: { campaignId }, select: { id: true },
+  });
+  const routeIds = routes.map((r) => r.id);
+  await prisma.packetItem.deleteMany({ where: { routeId: { in: routeIds } } });
+  await prisma.routeHypothesis.deleteMany({ where: { id: { in: routeIds } } });
+  if (eventId) await prisma.demandEvent.deleteMany({ where: { id: eventId } });
+  if (companyId) await prisma.company.deleteMany({ where: { id: companyId } });
   await prisma.campaignTask.deleteMany({ where: { campaignId } });
   await prisma.campaignCondition.deleteMany({ where: { campaignId } });
   await prisma.campaignChannel.deleteMany({ where: { campaignId } });
@@ -133,8 +170,8 @@ async function cleanUp(campaignId) {
 let seeded = null;
 
 async function main() {
-  const { campaignId } = await seed();
-  seeded = campaignId;
+  const { campaignId, eventId, companyId } = await seed();
+  seeded = { campaignId, eventId, companyId };
 
   const browser = await chromium.launch({
     executablePath: process.env.CHROMIUM_PATH || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome',
@@ -227,6 +264,50 @@ async function main() {
   check('and an empty rung says none rather than 0', !/\bRoutes generated\s*\n?\s*0\b/.test(outcomeText));
 
   // --- conditions ----------------------------------------------------------
+  // --- where it stands against its own thresholds -------------------------
+  console.log('\n--- where it stands against what it set out to do ----------------');
+  const targets = page.locator('[data-testid="campaign-targets"]');
+  check('the campaign says what it is trying to reach', (await targets.count()) === 1);
+  if ((await targets.count()) === 1) {
+    const text = await targets.innerText();
+    // Derived from the conditions rather than typed into a box, so the two can
+    // never disagree — and stated as counts with a date, never as a percentage.
+    check('taken from its own conditions', /own conditions/i.test(text));
+    check('with a threshold beside the current number', /\d+\s+\d+/.test(text.replace(/\s+/g, ' ')));
+    check('and no completion percentage anywhere', !/%/.test(text), (text.match(/\d+%/) ?? [''])[0]);
+    check(
+      'a kill floor says what it would mean, not just where it stands',
+      /would stop the campaign|Clear of this|applies now/i.test(text),
+      text.replace(/\s+/g, ' ').slice(0, 160),
+    );
+  }
+
+  // --- getting it to somebody ---------------------------------------------
+  console.log('\n--- getting it to somebody --------------------------------------');
+  const assignment = page.locator('[data-testid="campaign-assignment"]');
+  check('the page offers to hand the work to a caller', (await assignment.count()) === 1);
+  if ((await assignment.count()) === 1) {
+    const blocker = assignment.locator('[data-testid="assignment-blocker"]');
+    if ((await blocker.count()) > 0) {
+      const text = await blocker.innerText();
+      check('or says why it cannot', text.length > 30, text.slice(0, 140));
+    } else {
+      const objective = await assignment.locator('[data-testid="assignment-objective"]').innerText();
+      // The thesis travels with the work. A caller who knows what is being
+      // tested asks the question that would disprove it.
+      check('and shows what the caller will be told they are testing', objective.length > 60, objective.slice(0, 140));
+      check('drawn from the thesis rather than a generic instruction', /Testing:/.test(objective));
+
+      const withheld = assignment.locator('[data-testid="assignment-withheld"]');
+      if ((await withheld.count()) > 0) {
+        await withheld.locator('summary').click();
+        await page.waitForTimeout(300);
+        const items = await withheld.locator('li').allInnerTexts();
+        check('everything withheld says why', items.every((i) => i.includes('—')), items[0] ?? '');
+      }
+    }
+  }
+
   console.log('\n--- what would end it -------------------------------------------');
   const conditions = page.locator('[data-testid="campaign-conditions"]');
   const conditionText = await conditions.first().innerText();
@@ -273,7 +354,7 @@ try {
   console.error(error);
   code = 1;
 } finally {
-  await cleanUp(seeded);
+  await cleanUp(seeded?.campaignId, seeded?.eventId, seeded?.companyId);
   await prisma.$disconnect();
 }
 process.exit(code);

@@ -8,6 +8,8 @@ import { TASK_INTENT, type TaskKind } from '@/lib/campaign/execute';
 import { needsBudget } from '@/lib/campaign/model';
 import { CLASS_BADGE } from '@/lib/evidence/claims';
 import { ActionButton } from '@/components/ActionButton';
+import { CampaignAssignment } from '@/components/CampaignAssignment';
+import { campaignProgress, previewCampaignAssignment } from '@/lib/campaign/assign';
 import { Badge, Empty, humanize, money } from '@/components/ui';
 
 export const dynamic = 'force-dynamic';
@@ -48,6 +50,20 @@ export default async function CampaignPage({ params }: { params: { id: string } 
   const { campaign, outcome, readiness, conditions } = loaded;
   const mayWrite = can(user, 'campaign.write');
   const mayAuthorise = can(user, 'campaign.authorise');
+
+  // What it is trying to reach, and who could work it. Loaded with the page
+  // rather than behind a click, because a campaign that shows its activity and
+  // not its targets is how one that quotes well and collects nothing survives.
+  const [progress, assignment, callers] = await Promise.all([
+    campaignProgress({ orgId: user.orgId, campaignId: campaign.id }),
+    previewCampaignAssignment({ orgId: user.orgId, campaignId: campaign.id }),
+    prisma.user.findMany({
+      where: { orgId: user.orgId, isActive: true, callerProfile: { isNot: null } },
+      orderBy: { name: 'asc' },
+      take: 50,
+      select: { id: true, name: true, callerProfile: { select: { dataMode: true } } },
+    }),
+  ]);
 
   const [tasks, routes] = await Promise.all([
     prisma.campaignTask.findMany({
@@ -287,6 +303,61 @@ export default async function CampaignPage({ params }: { params: { id: string } 
           </div>
         )}
       </div>
+
+      {/* ---- where it stands against its own thresholds ------------------ */}
+      {progress && progress.targets.length > 0 && (
+        <div className="card" data-testid="campaign-targets">
+          <div className="card-title">
+            <h2>Where it stands against what it set out to do</h2>
+            <span className="tiny dim">Taken from its own conditions, so the two cannot disagree</span>
+          </div>
+          <p className="tiny dim">
+            A target nobody attached a consequence to is a wish. These are the thresholds this campaign already
+            said would stop it or grow it, read against what has actually happened.
+          </p>
+          <div className="table-scroll">
+            <table className="table tiny">
+              <thead>
+                <tr>
+                  <th>What</th>
+                  <th className="num">Now</th>
+                  <th className="num">Threshold</th>
+                  <th>Where that leaves it</th>
+                </tr>
+              </thead>
+              <tbody>
+                {progress.targets.map((target) => (
+                  <tr key={`${target.kind}-${target.metric}`} data-testid={`target-${target.metric}`}>
+                    <td>
+                      <Badge tone={target.kind === 'KILL' ? 'danger' : 'success'}>{humanize(target.kind)}</Badge>{' '}
+                      {humanize(target.metric).toLowerCase()}
+                    </td>
+                    <td className="num">{target.current}</td>
+                    <td className="num">{target.target}</td>
+                    <td className="tiny">
+                      {target.standing}
+                      {target.daysUntilJudged !== null && target.daysUntilJudged > 0 && (
+                        <div className="dim">{target.daysUntilJudged} day(s) before this is read.</div>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      <CampaignAssignment
+        campaignId={campaign.id}
+        assignment={'error' in assignment ? null : assignment}
+        callers={callers.map((c) => ({
+          id: c.id,
+          name: c.name,
+          mode: c.callerProfile?.dataMode ?? 'PRODUCTION',
+        }))}
+        canAssign={can(user, 'call.assignment.write')}
+      />
 
       {/* ---- what would end it ------------------------------------------- */}
       <div className="card" data-testid="campaign-conditions">
