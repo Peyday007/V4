@@ -59,11 +59,18 @@ page behaves exactly as it did before. That is deliberate — a half-configured
 connector that retried on every tick would be a background loop nobody asked
 for.
 
-The credential is issued in Brain: *operator console → the worker's row → grant
-it the project **as a connected site** → issue a credential*. It is scoped to
-one project and two verbs, is shown once, and is never logged here — the
-`brnw_` pattern is in `lib/audit.ts`'s redaction list and the client never
-interpolates it into anything it throws.
+The credential is issued in Brain, in **Connected sites**: press **Connect Deal
+Dispatch**. Brain makes or reuses this site's identity, applies the fixed
+project-scoped permissions, revokes anything it held before and shows one
+secret — once. There is no worker to name and no scope to choose; the choice
+that used to be there had a wrong answer that failed silently.
+
+Pressing it again rotates: the previous secret stops working immediately, so
+the site is down until the new one is in place here.
+
+The credential is scoped to one project and two verbs, and is never logged on
+this side — the `brnw_` pattern is in `lib/audit.ts`'s redaction list and the
+client never interpolates it into anything it throws.
 
 ## How it stays current
 
