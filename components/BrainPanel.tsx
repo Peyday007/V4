@@ -77,10 +77,11 @@ export function BrainPanel({
   const tone = view.state ? (STATE_TONE[view.state] ?? '') : '';
 
   return (
-    <section className="card" style={{ marginTop: '1rem' }}>
+    <section className="card" data-testid="brain-panel" data-brain-state={view.state ?? ''}
+      data-brain-freshness={view.freshness} style={{ marginTop: '1rem' }}>
       <div className="row" style={{ justifyContent: 'space-between', alignItems: 'baseline' }}>
         <h2 style={{ margin: 0 }}>Brain</h2>
-        <Freshness view={view} />
+        <span data-testid="brain-freshness"><Freshness view={view} /></span>
       </div>
 
       {view.freshness === 'UNAVAILABLE' && !view.state && (
@@ -92,7 +93,7 @@ export function BrainPanel({
 
       {label && (
         <div className="row mb" style={{ marginTop: '0.6rem' }}>
-          <Badge tone={tone}>{label}</Badge>
+          <Badge tone={tone}><span data-testid="brain-state">{label}</span></Badge>
           {view.priority && <Badge tone="accent">{view.priority}</Badge>}
           {view.confidence !== null && view.confidence !== undefined && (
             <span className="small muted">Confidence {view.confidence}/100</span>
@@ -101,7 +102,9 @@ export function BrainPanel({
       )}
 
       {/* Brain's own sentence about the state, never one composed here. */}
-      {view.stateReason && <p style={{ marginTop: '0.4rem' }}>{view.stateReason}</p>}
+      {view.stateReason && (
+        <p data-testid="brain-state-reason" style={{ marginTop: '0.4rem' }}>{view.stateReason}</p>
+      )}
 
       {view.brainReason && (
         <p className="small" style={{ marginTop: '0.4rem' }}>
@@ -130,7 +133,7 @@ export function BrainPanel({
       {/* The button exists only while Brain offers the action. A record already
           on its list has none, so there is nothing to press twice. */}
       {canCommand && view.nextAction === 'RESEARCH_FURTHER' && view.freshness === 'CURRENT' && (
-        <div style={{ marginTop: '0.8rem' }}>
+        <div data-testid="brain-command" style={{ marginTop: '0.8rem' }}>
           <ActionButton
             endpoint={`/api/opportunities/${opportunityId}/brain`}
             body={{ command: 'RESEARCH_FURTHER' }}
@@ -142,7 +145,7 @@ export function BrainPanel({
       )}
 
       {view.brain && (
-        <div className="small muted" style={{ marginTop: '0.8rem' }}>
+        <div className="small muted" data-testid="brain-identity" style={{ marginTop: '0.8rem' }}>
           {view.brain}
           {view.brainId ? ` · ${view.brainId}` : ''}
         </div>

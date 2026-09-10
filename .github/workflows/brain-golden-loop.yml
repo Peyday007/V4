@@ -1,0 +1,78 @@
+name: Brain golden loop
+
+# The loop, end to end, against the real deployment.
+#
+# A record this site already holds is registered in Brain exactly once, Brain
+# forms its own view, the site shows it, a person issues one typed command, and
+# the site reflects what Brain did. Everything in that sentence is checked in a
+# browser against production.
+#
+# It runs from here rather than from a developer's machine for the reason
+# `deployed-walkthrough.yml` gives: the deployment's address and the owner's
+# password are repository secrets, and the machines this project is developed on
+# cannot reach the deployment at all.
+#
+# Manual only. It issues a real command against a real record, and that is not
+# something to do on a timer.
+#
+# Secrets it uses:
+#   APP_BASE_URL    the deployment, https, no trailing slash   (required)
+#   OWNER_PASSWORD  the owner account's password               (optional; the
+#                   seed's documented default is used if unset)
+
+on:
+  workflow_dispatch:
+    inputs:
+      opportunity_id:
+        description: 'Opportunity to use. Blank takes the first one on the list.'
+        required: false
+        default: ''
+      owner_email:
+        description: 'Account to sign in as.'
+        required: false
+        default: 'owner@dealdispatch.test'
+
+permissions:
+  contents: read
+
+concurrency:
+  # Two runs would each issue the command against the same record.
+  group: brain-golden-loop
+  cancel-in-progress: false
+
+jobs:
+  loop:
+    name: loop
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Install the browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Walk the loop
+        env:
+          BASE_URL: ${{ secrets.APP_BASE_URL }}
+          OWNER_EMAIL: ${{ inputs.owner_email }}
+          OWNER_PASSWORD: ${{ secrets.OWNER_PASSWORD }}
+          OPPORTUNITY_ID: ${{ inputs.opportunity_id }}
+        run: |
+          set -u
+          if [ -z "${BASE_URL:-}" ]; then
+            echo "APP_BASE_URL must be set as a repository secret." >&2
+            exit 1
+          fi
+          if [ -z "${OWNER_PASSWORD:-}" ]; then
+            echo "OWNER_PASSWORD is not set; using the seed's documented default."
+            export OWNER_PASSWORD='demo-password-123'
+          fi
+          node scripts/brainGoldenLoopCheck.mjs
