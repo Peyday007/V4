@@ -162,10 +162,33 @@ Bright & Clean LLC,Dallas,TX,"janitorial, floor care",Dana Reyes,Owner,dana@exam
 
 ---
 
+## Brain
+
+Deal Dispatch is a window onto **Brain** for the one thing Brain is better at
+than this site: deciding whether an opportunity is worth researching, doing the
+research, and saying what it found.
+
+On an opportunity you get Brain's own view — *not evaluated*, *on Brain's list*,
+*being researched*, *needs a person*, *finished* with what it concluded, or
+*stopped* with the reason — its ranking and the sentence behind it, and one
+button: **Ask Brain to research this**. Pressing it twice is one command.
+
+This site stays the master of everything it was already master of. Brain never
+writes to an opportunity, and nothing here spends anything: the button puts the
+record on Brain's list, and what happens next is bounded by an authorization
+somebody granted in Brain.
+
+It is off unless `BRAIN_URL`, `BRAIN_TOKEN` and `BRAIN_PROJECT_ID` are all set —
+with any of them missing the panel does not render and every page behaves
+exactly as it did before. See [`docs/BRAIN.md`](docs/BRAIN.md).
+
+---
+
 ## Documentation
 
 | Document | Contents |
 |---|---|
+| [`docs/BRAIN.md`](docs/BRAIN.md) | The Brain panel, the one command, connecting it, and rollback |
 | [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) | Deploying to Vercel + Neon, the scheduler, and serverless caveats |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System layers, data model, engines, job queue, request lifecycle |
 | [`docs/INTEGRATIONS.md`](docs/INTEGRATIONS.md) | Provider interfaces, wiring Twilio / Deepgram / SMTP / S3 / Anthropic, webhooks |
