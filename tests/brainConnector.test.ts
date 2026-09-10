@@ -293,6 +293,42 @@ describe('the connector is reached by the production path', () => {
     expect(page).toMatch(/<BrainPanel\b/);
   });
 
+  /*
+   * The production walkthrough reads the panel through these hooks rather than
+   * through its English labels, so that the six states are asserted as
+   * themselves. A rename here would make that check quietly stop looking at
+   * anything, which is the way a green run comes to mean nothing.
+   */
+  it('leaves the walkthrough something stable to read the panel by', () => {
+    const panel = read('components/BrainPanel.tsx');
+    for (const hook of [
+      'data-testid="brain-panel"',
+      'data-brain-state=',
+      'data-brain-freshness=',
+      'data-testid="brain-state"',
+      'data-testid="brain-state-reason"',
+      'data-testid="brain-freshness"',
+      'data-testid="brain-command"',
+      'data-testid="brain-identity"',
+    ]) {
+      expect(panel).toContain(hook);
+    }
+    const check = read('scripts/brainGoldenLoopCheck.mjs');
+    expect(check).toContain('data-testid="brain-panel"');
+    expect(check).toContain('data-brain-state');
+    // The one button is found by the words a person reads, so the two must agree.
+    expect(panel).toContain('Ask Brain to research this');
+    expect(check).toContain('Ask Brain to research this');
+  });
+
+  it('never lets the walkthrough print what it is checking for', () => {
+    const check = read('scripts/brainGoldenLoopCheck.mjs');
+    // It asserts no credential is in the page. It must not log one either.
+    expect(check).not.toMatch(/console\.log\([^)]*BRAIN_TOKEN/);
+    expect(check).not.toContain('process.env.BRAIN_TOKEN');
+    expect(check).toContain('/brnw_/');
+  });
+
   it('exposes the command on a route a person’s session authenticates', () => {
     const route = read('app/api/opportunities/[id]/brain/route.ts');
     expect(route).toContain('requireAny(');
