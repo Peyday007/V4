@@ -234,6 +234,14 @@ try {
       again.status === 200,
       `HTTP ${again.status}`,
     );
+    // The proof that the second delivery was not a second command. Brain
+    // derives the key from the record and the command, so an equivalent caller
+    // reads the row it collided with rather than doing the work again.
+    check(
+      'and Brain says it replayed the first one rather than doing it twice',
+      again.body?.replayed === true,
+      `replayed=${String(again.body?.replayed)}`,
+    );
     check(
       'and it is still one record in one state',
       third?.identity === first?.identity,
