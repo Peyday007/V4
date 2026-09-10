@@ -27,6 +27,7 @@ import { sweepContactResolution } from '@/lib/enrichment/schedule';
 import { resolveSupply } from '@/lib/enrichment/supply';
 import { sweepConsistency } from '@/lib/manager/cases';
 import { generateBrief } from '@/lib/manager/brief';
+import { pullProjections, pushChanges } from '@/lib/brain/sync';
 import { enqueue } from './queue';
 
 export type JobHandler = (job: Job) => Promise<unknown>;
@@ -44,6 +45,36 @@ function requireString(payload: Payload, key: string): string {
  * state from the database rather than assuming what a previous attempt did.
  */
 export const HANDLERS: Record<string, JobHandler> = {
+  /*
+   * The Brain connector.
+   *
+   * Both halves are bounded to one page and both re-enqueue themselves when
+   * there is more, rather than looping inside one invocation: a backfill of
+   * every opportunity this site holds is however many pages it takes, and a
+   * platform function timeout in the middle of one costs a page rather than
+   * the run. Nothing here is a full-table scan — the push walks an indexed
+   * `updatedAt` range from a stored cursor and the pull asks Brain's own delta
+   * feed for what has changed since a watermark.
+   *
+   * With no Brain configured both return immediately having done nothing, so
+   * an unconnected site pays one cheap call per tick and writes no failures.
+   */
+  'brain.push': async (job) => {
+    const result = await pushChanges({ orgId: job.orgId });
+    if (result.connected && result.more && !result.error) {
+      await enqueue({ orgId: job.orgId, kind: 'brain.push', priority: 45 });
+    }
+    return result;
+  },
+
+  'brain.pull': async (job) => {
+    const result = await pullProjections({ orgId: job.orgId });
+    if (result.connected && result.more && !result.error) {
+      await enqueue({ orgId: job.orgId, kind: 'brain.pull', priority: 45 });
+    }
+    return result;
+  },
+
   'discovery.run_source': async (job) => {
     const payload = job.payload as Payload;
     const result = await runDiscoveryForSource({

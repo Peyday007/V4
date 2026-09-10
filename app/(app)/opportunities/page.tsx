@@ -6,6 +6,8 @@ import { Badge, dueLabel, Empty, humanize, PriorityBadge, relativeDays, StatusBa
 import { FigureChip } from '@/components/Figure';
 import { closedComparablesByType, gradeOpportunity, gradeOpportunityMoney } from '@/lib/evidence/opportunity';
 import { presentMoney } from '@/lib/evidence/economics';
+import { BrainCell, brainColumnLabel } from '@/components/BrainCell';
+import { isConnected } from '@/lib/brain/config';
 
 export const dynamic = 'force-dynamic';
 
@@ -43,6 +45,8 @@ export default async function OpportunitiesPage({ searchParams }: { searchParams
 
   if (user.roleKey === 'CALLER') where.callAssignments = { some: { assignedToId: user.id } };
 
+  const brainConnected = isConnected();
+
   const [opportunities, closedByType] = await Promise.all([
     prisma.opportunity.findMany({
       where,
@@ -51,6 +55,15 @@ export default async function OpportunitiesPage({ searchParams }: { searchParams
         nextActions: { where: { isCurrent: true } },
         matches: { where: { isSelected: true }, include: { candidate: true } },
         scores: { select: { id: true }, take: 1 },
+        /*
+         * Brain's cached view, read from the local row rather than from Brain.
+         *
+         * A board of three hundred records is three hundred round trips if it
+         * asks Brain per row, so this reads the cache the connector's bounded
+         * pull keeps current. The detail page reads live; the board reads the
+         * cache, and the cache says when it was last heard from.
+         */
+        brainLink: true,
         quotes: {
           // Superseded and declined revisions are history, not the live price.
           where: { direction: 'outbound', status: { notIn: ['SUPERSEDED', 'DECLINED', 'EXPIRED'] } },
@@ -100,6 +113,7 @@ export default async function OpportunitiesPage({ searchParams }: { searchParams
                 <th className="num">Closing rate</th>
                 {showMoney && <th className="num">Value</th>}
                 {showMoney && <th className="num">GP</th>}
+                {brainConnected && <th>{brainColumnLabel()}</th>}
                 <th>Next action</th>
                 <th>Due</th>
                 <th>Activity</th>
@@ -138,6 +152,11 @@ export default async function OpportunitiesPage({ searchParams }: { searchParams
                     )}
                     {showMoney && (
                       <td className="num tiny"><FigureChip presentation={presentMoney(cash.grossProfit)} /></td>
+                    )}
+                    {brainConnected && (
+                      <td className="small">
+                        <BrainCell link={opportunity.brainLink} />
+                      </td>
                     )}
                     <td className="small">
                       {action ? humanize(action.type) : <Badge tone="danger">None</Badge>}

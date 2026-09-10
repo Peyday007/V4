@@ -22,6 +22,7 @@
     "discovery:setup": "tsx scripts/setupDiscovery.ts",
     "ops:tick": "tsx scripts/tick.ts",
     "enrich:backfill": "tsx scripts/enrichmentBackfill.ts",
+    "brain:backfill": "tsx scripts/brainBackfill.ts",
     "audit:caller": "tsx scripts/callerAudit.ts",
     "audit:enrichment": "tsx scripts/enrichmentAudit.ts",
     "audit:cron": "tsx scripts/cronBacklogAudit.ts",

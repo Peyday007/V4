@@ -2,6 +2,10 @@ import { prisma } from '@/lib/db';
 
 const SECRET_PATTERNS: Array<[RegExp, string]> = [
   [/\b(sk-[A-Za-z0-9_-]{16,})\b/g, '[redacted:api-key]'],
+  // Brain-issued worker credentials. They are never meant to reach a log, and
+  // the pattern is here so that a stack trace that happens to carry one does
+  // not turn "never logged" into "never logged on purpose".
+  [/\bbrnw_[A-Za-z0-9._-]{8,}/g, '[redacted:brain-credential]'],
   [/\bBearer\s+[A-Za-z0-9._-]{16,}\b/gi, 'Bearer [redacted]'],
   [/\b\d{3}-\d{2}-\d{4}\b/g, '[redacted:ssn]'],
   [/\b(?:\d[ -]*?){13,16}\b/g, '[redacted:card]'],

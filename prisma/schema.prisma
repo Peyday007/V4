@@ -679,6 +679,8 @@ model Organization {
   campaignConditions     CampaignCondition[]
   campaignTasks          CampaignTask[]
   claims                 Claim[]
+  brainLinks             BrainLink[]
+  brainSyncState         BrainSyncState?
 }
 
 model Permission {
@@ -1852,6 +1854,7 @@ model Opportunity {
   activityEvents  ActivityEvent[]
   recommendations AIRecommendation[]
   decisions       AIDecision[]
+  brainLink       BrainLink?
 
   @@index([orgId, stage])
   @@index([orgId, status, priority])
@@ -5544,4 +5547,94 @@ model Claim {
   @@index([routeId, supersededAt])
   @@index([orgId, dataMode, standing])
   @@index([supersededById])
+}
+
+// ---------------------------------------------------------------------------
+// Brain
+// ---------------------------------------------------------------------------
+
+/// What Brain makes of one opportunity, and what we last told it.
+///
+/// Deal Dispatch stays the master of everything in `Opportunity`. This row
+/// holds only the two things it cannot be master of: the identity Brain gave
+/// the record, and Brain's own derived view of it. Nothing in here is ever
+/// copied back into `Opportunity` — two uncontrolled masters for one field is
+/// exactly what this design exists to avoid.
+///
+/// It is a cache with its timestamp attached, and the timestamp is not
+/// optional. A panel that renders a week-old opinion as a live one is worse
+/// than one that renders nothing, so `observedAt` travels with every field and
+/// the UI labels anything stale rather than smoothing it over.
+model BrainLink {
+  id            String @id @default(cuid())
+  orgId         String
+  opportunityId String @unique
+
+  /// The Brain id for this record. Assigned by Brain, never by us.
+  brainId        String
+  brainProjectId String
+
+  /// The last version we successfully pushed, and the digest of what we sent.
+  /// Together they are what makes the incremental push bounded: an opportunity
+  /// whose `updatedAt` has not moved past this is not sent again.
+  lastPushedVersion DateTime?
+  lastPushedHash    String?
+  lastPushedAt      DateTime?
+
+  /// Brain's derived view, cached. Every field here is Brain's, not ours.
+  state          String?
+  stateReason    String?
+  priority       String?
+  priorityRank   Int?
+  reason         String?
+  confidence     Int?
+  missionId      String?
+  documentId     String?
+  conclusion     String?
+  filedUnder     String?
+  nextAction     String?
+  /// Brain's own last-changed stamp for this record, used as the poll cursor.
+  brainUpdatedAt DateTime?
+  /// When we last actually heard from Brain. Null means never.
+  observedAt     DateTime?
+  /// Why the last read failed, when it did. Safe to show; never a credential.
+  lastError      String?
+
+  /// Who on this site asked Brain to look, and when. Attribution only.
+  commandedAt     DateTime?
+  commandedById   String?
+  commandedByName String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  opportunity Opportunity  @relation(fields: [opportunityId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, brainId])
+  @@index([orgId, state])
+  @@index([orgId, brainUpdatedAt])
+}
+
+/// Where the two cursors have got to, per organisation.
+///
+/// One row, deliberately. The push cursor is the highest `Opportunity.updatedAt`
+/// this org has successfully sent; the pull cursor is Brain's own watermark. Both
+/// are advanced only after the work they describe has actually been done, so a
+/// crash re-does a page rather than skipping one — at-least-once, which the
+/// content hash on either side makes free.
+model BrainSyncState {
+  id    String @id @default(cuid())
+  orgId String @unique
+
+  pushCursor DateTime?
+  pushedAt   DateTime?
+  pullCursor String?
+  pulledAt   DateTime?
+  lastError  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
 }

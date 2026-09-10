@@ -49,7 +49,12 @@ export type JobKind =
   | 'analytics.snapshot'
   | 'followup.generate'
   | 'document.generate'
-  | 'notification.send';
+  | 'notification.send'
+  /// The Brain connector. Two halves, deliberately two jobs: a push that fails
+  /// because Brain is down must not also stop the pull that would have shown
+  /// the board what Brain already decided.
+  | 'brain.push'
+  | 'brain.pull';
 
 export type EnqueueOptions = {
   orgId: string;

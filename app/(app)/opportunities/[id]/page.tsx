@@ -4,6 +4,8 @@ import { num, prisma } from '@/lib/db';
 import { collapseRepeats } from '@/lib/activity/collapse';
 import { can, requireUser } from '@/lib/auth/session';
 import { ActionButton } from '@/components/ActionButton';
+import { BrainPanel } from '@/components/BrainPanel';
+import { brainViewOf } from '@/lib/brain/view';
 import { Badge, dueLabel, Empty, humanize, money, PriorityBadge, relativeDays, Stat, StatusBadge, TypeBadge } from '@/components/ui';
 import { Figure, GradedStat } from '@/components/Figure';
 import {
@@ -81,6 +83,18 @@ export default async function OpportunityWorkspace({ params }: { params: { id: s
     quote: liveQuote,
   });
 
+  /*
+   * Brain's view of this record, read live.
+   *
+   * Live rather than from the local cache, because this is the page somebody is
+   * looking at and one bounded request answers it in a round trip. It is
+   * written through to the cache on the way, so the board benefits from
+   * anybody opening a record. It cannot fail this page: `brainViewOf` returns a
+   * labelled view for every outcome including "Brain did not answer", and with
+   * no Brain configured the panel renders nothing at all.
+   */
+  const brain = await brainViewOf({ orgId: user.orgId, opportunityId: opportunity.id });
+
   return (
     <>
       <div className="page-header">
@@ -109,6 +123,8 @@ export default async function OpportunityWorkspace({ params }: { params: { id: s
           </div>
         )}
       </div>
+
+      <BrainPanel view={brain} opportunityId={opportunity.id} canCommand={canAct} />
 
       {openEscalations.length > 0 && (
         <div className="alert danger">

@@ -45,6 +45,25 @@ const schema = z.object({
 
   WORKER_CONCURRENCY: z.coerce.number().default(2),
   WORKER_POLL_MS: z.coerce.number().default(2000),
+
+  /**
+   * Brain — the intelligence this site is a window onto.
+   *
+   * All three or none. With any of them missing the connector is off: the
+   * panel says the site is not connected, no job is enqueued, and nothing on
+   * the site changes. That is deliberate — a half-configured connector that
+   * retried on every tick would be a background loop nobody asked for.
+   *
+   * `BRAIN_TOKEN` is a credential Brain issued to *this site*, scoped to one
+   * project and two verbs. It is never logged, never returned by any route
+   * here, and never rendered. `lib/audit.ts` redaction covers it, and the
+   * client below refuses to include it in an error message.
+   */
+  BRAIN_URL: z.string().optional(),
+  BRAIN_TOKEN: z.string().optional(),
+  BRAIN_PROJECT_ID: z.string().optional(),
+  /** How long to wait on Brain before falling back to the cached view. */
+  BRAIN_TIMEOUT_MS: z.coerce.number().default(4000),
 });
 
 export type Env = z.infer<typeof schema>;

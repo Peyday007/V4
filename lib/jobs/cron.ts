@@ -128,6 +128,37 @@ export async function runCron(request: Request, mode: CronMode) {
       });
       if (campaignQueued) queued += 1;
 
+      /*
+       * The Brain connector, on the tick rather than the daily sweep.
+       *
+       * The site is a window onto Brain, and a window that showed yesterday's
+       * view would not be one. Both halves are enqueued every tick with an
+       * hour-stamped key so a retried cron does not stack them, and
+       * `skipIfCompleted: false` so the next hour's tick queues a fresh pair.
+       *
+       * Neither costs anything when nothing has changed: the push finds no
+       * opportunity past its cursor and makes no request at all, and the pull
+       * reads one empty page from Brain's delta feed. When Brain is not
+       * configured both return immediately.
+       */
+      const brainPush = await enqueue({
+        orgId: org.id,
+        kind: 'brain.push',
+        priority: 24,
+        idempotencyKey: `cron:brain.push:${new Date().toISOString().slice(0, 13)}`,
+        skipIfCompleted: false,
+      });
+      if (brainPush) queued += 1;
+
+      const brainPull = await enqueue({
+        orgId: org.id,
+        kind: 'brain.pull',
+        priority: 24,
+        idempotencyKey: `cron:brain.pull:${new Date().toISOString().slice(0, 13)}`,
+        skipIfCompleted: false,
+      });
+      if (brainPull) queued += 1;
+
       // Contact resolution is not enqueued and hoped for — it runs here, first,
       // with a budget of its own.
       //
