@@ -67,6 +67,22 @@ async function api(path, { method = 'GET', body, cookie } = {}) {
   return { status: response.status, body: parsed, text };
 }
 
+/**
+ * Navigate, tolerating a navigation the page started itself.
+ *
+ * Several controls reload after a write, so a `goto` issued straight afterwards
+ * can be aborted by the reload it collided with — which is not a failure of
+ * anything.
+ */
+async function goto(page, url) {
+  try {
+    await page.goto(url, { waitUntil: 'domcontentloaded' });
+  } catch (error) {
+    if (!/aborted|interrupted/i.test(String(error))) throw error;
+  }
+  await page.waitForLoadState('networkidle');
+}
+
 /** What the panel is showing right now, read from the rendered page. */
 async function readPanel(page) {
   const panel = page.locator('[data-testid="brain-panel"]');
@@ -152,9 +168,39 @@ try {
     if (id && !ids.includes(id)) ids.push(id);
   }
   check('the list shows real opportunities', ids.length > 0, `${ids.length} on the first page`);
-  const opportunityId = WANTED || ids[0];
-  if (!opportunityId) throw new Error('No opportunity to work with.');
-  check('one of them is chosen', true, opportunityId);
+  if (ids.length === 0 && !WANTED) throw new Error('No opportunity to work with.');
+
+  /*
+   * Find one Brain will still take a command about.
+   *
+   * "The first one on the list" was fine exactly once. After a run, that record
+   * has been asked about — and if Brain parked it (an Ohio record under a
+   * Michigan authorization, say) it correctly offers no button ever again. A
+   * loop that could only ever exercise the branch its own last run left behind
+   * is a loop that stops testing the command.
+   *
+   * So it opens records until one offers the command, and falls back to the
+   * first if none do — which is itself a truthful outcome, reported as one.
+   */
+  let opportunityId = WANTED || ids[0];
+  let opened = null;
+  if (!WANTED) {
+    for (const id of ids.slice(0, 8)) {
+      await goto(page, `${BASE}/opportunities/${id}`);
+      const panel = await readPanel(page);
+      if (panel?.hasCommand) {
+        opportunityId = id;
+        opened = panel;
+        break;
+      }
+      if (!opened) opened = panel;
+    }
+  }
+  check(
+    'one of them is chosen',
+    true,
+    `${opportunityId}${opened?.hasCommand ? '' : ' (none of the first few still offer the command)'}`,
+  );
 
   // ---------------------------------------------------------------------
   console.log('\n--- opening it registers it in Brain, once ------------------------');
@@ -301,7 +347,18 @@ try {
   console.log('\n--- nothing leaked ------------------------------------------------');
   const html = await page.content();
   check('no Brain credential is anywhere in the rendered page', !/brnw_/.test(html));
-  check('no bearer header is echoed into the page', !/[Aa]uthorization/.test(html));
+  /*
+   * A *header echo*, not the word.
+   *
+   * The first version asserted the page contained no "Authorization" anywhere,
+   * and production failed it on Brain's own sentence — "Authorising research in
+   * Ohio is a decision for a person". Banning a word that legitimately appears
+   * in prose is a check that fails on correct behaviour, which is worse than no
+   * check: the real property is that no credential and no bearer header reaches
+   * the page, and both of those have shapes.
+   */
+  check('no bearer header is echoed into the page', !/[Aa]uthorization:\s*Bearer/.test(html));
+  check('and no bearer token shape appears at all', !/\bBearer\s+[A-Za-z0-9._-]{8,}/.test(html));
 } catch (error) {
   failures += 1;
   console.log(`\n  FAIL  ${error instanceof Error ? error.message : String(error)}`);
