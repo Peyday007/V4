@@ -304,6 +304,42 @@ describe('the connector is reached by the production path', () => {
     expect(route).toContain("json({ error: 'Opportunity not found' }, 404)");
   });
 
+  it('reports the connection on the site’s own health check, without the credential', () => {
+    const health = read('app/api/health/route.ts');
+    // Two facts, separately: configured, and answering. Having the variables
+    // set is not the same fact as the other end replying.
+    expect(health).toContain('isConnected()');
+    expect(health).toContain('readProjectionsSince(');
+    expect(health).toContain('describeBrain()');
+    /*
+     * Naming the *variable* is the point — it is the instruction an operator
+     * needs. What must never appear is the value, so the assertion is that this
+     * route never reads the credential out of the config at all: it goes
+     * through `describeBrain()`, which is host and project, and through the
+     * client, which puts the bearer in a header and nowhere else.
+     */
+    expect(health).toContain('BRAIN_TOKEN and BRAIN_PROJECT_ID');
+    expect(health).not.toMatch(/\.token/);
+    expect(health).not.toContain('brainConfig(');
+    // And an unreachable Brain is never a reason to call the whole site down.
+    expect(health).toMatch(/checks\.brain = \{\s*\n?\s*ok: true/);
+  });
+
+  it('registers a record Brain has never been told about, when somebody opens it', () => {
+    const view = read('lib/brain/view.ts');
+    // Without this a freshly connected site reads "not sent to Brain yet" on
+    // every record until a scheduled push runs.
+    expect(view).toContain("result.failure.kind === 'NOT_FOUND'");
+    expect(view).toContain('pushOne(');
+    // One record, not a page: a read path must not make one page load pay for
+    // the whole organisation.
+    const sync = read('lib/brain/sync.ts');
+    expect(sync).toMatch(/export async function pushOne\(/);
+    // And it must not move the sweep's cursor.
+    const pushOneBody = sync.slice(sync.indexOf('export async function pushOne('), sync.indexOf('async function markPushed('));
+    expect(pushOneBody).not.toContain('pushCursor');
+  });
+
   it('never writes Brain’s opinion back onto the opportunity row', () => {
     const sync = read('lib/brain/sync.ts');
     expect(sync).not.toMatch(/prisma\.opportunity\.update/);

@@ -175,6 +175,45 @@ export async function pushChanges(input: {
 }
 
 /**
+ * Send exactly one opportunity, now.
+ *
+ * The bounded half of `pushChanges`, for the moment somebody opens a record
+ * Brain has never been told about. It moves no cursor — the cursor belongs to
+ * the sweep and advancing it here would skip everything between it and this
+ * record — and it is idempotent on both sides.
+ *
+ * Returns whether Brain accepted it, so the caller can tell "registered" from
+ * "refused" rather than assuming.
+ */
+export async function pushOne(input: {
+  orgId: string;
+  opportunityId: string;
+}): Promise<boolean> {
+  if (!brainConfig()) return false;
+  const opportunity = await prisma.opportunity.findFirst({
+    where: { id: input.opportunityId, orgId: input.orgId },
+    include: { lane: { select: { name: true } } },
+  });
+  if (!opportunity) return false;
+
+  const delivery = toDelivery(opportunity);
+  const result = await pushRecords([delivery]);
+  if (!result.ok) return false;
+  if (result.value.rejected.some((entry) => entry.sourceRecordId === input.opportunityId)) {
+    return false;
+  }
+
+  await markPushed({
+    orgId: input.orgId,
+    opportunityId: input.opportunityId,
+    version: new Date(delivery.sourceVersion),
+    hash: deliveryHash(delivery),
+    at: new Date(),
+  });
+  return true;
+}
+
+/**
  * Record that one opportunity's current content reached Brain.
  *
  * An upsert with no `brainId` yet: the id is Brain's to assign and arrives on

@@ -1,7 +1,7 @@
 import type { BrainLink } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { describeBrain, isConnected } from './config';
-import { applyProjection } from './sync';
+import { applyProjection, pushOne } from './sync';
 import { describeFailure, readProjection, type BrainProjection } from './client';
 
 /**
@@ -130,13 +130,35 @@ export async function brainViewOf(input: {
   }
 
   /*
-   * Brain does not hold it yet.
+   * Brain does not hold it yet — so send it, once, and ask again.
    *
-   * Not an error and not a failure of the connector: an opportunity created a
-   * moment ago has not been through a push. It is reported as itself so the
-   * panel can say "not sent to Brain yet" rather than "Brain is down".
+   * Without this a freshly connected site shows *not sent to Brain yet* on
+   * every record until a scheduled push happens, which on a daily cron means a
+   * connector that looks broken for a day. Opening a record is the moment
+   * somebody wants Brain's view of it, and registering one record is a single
+   * bounded request that is idempotent on both sides — Brain answers
+   * `unchanged` for anything it already holds, and the content digest here
+   * means an unchanged record is not even sent.
+   *
+   * It is deliberately one record rather than a page: this is a read path, and
+   * a read path that quietly ran a backfill would make one person's page load
+   * pay for the whole organisation.
+   *
+   * If Brain still does not hold it after that, the honest answer is the one
+   * below rather than a retry loop.
    */
   if (result.failure.kind === 'NOT_FOUND') {
+    const pushed = await pushOne({ orgId: input.orgId, opportunityId: input.opportunityId });
+    if (pushed) {
+      const second = await readProjection(input.opportunityId);
+      if (second.ok) {
+        await applyProjection(input.orgId, second.value);
+        const fresh = await prisma.brainLink.findFirst({
+          where: { opportunityId: input.opportunityId, orgId: input.orgId },
+        });
+        if (fresh) return fromLink(fresh, 'CURRENT', null);
+      }
+    }
     if (!link) return blank('CURRENT', 'This record has not reached Brain yet.');
     return fromLink(link, 'STALE', 'Brain no longer holds this record.');
   }

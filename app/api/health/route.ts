@@ -1,5 +1,7 @@
 import { prisma } from '@/lib/db';
 import { json } from '@/lib/api';
+import { describeBrain, isConnected } from '@/lib/brain/config';
+import { readProjectionsSince, describeFailure } from '@/lib/brain/client';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 30;
@@ -80,6 +82,43 @@ export async function GET() {
     };
   } catch (error) {
     checks.data = { ok: false, detail: String(error).slice(0, 160) };
+  }
+
+  /*
+   * 5. Is this site connected to a Brain, and does that Brain answer?
+   *
+   * Two different facts, reported separately, for the reason Brain itself
+   * reports configuration and operation separately: having the variables set is
+   * not the same fact as the other end answering. A connector that was
+   * configured against the wrong project, or with a credential that has been
+   * revoked, is *configured* and does not work, and an operator needs to be
+   * able to tell those apart without reading a log.
+   *
+   * It names the host and the project and never the credential — the same rule
+   * every diagnostic in both codebases follows. And it never makes the whole
+   * health check fail: an unreachable Brain is not a reason to report this site
+   * as down, because every page except one still works without it.
+   */
+  if (!isConnected()) {
+    checks.brain = {
+      ok: true,
+      detail:
+        'Not connected. Set BRAIN_URL, BRAIN_TOKEN and BRAIN_PROJECT_ID to connect this site ' +
+        'to a Brain; with any of them missing the panel does not render and nothing else changes.',
+    };
+  } else {
+    const probe = await readProjectionsSince(null, 1);
+    checks.brain = probe.ok
+      ? {
+          ok: true,
+          detail:
+            `Connected to ${describeBrain()} — it answered, and holds ` +
+            `${probe.value.records.length === 0 && !probe.value.more ? 'no records from this site yet' : 'records from this site'}.`,
+        }
+      : {
+          ok: true,
+          detail: `Configured for ${describeBrain()}, and it did not answer: ${describeFailure(probe.failure)}`,
+        };
   }
 
   return json({ ok: Object.values(checks).every((c) => c.ok), checks }, httpStatus);
