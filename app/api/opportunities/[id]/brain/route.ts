@@ -4,7 +4,7 @@ import { requireAny } from '@/lib/auth/session';
 import { audit } from '@/lib/audit';
 import { handleRouteError, json, rateLimit } from '@/lib/api';
 import { isConnected } from '@/lib/brain/config';
-import { describeFailure, sendCommand } from '@/lib/brain/client';
+import { describeFailure, readProjection, sendCommand } from '@/lib/brain/client';
 import { applyProjection, pushChanges } from '@/lib/brain/sync';
 
 export const dynamic = 'force-dynamic';
@@ -85,6 +85,40 @@ export async function POST(request: Request, { params }: { params: { id: string 
       command: body.command,
       actorLabel: `${user.name} (${user.roleName})`,
     });
+
+    /*
+     * The same command already running is not an error, and must not read as
+     * one.
+     *
+     * §20's mechanism has three outcomes for an equivalent caller — replay,
+     * wait, or refusal — and a person pressing the button twice quickly gets
+     * the middle one. Reporting that as a 502 told them Brain was broken at
+     * precisely the moment Brain was doing exactly what it promised: one
+     * logical command, one outcome. So it answers 200 with the record as it
+     * stands, and says which of the two it was rather than implying the second
+     * press did something.
+     */
+    if (!result.ok && result.failure.kind === 'IN_FLIGHT') {
+      const current = await readProjection(params.id);
+      await audit({
+        orgId: user.orgId,
+        userId: user.id,
+        action: 'brain.command',
+        entityType: 'Opportunity',
+        entityId: params.id,
+        metadata: { command: body.command, replayed: true, inFlight: true },
+      });
+      if (current.ok) await applyProjection(user.orgId, current.value);
+      return json({
+        ok: true,
+        replayed: true,
+        inFlight: true,
+        state: current.ok ? current.value.state : null,
+        stateReason: current.ok
+          ? current.value.stateReason
+          : 'Brain already has this and is working on it.',
+      });
+    }
 
     if (!result.ok) {
       await audit({

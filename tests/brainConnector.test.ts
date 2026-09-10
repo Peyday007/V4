@@ -329,6 +329,31 @@ describe('the connector is reached by the production path', () => {
     expect(check).toContain('/brnw_/');
   });
 
+  /*
+   * Production found this: a second press while the first was still running
+   * came back 502, which reads as "Brain is broken" at the exact moment Brain
+   * was keeping its promise. §20's mechanism has three outcomes for an
+   * equivalent caller — replay, wait, refusal — and the middle one is a
+   * success of the logical command.
+   */
+  it('treats an in-flight collision as one command rather than as a failure', () => {
+    const client = read('lib/brain/client.ts');
+    expect(client).toContain("kind: 'IN_FLIGHT'");
+    expect(client).toContain("response.status === 409 && reason === 'IN_PROGRESS'");
+
+    const route = read('app/api/opportunities/[id]/brain/route.ts');
+    expect(route).toContain("result.failure.kind === 'IN_FLIGHT'");
+    // Answered as the command it is, with the record as it stands.
+    expect(route).toMatch(/inFlight: true/);
+    expect(route).toMatch(/replayed: true/);
+    // And never as a bad gateway, which is what it used to be.
+    const inFlightBlock = route.slice(
+      route.indexOf("result.failure.kind === 'IN_FLIGHT'"),
+      route.indexOf('if (!result.ok) {', route.indexOf("result.failure.kind === 'IN_FLIGHT'")),
+    );
+    expect(inFlightBlock).not.toContain('502');
+  });
+
   it('exposes the command on a route a person’s session authenticates', () => {
     const route = read('app/api/opportunities/[id]/brain/route.ts');
     expect(route).toContain('requireAny(');

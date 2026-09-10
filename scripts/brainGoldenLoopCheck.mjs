@@ -229,8 +229,20 @@ try {
       after?.identity ?? '',
     );
 
-    // The same command again, through the same user-facing route. One logical
-    // command, one outcome — whatever the transport did.
+    /*
+     * The same command again, through the same user-facing route.
+     *
+     * There are two correct answers and the first run of this only allowed
+     * one. §20: an equivalent caller "replays, waits, or is refused" — so a
+     * second delivery that arrives while the first is still in flight is
+     * *also* the mechanism working, and production produced exactly that. What
+     * must hold either way is the thing the loop is actually about: one
+     * logical command and one outcome.
+     *
+     * So it is issued twice: once immediately, which usually collides in
+     * flight, and once after the first has settled, which must replay. Between
+     * them they exercise both branches rather than whichever the timing gave.
+     */
     const again = await api(`/api/opportunities/${opportunityId}/brain`, {
       method: 'POST',
       cookie,
@@ -244,22 +256,36 @@ try {
     check(
       'issuing it a second time is accepted rather than erroring',
       again.status === 200,
-      `HTTP ${again.status}`,
+      `HTTP ${again.status}${again.status === 200 ? '' : ` — ${JSON.stringify(again.body)}`}`,
     );
-    // The proof that the second delivery was not a second command. Brain
-    // derives the key from the record and the command, so an equivalent caller
-    // reads the row it collided with rather than doing the work again.
     check(
-      'and Brain says it replayed the first one rather than doing it twice',
+      'and it is reported as one logical command, not a second one',
       again.body?.replayed === true,
-      `replayed=${String(again.body?.replayed)}`,
+      again.body?.inFlight === true
+        ? 'the first was still in flight — Brain refused to start a second'
+        : `replayed=${String(again.body?.replayed)}`,
     );
+    console.log(`       the second delivery answered: ${JSON.stringify(again.body).slice(0, 220)}`);
+
+    // Now the settled case, which must replay rather than collide.
+    await sleep(6000);
+    const settled = await api(`/api/opportunities/${opportunityId}/brain`, {
+      method: 'POST',
+      cookie,
+      body: { command: 'RESEARCH_FURTHER' },
+    });
+    check(
+      'and once the first has settled, a repeat replays it',
+      settled.status === 200 && settled.body?.replayed === true,
+      `HTTP ${settled.status} replayed=${String(settled.body?.replayed)} inFlight=${String(settled.body?.inFlight)}`,
+    );
+    console.log(`       the settled repeat answered: ${JSON.stringify(settled.body).slice(0, 220)}`);
+
     check(
       'and it is still one record in one state',
       third?.identity === first?.identity,
       `${third?.state}`,
     );
-    console.log(`       the second delivery answered: ${JSON.stringify(again.body).slice(0, 200)}`);
   } else {
     // Not a failure. A record Brain is already working on has no button, which
     // is the panel refusing to offer something that would be a second command.

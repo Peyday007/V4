@@ -26,6 +26,16 @@ export type BrainFailure =
   | { kind: 'NOT_CONNECTED' }
   | { kind: 'NOT_FOUND' }
   | { kind: 'REFUSED'; status: number; message: string }
+  /**
+   * The identical command is already running on Brain's side.
+   *
+   * Not a failure of anything. §20: a logical operation reserves itself, and
+   * every other equivalent caller "replays, waits, or is refused" — a caller
+   * that arrives while the first is still in flight is the middle case. It is
+   * separated from `REFUSED` because the two need opposite words: one means
+   * Brain would not do this, the other means Brain is doing it.
+   */
+  | { kind: 'IN_FLIGHT'; message: string }
   | { kind: 'TIMEOUT' }
   | { kind: 'UNREACHABLE'; message: string };
 
@@ -116,6 +126,19 @@ async function requestWith<T>(
         parsed && typeof parsed === 'object' && typeof (parsed as { error?: unknown }).error === 'string'
           ? (parsed as { error: string }).error
           : 'Brain refused the request.';
+      /*
+       * A 409 naming IN_PROGRESS is Brain's idempotency layer saying the same
+       * logical command is already running — the exact property this connector
+       * exists to have. Reporting it as a refusal made a correct outcome look
+       * like a broken Brain, which is how a working guarantee gets "fixed".
+       */
+      const reason =
+        parsed && typeof parsed === 'object'
+          ? (parsed as { detail?: { reason?: unknown } }).detail?.reason
+          : undefined;
+      if (response.status === 409 && reason === 'IN_PROGRESS') {
+        return { ok: false, failure: { kind: 'IN_FLIGHT', message } };
+      }
       return { ok: false, failure: { kind: 'REFUSED', status: response.status, message } };
     }
     return { ok: true, value: parsed as T };
@@ -234,6 +257,8 @@ export function describeFailure(failure: BrainFailure): string {
       return 'Brain could not be reached.';
     case 'REFUSED':
       return failure.message;
+    case 'IN_FLIGHT':
+      return 'Brain already has this and is working on it.';
   }
 }
 
