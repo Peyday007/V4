@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/db';
 import { json } from '@/lib/api';
-import { describeBrain, isConnected } from '@/lib/brain/config';
+import { describeBrain, isConnected, missingBrainSettings } from '@/lib/brain/config';
 import { readProjectionsSince, describeFailure } from '@/lib/brain/client';
 
 export const dynamic = 'force-dynamic';
@@ -100,11 +100,25 @@ export async function GET() {
    * as down, because every page except one still works without it.
    */
   if (!isConnected()) {
+    /*
+     * Name what is missing, rather than restating the requirement.
+     *
+     * "Set these three" reads the same whether none of them are set or all
+     * three are set on a deployment built before they existed — and the second
+     * is the likely one, because the platform applies environment changes to
+     * new builds only. Saying which are absent turns one of those into an
+     * answer and the other into "none missing, so redeploy".
+     */
+    const missing = missingBrainSettings();
     checks.brain = {
       ok: true,
       detail:
-        'Not connected. Set BRAIN_URL, BRAIN_TOKEN and BRAIN_PROJECT_ID to connect this site ' +
-        'to a Brain; with any of them missing the panel does not render and nothing else changes.',
+        missing.length === 0
+          ? 'Not connected, and nothing is missing — every setting is present in this ' +
+            'environment but not in the build that is serving. Redeploy to pick them up.'
+          : `Not connected: ${missing.join(', ')} ${missing.length === 1 ? 'is' : 'are'} not set. ` +
+            'All three or none — with any of them missing the panel does not render and ' +
+            'nothing else changes.',
     };
   } else {
     const probe = await readProjectionsSince(null, 1);

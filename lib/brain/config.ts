@@ -33,6 +33,29 @@ export function isConnected(): boolean {
   return brainConfig() !== null;
 }
 
+/**
+ * Which of the three settings are missing, by name.
+ *
+ * `isConnected()` answers yes or no, and "no" has more than one cause: none of
+ * them set, one of them set, or all three set on a deployment that was built
+ * before they existed — the platform applies environment changes to new builds,
+ * so the last case looks exactly like the first from inside the process.
+ *
+ * That ambiguity cost a round of confusion once, so the diagnostic distinguishes
+ * them. Names only. A value is never returned here, and the token's is never
+ * returned anywhere.
+ */
+export function missingBrainSettings(): string[] {
+  const config = env();
+  const missing: string[] = [];
+  const baseUrl = (config.BRAIN_URL ?? '').trim();
+  if (!baseUrl) missing.push('BRAIN_URL');
+  else if (!/^https?:\/\//.test(baseUrl.replace(/\/+$/, ''))) missing.push('BRAIN_URL (not an http(s) address)');
+  if (!(config.BRAIN_TOKEN ?? '').trim()) missing.push('BRAIN_TOKEN');
+  if (!(config.BRAIN_PROJECT_ID ?? '').trim()) missing.push('BRAIN_PROJECT_ID');
+  return missing;
+}
+
 /** The Brain, named by host and project. Never by credential. */
 export function describeBrain(): string | null {
   const config = brainConfig();

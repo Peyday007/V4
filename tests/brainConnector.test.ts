@@ -354,7 +354,14 @@ describe('the connector is reached by the production path', () => {
      * through `describeBrain()`, which is host and project, and through the
      * client, which puts the bearer in a header and nowhere else.
      */
-    expect(health).toContain('BRAIN_TOKEN and BRAIN_PROJECT_ID');
+    expect(health).toContain('missingBrainSettings()');
+    // And the names it reports come from one place, which is the module that
+    // holds the values and deliberately returns none of them.
+    const config = read('lib/brain/config.ts');
+    for (const name of ['BRAIN_URL', 'BRAIN_TOKEN', 'BRAIN_PROJECT_ID']) {
+      expect(config).toContain(`'${name}'`);
+    }
+    expect(config).not.toMatch(/missing\.push\(config\./);
     expect(health).not.toMatch(/\.token/);
     expect(health).not.toContain('brainConfig(');
     // And an unreachable Brain is never a reason to call the whole site down.
