@@ -201,11 +201,23 @@ try {
   if (commandOffered) {
     const button = page.getByRole('button', { name: /Ask Brain to research this/i });
     check('the one button is on the page', (await button.count()) > 0);
+    const pressedAt = Date.now();
     await button.first().click();
     await page.waitForLoadState('networkidle');
     await sleep(1500);
     const after = await readPanel(page);
+    const reflectedMs = Date.now() - pressedAt;
     printPanel(after);
+    console.log(`       pressed to reflected on the page: ${reflectedMs} ms`);
+    // The site is a window: an important state change should reach the page a
+    // person is looking at in seconds, not on the next sweep. This is the live
+    // read-through path, so it is measured rather than assumed — and it is
+    // reported whatever it is, because a target nobody measures is a wish.
+    check(
+      'the change reaches the page a person is looking at in under five seconds',
+      reflectedMs < 5000,
+      `${reflectedMs} ms`,
+    );
     check(
       'the site reflects what Brain did with it',
       after !== null && after.state !== null,
